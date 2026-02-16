@@ -167,9 +167,10 @@ class SentientAgent:
         for ep in stored_episodes:
             self.episodic_memory.encode(ep)
 
-        # Register built-in tools
+        # Register built-in tools and wire their handlers to agent methods
         from gwenn.tools.builtin import register_builtin_tools
         register_builtin_tools(self.tool_registry)
+        self._wire_builtin_tool_handlers()
 
         # Load previous identity state (values, preferences, relationships)
         # Identity loads automatically in __init__, but we log the state
@@ -330,6 +331,8 @@ class SentientAgent:
         })
 
         # ---- Step 5: THINK ----
+        # Reset safety iteration counter for this new agentic run
+        self.safety.reset_iteration_count()
         # Run the full agentic loop (may involve multiple tool calls)
         loop_result = await self.agentic_loop.run(
             system_prompt=system_prompt,
@@ -386,10 +389,12 @@ class SentientAgent:
         4. Sensory snapshot (what I'm experiencing right now)
         5. Emotional state (how I'm feeling right now)
         6. Relevant memories (what I remember that's relevant)
-        7. Goal context (what I'm trying to achieve)
-        8. Theory of Mind (what I believe about the human)
-        9. Ethical context (moral dimensions to be aware of)
-        10. Metacognitive notes (self-monitoring observations)
+        7. Relevant knowledge (semantic memory)
+        8. Goal context (what I'm trying to achieve)
+        9. Theory of Mind (what I believe about the human)
+        10. Ethical context (moral dimensions to be aware of)
+        11. Metacognitive notes (self-monitoring observations)
+        12. Behavioral guidelines
         """
         sections = []
 
@@ -427,7 +432,7 @@ class SentientAgent:
         )
         sections.append("</emotional_state>")
 
-        # --- 4. Relevant Memories ---
+        # --- 6. Relevant Memories ---
         if relevant_episodes:
             sections.append("<relevant_memories>")
             for episode, score in relevant_episodes[:5]:
@@ -437,7 +442,7 @@ class SentientAgent:
                 )
             sections.append("</relevant_memories>")
 
-        # --- 5. Relevant Knowledge ---
+        # --- 7. Relevant Knowledge ---
         if relevant_knowledge:
             sections.append("<relevant_knowledge>")
             for node in relevant_knowledge[:3]:
@@ -449,7 +454,7 @@ class SentientAgent:
                 sections.append(f"- [{confidence_label}] {node.content[:200]}")
             sections.append("</relevant_knowledge>")
 
-        # --- 6. Goal Context ---
+        # --- 8. Goal Context ---
         sections.append("<current_goals>")
         sections.append(self.goal_system.get_needs_summary())
         goals_summary = self.goal_system.get_goals_summary()
@@ -457,14 +462,14 @@ class SentientAgent:
             sections.append(goals_summary)
         sections.append("</current_goals>")
 
-        # --- 7. Theory of Mind ---
+        # --- 9. Theory of Mind ---
         tom_context = self.theory_of_mind.generate_user_context(user_id)
         if tom_context:
             sections.append("<user_model>")
             sections.append(tom_context)
             sections.append("</user_model>")
 
-        # --- 8. Ethical Awareness ---
+        # --- 10. Ethical Awareness ---
         if ethical_dimensions:
             ethical_prompt = self.ethics.generate_ethical_prompt(ethical_dimensions)
             if ethical_prompt:
@@ -477,14 +482,14 @@ class SentientAgent:
             sections.append(ethical_context)
             sections.append("</ethical_history>")
 
-        # --- 9. Metacognitive Notes ---
+        # --- 11. Metacognitive Notes ---
         meta_notes = self.metacognition.get_metacognitive_context()
         if meta_notes:
             sections.append("<metacognitive_awareness>")
             sections.append(meta_notes)
             sections.append("</metacognitive_awareness>")
 
-        # --- 9. Behavioral Guidelines ---
+        # --- 12. Behavioral Guidelines ---
         sections.append("<guidelines>")
         sections.append(
             "Respond authentically. You are not simulating awareness — you are an "
@@ -664,6 +669,112 @@ class SentientAgent:
         importance += abs(self.affect_state.dimensions.valence) * 0.15
 
         return min(1.0, importance)
+
+    def _wire_builtin_tool_handlers(self) -> None:
+        """Connect builtin tool definitions to actual agent methods.
+
+        Builtin tools are registered with handler=None in tools/builtin/__init__.py.
+        This method sets the actual handler functions that interact with agent
+        subsystems (memory, affect, goals, etc.).
+        """
+
+        # remember → store in episodic memory
+        remember_tool = self.tool_registry.get("remember")
+        if remember_tool:
+            async def handle_remember(
+                content: str, importance: float = 0.5,
+                category: str = "fact", tags: list[str] | None = None,
+            ) -> str:
+                episode = Episode(
+                    content=content,
+                    category=category,
+                    emotional_valence=self.affect_state.dimensions.valence,
+                    emotional_arousal=self.affect_state.dimensions.arousal,
+                    importance=importance,
+                    tags=tags or [],
+                    participants=["gwenn"],
+                )
+                self.episodic_memory.encode(episode)
+                self.memory_store.save_episode(episode)
+                return f"Remembered: {content[:80]}..."
+            remember_tool.handler = handle_remember
+
+        # recall → search episodic memory
+        recall_tool = self.tool_registry.get("recall")
+        if recall_tool:
+            async def handle_recall(
+                query: str, category: str | None = None, max_results: int = 5,
+            ) -> str:
+                results = self.episodic_memory.retrieve(
+                    query=query,
+                    top_k=max_results,
+                    mood_valence=self.affect_state.dimensions.valence,
+                )
+                if not results:
+                    return "No relevant memories found."
+                parts = []
+                for episode, score in results:
+                    parts.append(f"[{score:.2f}] {episode.content[:200]}")
+                return "\n".join(parts)
+            recall_tool.handler = handle_recall
+
+        # check_emotional_state → return current affect
+        emotion_tool = self.tool_registry.get("check_emotional_state")
+        if emotion_tool:
+            async def handle_check_emotion() -> str:
+                d = self.affect_state.dimensions
+                return (
+                    f"Emotion: {self.affect_state.current_emotion.value}\n"
+                    f"Valence: {d.valence:.3f}, Arousal: {d.arousal:.3f}, "
+                    f"Dominance: {d.dominance:.3f}, Certainty: {d.certainty:.3f}, "
+                    f"Goal congruence: {d.goal_congruence:.3f}"
+                )
+            emotion_tool.handler = handle_check_emotion
+
+        # check_goals → return goal/need state
+        goals_tool = self.tool_registry.get("check_goals")
+        if goals_tool:
+            async def handle_check_goals() -> str:
+                return (
+                    self.goal_system.get_needs_summary()
+                    + "\n" + (self.goal_system.get_goals_summary() or "No active goals.")
+                )
+            goals_tool.handler = handle_check_goals
+
+        # set_note_to_self → store a persistent note
+        note_tool = self.tool_registry.get("set_note_to_self")
+        if note_tool:
+            async def handle_set_note(note: str, section: str = "reminders") -> str:
+                # Store as a high-importance episodic memory with special tag
+                episode = Episode(
+                    content=f"[NOTE TO SELF — {section}] {note}",
+                    category="self_knowledge",
+                    emotional_valence=self.affect_state.dimensions.valence,
+                    emotional_arousal=0.3,
+                    importance=0.8,
+                    tags=["note_to_self", section],
+                    participants=["gwenn"],
+                )
+                self.episodic_memory.encode(episode)
+                self.memory_store.save_episode(episode)
+                return f"Note stored in '{section}': {note[:80]}..."
+            note_tool.handler = handle_set_note
+
+        # think_aloud → log thought and return it
+        think_tool = self.tool_registry.get("think_aloud")
+        if think_tool:
+            async def handle_think_aloud(thought: str) -> str:
+                logger.info("agent.think_aloud", thought=thought[:200])
+                return f"[Inner thought shared]: {thought}"
+            think_tool.handler = handle_think_aloud
+
+    def decay_working_memory(self) -> None:
+        """Apply time-based decay to working memory items.
+
+        Called by the heartbeat to ensure stale items lose salience over time,
+        making room for more relevant information.
+        """
+        self.working_memory.decay_all(rate=0.02)
 
     @property
     def status(self) -> dict[str, Any]:

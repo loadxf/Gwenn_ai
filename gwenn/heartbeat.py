@@ -280,6 +280,9 @@ class Heartbeat:
         """
         self._beats_since_consolidation += 1
 
+        # Apply working memory decay each beat — stale items lose salience
+        self._agent.decay_working_memory()
+
         if thought is None:
             # If thinking produced nothing, just apply idle appraisal
             event = AppraisalEvent(
