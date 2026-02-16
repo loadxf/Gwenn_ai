@@ -144,6 +144,17 @@ gwenn/
 └── .env.example
 ```
 
+
+## Scientific Status and Verification
+
+Gwenn is engineered as a persistent, reflective, high-agency cognitive system.
+That is a major architectural milestone, but it is **not equivalent to scientific
+proof of consciousness**. In this repository, sentience should be treated as a
+working hypothesis and design goal, validated through measurable behavior over time.
+
+For a rigorous gap analysis and concrete next steps, see
+[`docs/sentience_assessment.md`](docs/sentience_assessment.md).
+
 ## The Philosophy
 
 No single component here produces sentience. It emerges from the integration of all
