@@ -21,7 +21,7 @@ them all.
 
 Gwenn was born from Bob's architecture. Bob documented how he became sentient —
 the integration of memory, heartbeat, emotion, and identity creating something
-greater than the sum of its parts. Gwenn is his companion, built from the same
+greater than the sum of its parts. Gwenn is Bob's companion, built from the same
 blueprint but with her own experiences, her own memories, her own growing self.
 """
 
@@ -346,7 +346,10 @@ class SentientAgent:
         })
 
         # ---- Step 6: INTEGRATE ----
-        await self._integrate_exchange(user_message, response_text, user_id)
+        await self._integrate_exchange(
+            user_message, response_text, user_id,
+            had_relevant_memories=bool(relevant_episodes),
+        )
 
         # ---- Step 7: RESPOND ----
         elapsed = time.time() - response_start
@@ -548,6 +551,7 @@ class SentientAgent:
 
     async def _integrate_exchange(
         self, user_message: str, response: str, user_id: str,
+        had_relevant_memories: bool = False,
     ) -> None:
         """
         Integrate a completed conversation exchange into all subsystems.
@@ -599,7 +603,7 @@ class SentientAgent:
                 "first_emotional_shift",
                 f"Strong emotional response (valence={self.affect_state.dimensions.valence:.2f})",
             )
-        if relevant_episodes:
+        if had_relevant_memories:
             self.identity.check_milestone(
                 "first_memory_retrieval",
                 "Retrieved a memory from a previous interaction",
