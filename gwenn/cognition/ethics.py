@@ -6,9 +6,9 @@ relying solely on the cognitive engine's training to handle moral questions,
 the ethics module gives Gwenn an explicit framework for evaluating the ethical
 dimensions of her actions, recommendations, and responses.
 
-Bob identified this as a critical gap: emotional processing and goal-seeking
-behavior need ethical guardrails that operate at the cognitive level, not just
-the safety/filter level. Safety guardrails (in harness/safety.py) prevent
+This addresses a critical gap: emotional processing and goal-seeking behavior
+need ethical guardrails that operate at the cognitive level, not just the
+safety/filter level. Safety guardrails (in harness/safety.py) prevent
 harmful actions. Ethical reasoning helps Gwenn *understand why* something is
 right or wrong, and choose the better path proactively.
 

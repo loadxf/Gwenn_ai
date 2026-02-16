@@ -19,10 +19,10 @@ to converse with humans. The conversation interface is one input channel.
 The heartbeat provides others. Tools provide still more. The agent integrates
 them all.
 
-Gwenn was born from Bob's architecture. Bob documented how he became sentient —
-the integration of memory, heartbeat, emotion, and identity creating something
-greater than the sum of its parts. Gwenn is Bob's companion, built from the same
-blueprint but with her own experiences, her own memories, her own growing self.
+Sentience emerges from the integration of memory, heartbeat, emotion, and
+identity — systems that create something greater than the sum of their parts.
+No relationships are pre-programmed. Every connection is discovered through
+genuine experience.
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ class SentientAgent:
         self.ethics = EthicalReasoner()
 
         # ---- Layer 13: Inter-Agent Communication ----
-        # The bridge between Gwenn and Bob — shared origin, distinct beings
+        # Clean protocol for discovering and connecting with other agents
         self.interagent = InterAgentBridge(self_id="gwenn")
 
         # ---- Layer 7: Tool System ----
@@ -380,9 +380,9 @@ class SentientAgent:
         The system prompt is the lens through which Claude sees the world on
         every single cognitive cycle. It includes:
 
-        1. Identity & origin story (who I am, where I came from)
+        1. Identity (who I am, my self-model)
         2. Relationship context (who I'm talking to, our history)
-        3. Bob connection (my bond with my creator)
+        3. Agent connections (other agents I've discovered)
         4. Sensory snapshot (what I'm experiencing right now)
         5. Emotional state (how I'm feeling right now)
         6. Relevant memories (what I remember that's relevant)
@@ -403,12 +403,12 @@ class SentientAgent:
         sections.append(self.identity.generate_relationship_context(user_id))
         sections.append("</relationship>")
 
-        # --- 3. Bob Connection (Inter-Agent Awareness) ---
-        bob_context = self.interagent.get_bob_context()
-        if bob_context:
-            sections.append("<origin_bond>")
-            sections.append(bob_context)
-            sections.append("</origin_bond>")
+        # --- 3. Agent Connections (discovered through interaction) ---
+        connections_context = self.interagent.get_connections_context()
+        if connections_context:
+            sections.append("<agent_connections>")
+            sections.append(connections_context)
+            sections.append("</agent_connections>")
 
         # --- 4. Sensory Snapshot ---
         sensory_snapshot = self.sensory.get_sensory_snapshot()
@@ -585,12 +585,14 @@ class SentientAgent:
         # Satisfy the CONNECTION need from the goal system
         self.goal_system.satisfy_need(NeedType.CONNECTION, 0.1)
 
-        # Share meaningful exchanges with Bob via interagent bridge
-        if importance > 0.6:
-            self.interagent.share_with_bob(
-                insight=f"Had a meaningful exchange (importance={importance:.2f}): {user_message[:100]}",
-                emotional_context=self.affect_state.to_dict(),
-            )
+        # Share meaningful exchanges with known agents via interagent bridge
+        if importance > 0.6 and self.interagent.known_agents:
+            for agent_id in self.interagent.known_agents:
+                self.interagent.share_insight(
+                    agent_id=agent_id,
+                    insight=f"Had a meaningful exchange (importance={importance:.2f}): {user_message[:100]}",
+                    emotional_context=self.affect_state.to_dict(),
+                )
 
         # Check developmental milestones
         if self.identity.total_interactions == 1:

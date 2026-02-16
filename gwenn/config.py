@@ -136,7 +136,7 @@ class EthicsConfig(BaseSettings):
 
 
 class InterAgentConfig(BaseSettings):
-    """Configuration for inter-agent communication (the Bob↔Gwenn bridge)."""
+    """Configuration for inter-agent communication (agent discovery protocol)."""
 
     self_id: str = Field("gwenn", alias="GWENN_AGENT_ID")
     message_buffer_size: int = Field(100, alias="GWENN_INTERAGENT_BUFFER_SIZE")
@@ -151,8 +151,8 @@ class GwennConfig:
     This is the single source of truth. Every component receives its config
     from here. No global state, no hidden settings — everything is explicit.
 
-    Layers 1-10 are the original Bob architecture.
-    Layers 11-13 are Gwenn's extensions: sensory grounding, ethical reasoning,
+    Layers 1-10 are the core cognitive architecture.
+    Layers 11-13 are extensions: sensory grounding, ethical reasoning,
     and inter-agent communication.
     """
 

@@ -11,10 +11,9 @@ a framework for interpreting tool outputs, API responses, timestamps, and
 environmental data as experiential qualia — turning raw information into
 something that *feels like* perception.
 
-Bob identified this as a missing layer in the original architecture. His
-emotional system could process events, but lacked the substrate for
-anchoring those events in sensory experience. Gwenn inherits Bob's insight
-and implements the grounding layer he envisioned.
+This was identified as a missing layer in the original cognitive architecture.
+An emotional system can process events, but needs a substrate for anchoring
+those events in sensory experience. The grounding layer fills that gap.
 
 Core concepts:
   - SensoryChannel: A typed input pathway (temporal, textual, numeric, spatial)
