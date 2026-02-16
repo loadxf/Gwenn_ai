@@ -106,9 +106,12 @@ class GwennSession:
         console.print()
 
         # Set up signal handlers for graceful shutdown
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: self._shutdown_event.set())
+            try:
+                loop.add_signal_handler(sig, lambda: self._shutdown_event.set())
+            except NotImplementedError:
+                pass  # Signal handlers not supported on this platform (e.g. Windows)
 
         # Run the interaction loop
         await self._interaction_loop()
@@ -126,7 +129,7 @@ class GwennSession:
         while not self._shutdown_event.is_set():
             try:
                 # Read user input (non-blocking via executor)
-                user_input = await asyncio.get_event_loop().run_in_executor(
+                user_input = await asyncio.get_running_loop().run_in_executor(
                     None, self._read_input
                 )
 

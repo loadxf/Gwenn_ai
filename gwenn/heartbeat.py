@@ -278,7 +278,8 @@ class Heartbeat:
         3. Update goal progress if relevant
         4. Increment consolidation counter
         """
-        self._beats_since_consolidation += 1
+        if mode != ThinkingMode.CONSOLIDATE:
+            self._beats_since_consolidation += 1
 
         # Apply working memory decay each beat — stale items lose salience
         self._agent.decay_working_memory()
