@@ -278,14 +278,14 @@ class MemoryStore:
         ongoing tasks, and other information that should persist across
         restarts. It's loaded into the system prompt on startup.
         """
-        filepath = path or (self._db_path.parent / "BOB_CONTEXT.md")
+        filepath = path or (self._db_path.parent / "GWENN_CONTEXT.md")
         filepath.write_text(content, encoding="utf-8")
         logger.info("memory_store.context_saved", path=str(filepath))
         return filepath
 
     def load_persistent_context(self, path: Optional[Path] = None) -> str:
         """Load the persistent context file, or return empty string if none exists."""
-        filepath = path or (self._db_path.parent / "BOB_CONTEXT.md")
+        filepath = path or (self._db_path.parent / "GWENN_CONTEXT.md")
         if filepath.exists():
             return filepath.read_text(encoding="utf-8")
         return ""

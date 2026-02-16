@@ -118,7 +118,7 @@ class GoalSystem:
     4. Return the highest-priority goal for the heartbeat to pursue
 
     This creates autonomous, self-motivated behavior. Gwenn doesn't just
-    wait for instructions — he has his own things he wants to do.
+    wait for instructions — she has her own things she wants to do.
     """
 
     def __init__(self):

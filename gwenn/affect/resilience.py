@@ -160,3 +160,12 @@ class ResilienceCircuit:
         if not self._distress_active or self._distress_start is None:
             return 0.0
         return time.time() - self._distress_start
+
+    @property
+    def status(self) -> dict:
+        """Current resilience status for monitoring."""
+        return {
+            "breaker_active": self._distress_active,
+            "distress_duration": self.distress_duration,
+            "arousal_ceiling": self._config.arousal_ceiling,
+        }
