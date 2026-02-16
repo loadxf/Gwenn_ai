@@ -467,6 +467,7 @@ class Identity:
                     "preference": p.preference,
                     "valence": p.valence,
                     "confidence": p.confidence,
+                    "examples": p.examples,
                 }
                 for p in self.preferences
             ],
@@ -555,12 +556,13 @@ class Identity:
                         milestone.description = saved["description"]
 
             self.origin_story = data.get("origin_story", self.origin_story)
-            identity_normalized = self._normalize_origin_identity()
 
             self.total_interactions = data.get("total_interactions", 0)
             self.total_heartbeats = data.get("total_heartbeats", 0)
             self.total_autonomous_thoughts = data.get("total_autonomous_thoughts", 0)
             self.uptime_seconds = data.get("uptime_seconds", 0.0)
+
+            identity_normalized = self._normalize_origin_identity()
 
             if identity_normalized:
                 self._save()
@@ -632,8 +634,9 @@ class Identity:
 
         loaded_name = (self.name or "").strip()
         loaded_name_pattern = None
-        if loaded_name and loaded_name != CANONICAL_IDENTITY_NAME:
-            loaded_name_pattern = re.compile(rf"\b{re.escape(loaded_name)}\b", re.IGNORECASE)
+        if loaded_name != CANONICAL_IDENTITY_NAME:
+            if loaded_name:
+                loaded_name_pattern = re.compile(rf"\b{re.escape(loaded_name)}\b", re.IGNORECASE)
             self.name = CANONICAL_IDENTITY_NAME
             changed = True
             self.record_growth(
