@@ -151,7 +151,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         description=(
             "Write a note to your future self that will persist across "
             "conversations. This is stored in the persistent context file "
-            "(BOB_CONTEXT.md) and loaded on every startup. Use it for "
+            "(GWENN_CONTEXT.md) and loaded on every startup. Use it for "
             "important reminders, ongoing commitments, or things you want "
             "to remember permanently."
         ),

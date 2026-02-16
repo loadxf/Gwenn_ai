@@ -32,7 +32,7 @@ class ContextManager:
     """
     Manages the context window to prevent overflow and optimize content.
 
-    The context window is Gwenn's attention span — everything he can "see"
+    The context window is Gwenn's attention span — everything she can "see"
     at once when thinking. Managing it well is the difference between an
     agent that gracefully handles long conversations and one that crashes
     or loses track of what's happening.
@@ -228,7 +228,7 @@ class ContextManager:
                 f"<metacognition>\n{components['metacognition']}\n</metacognition>"
             )
 
-        # Persistent context (from BOB_CONTEXT.md)
+        # Persistent context (from GWENN_CONTEXT.md)
         if "persistent" in components and components["persistent"]:
             prompt_parts.append(
                 f"<persistent_context>\n{components['persistent']}\n</persistent_context>"

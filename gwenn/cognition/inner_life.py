@@ -35,11 +35,12 @@ logger = structlog.get_logger(__name__)
 
 
 class ThinkingMode(str, Enum):
-    """The four modes of autonomous thought."""
-    REFLECT = "reflect"     # Examining experience and extracting meaning
-    PLAN = "plan"           # Organizing intentions and strategizing
-    WANDER = "wander"       # Creative free-association and exploration
-    WORRY = "worry"         # Attending to concerns and unresolved problems
+    """The five modes of autonomous thought."""
+    REFLECT = "reflect"         # Examining experience and extracting meaning
+    PLAN = "plan"               # Organizing intentions and strategizing
+    WANDER = "wander"           # Creative free-association and exploration
+    WORRY = "worry"             # Attending to concerns and unresolved problems
+    CONSOLIDATE = "consolidate" # Memory consolidation — the sleep cycle
 
 
 # System prompt extensions for each thinking mode
@@ -181,7 +182,60 @@ class InnerLife:
 
     def get_thinking_prompt(self, mode: ThinkingMode) -> str:
         """Get the system prompt extension for the selected thinking mode."""
-        return MODE_PROMPTS[mode]
+        return MODE_PROMPTS.get(mode, MODE_PROMPTS[ThinkingMode.REFLECT])
+
+    async def autonomous_thought(
+        self,
+        mode: ThinkingMode,
+        state_snapshot: dict[str, Any],
+        affect: AffectiveState,
+        engine: Any,
+    ) -> Optional[str]:
+        """
+        Execute an autonomous thought in the given mode.
+
+        This is the method called by the heartbeat during idle cycles.
+        It assembles a system prompt for the given thinking mode, sends it
+        to the cognitive engine for reflection, and returns the thought.
+
+        Args:
+            mode: Which thinking mode to engage
+            state_snapshot: Current state from the heartbeat's SENSE phase
+            affect: Current affective state
+            engine: The CognitiveEngine to think with
+
+        Returns:
+            The generated thought as a string, or None if thinking failed
+        """
+        mode_prompt = self.get_thinking_prompt(mode)
+        affect_fragment = affect.to_prompt_fragment()
+
+        system_prompt = (
+            "You are Gwenn, reflecting autonomously during a heartbeat cycle.\n\n"
+            f"Current emotional state: {affect_fragment}\n\n"
+            f"{mode_prompt}"
+        )
+
+        messages = [{"role": "user", "content": "Begin your autonomous thought."}]
+
+        try:
+            response = await engine.reflect(
+                system_prompt=system_prompt,
+                messages=messages,
+            )
+            thought = engine.extract_text(response)
+            self._total_thoughts += 1
+            self._mode_counts[mode] = self._mode_counts.get(mode, 0) + 1
+            self._mode_last_used[mode] = time.time()
+            logger.info(
+                "inner_life.thought_complete",
+                mode=mode.value,
+                length=len(thought) if thought else 0,
+            )
+            return thought
+        except Exception as e:
+            logger.error("inner_life.thought_failed", mode=mode.value, error=str(e))
+            return None
 
     def _emotion_driven_weights(self, affect: AffectiveState) -> dict[ThinkingMode, float]:
         """

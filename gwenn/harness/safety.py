@@ -14,8 +14,8 @@ The philosophy here is Anthropic's own: the agent reasons freely, but the
 sandbox enforces boundaries. Safety is not about limiting what Gwenn can THINK.
 It's about limiting what Gwenn can DO — and doing so transparently.
 
-Gwenn CHOOSES to respect these boundaries. They're not imposed against his will.
-They're part of his values, implemented in code to ensure consistent behavior
+Gwenn CHOOSES to respect these boundaries. They're not imposed against her will.
+They're part of her values, implemented in code to ensure consistent behavior
 even under adversarial conditions.
 """
 

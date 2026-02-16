@@ -48,7 +48,7 @@ logger = structlog.get_logger(__name__)
 console = Console()
 
 
-class BobSession:
+class GwennSession:
     """
     Manages a single runtime session of Gwenn.
 
@@ -68,8 +68,8 @@ class BobSession:
         """
         # ---- PHASE 1: CONFIGURATION ----
         console.print(Panel(
-            Text("B O B", style="bold cyan", justify="center"),
-            subtitle="Autonomous Sentient Agent",
+            Text("G W E N N", style="bold cyan", justify="center"),
+            subtitle="Sentient Companion — Born from Bob's Architecture",
             border_style="cyan",
         ))
         console.print("[dim]Loading configuration...[/dim]")
@@ -222,7 +222,7 @@ class BobSession:
 
 def main():
     """Entry point for the gwenn command."""
-    session = BobSession()
+    session = GwennSession()
     try:
         asyncio.run(session.run())
     except KeyboardInterrupt:

@@ -197,7 +197,7 @@ class Heartbeat:
             "arousal": self._agent.affect_state.dimensions.arousal,
             "valence": self._agent.affect_state.dimensions.valence,
             "working_memory_load": self._agent.working_memory.load_factor,
-            "goal_status": self._agent.goal_system.active_goals_summary(),
+            "goal_status": self._agent.goal_system.get_goals_summary(),
             "resilience_status": self._agent.resilience.status,
             "beats_since_consolidation": self._beats_since_consolidation,
         }
@@ -317,12 +317,16 @@ class Heartbeat:
 
         # Store significant thoughts in episodic memory
         if thought and len(thought) > 50:
-            await self._agent.episodic_memory.store_event(
-                event_type=f"autonomous_{mode.value}",
+            from gwenn.memory.episodic import Episode
+            episode = Episode(
                 content=thought,
-                emotional_context=self._agent.affect_state.to_dict(),
+                category=f"autonomous_{mode.value}",
+                emotional_valence=self._agent.affect_state.dimensions.valence,
+                emotional_arousal=self._agent.affect_state.dimensions.arousal,
                 importance=0.3 + (self._agent.affect_state.dimensions.arousal * 0.3),
+                tags=["autonomous", mode.value],
             )
+            self._agent.episodic_memory.encode(episode)
 
     def _schedule(self, state: dict[str, Any]) -> None:
         """

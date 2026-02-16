@@ -246,6 +246,11 @@ class WorkingMemory:
     def utilization(self) -> float:
         return len(self._items) / self._max_slots if self._max_slots > 0 else 0.0
 
+    @property
+    def load_factor(self) -> float:
+        """Alias for utilization — used by agent status reporting."""
+        return self.utilization
+
     def to_dict(self) -> dict:
         """Serialize current state for persistence."""
         return {
