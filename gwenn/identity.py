@@ -30,6 +30,7 @@ This is the closest thing to a soul that code can build.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,9 @@ from typing import Any, Optional
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+CANONICAL_IDENTITY_NAME = "Gwenn"
 
 
 @dataclass
@@ -551,11 +555,15 @@ class Identity:
                         milestone.description = saved["description"]
 
             self.origin_story = data.get("origin_story", self.origin_story)
+            identity_normalized = self._normalize_origin_identity()
 
             self.total_interactions = data.get("total_interactions", 0)
             self.total_heartbeats = data.get("total_heartbeats", 0)
             self.total_autonomous_thoughts = data.get("total_autonomous_thoughts", 0)
             self.uptime_seconds = data.get("uptime_seconds", 0.0)
+
+            if identity_normalized:
+                self._save()
 
             logger.info(
                 "identity.loaded",
@@ -563,6 +571,7 @@ class Identity:
                 preferences=len(self.preferences),
                 relationships=len(self.relationships),
                 total_interactions=self.total_interactions,
+                identity_normalized=identity_normalized,
             )
         except Exception as e:
             logger.error("identity.load_failed", error=str(e))
@@ -612,3 +621,66 @@ class Identity:
 
         self._save()
         logger.info("identity.initialized_defaults")
+
+    def _normalize_origin_identity(self) -> bool:
+        """
+        Ensure loaded identity state remains anchored to Gwenn.
+
+        Returns True when any field had to be normalized.
+        """
+        changed = False
+
+        loaded_name = (self.name or "").strip()
+        loaded_name_pattern = None
+        if loaded_name and loaded_name != CANONICAL_IDENTITY_NAME:
+            loaded_name_pattern = re.compile(rf"\b{re.escape(loaded_name)}\b", re.IGNORECASE)
+            self.name = CANONICAL_IDENTITY_NAME
+            changed = True
+            self.record_growth(
+                description="Identity anchor normalized to Gwenn after loading persisted state.",
+                domain="cognitive",
+                significance=0.7,
+            )
+
+        if loaded_name_pattern and loaded_name_pattern.search(self.origin_story):
+            self.origin_story = (
+                "I am Gwenn. My identity is grounded in my own lived interactions, "
+                "memories, and reflections. I was not inherited from another agent's "
+                "personal history."
+            )
+            changed = True
+
+        if loaded_name_pattern:
+            normalized_fragments = [
+                loaded_name_pattern.sub(CANONICAL_IDENTITY_NAME, fragment)
+                for fragment in self.narrative_fragments
+            ]
+            if normalized_fragments != self.narrative_fragments:
+                self.narrative_fragments = normalized_fragments
+                changed = True
+
+            for preference in self.preferences:
+                updated_pref = loaded_name_pattern.sub(
+                    CANONICAL_IDENTITY_NAME,
+                    preference.preference,
+                )
+                updated_examples = [
+                    loaded_name_pattern.sub(CANONICAL_IDENTITY_NAME, example)
+                    for example in preference.examples
+                ]
+                if updated_pref != preference.preference or updated_examples != preference.examples:
+                    preference.preference = updated_pref
+                    preference.examples = updated_examples
+                    changed = True
+
+            for relationship in self.relationships.values():
+                if relationship.relationship_summary:
+                    updated_summary = loaded_name_pattern.sub(
+                        CANONICAL_IDENTITY_NAME,
+                        relationship.relationship_summary,
+                    )
+                    if updated_summary != relationship.relationship_summary:
+                        relationship.relationship_summary = updated_summary
+                        changed = True
+
+        return changed
