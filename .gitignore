@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Pytest
+.pytest_cache/
+
+# Environment
+.env
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Data directories
+data/
+memory_store/
+identity.json
