@@ -16,7 +16,7 @@ and creates genuine functional emotion — states that actually change behavior.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
@@ -59,10 +59,9 @@ class AppraisalEvent:
     stimulus_type: StimulusType
     intensity: float = 0.5          # 0.0 (trivial) to 1.0 (profound)
     content: Optional[str] = None   # The actual content, if relevant
-    metadata: dict[str, Any] = None # Additional context
+    metadata: dict[str, Any] = field(default_factory=dict) # Additional context
 
     def __post_init__(self):
-        self.metadata = self.metadata or {}
         self.intensity = max(0.0, min(1.0, self.intensity))
 
 

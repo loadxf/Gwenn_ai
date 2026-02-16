@@ -38,7 +38,6 @@ class CognitiveEngine:
     """
 
     def __init__(self, config: ClaudeConfig):
-        self._client = anthropic.Anthropic(api_key=config.api_key)
         self._async_client = anthropic.AsyncAnthropic(api_key=config.api_key)
         self._model = config.model
         self._max_tokens = config.max_tokens
@@ -266,5 +265,5 @@ class CognitiveEngine:
             "total_input_tokens": self._total_input_tokens,
             "total_output_tokens": self._total_output_tokens,
             "total_tokens": self._total_input_tokens + self._total_output_tokens,
-            "last_call_seconds": self._last_call_time,
+            "last_call_seconds": self._last_call_time if self._last_call_time is not None else 0.0,
         }

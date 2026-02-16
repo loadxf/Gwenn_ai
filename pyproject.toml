@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "gwenn-agent"
@@ -19,7 +19,6 @@ dependencies = [
     "pydantic-settings>=2.1.0",    # Environment-based configuration
     "python-dotenv>=1.0.0",        # .env file loading
     "httpx>=0.27.0",               # Async HTTP for MCP and tool calls
-    "tenacity>=8.2.0",             # Retry with exponential backoff
     "structlog>=23.2.0",           # Structured logging for observability
     "rich>=13.7.0",                # Terminal UI for heartbeat display
 ]
