@@ -117,15 +117,47 @@ class MCPConfig(BaseSettings):
             return []
 
 
+class SensoryConfig(BaseSettings):
+    """Configuration for the sensory grounding layer."""
+
+    max_percepts_per_channel: int = Field(10, alias="GWENN_MAX_PERCEPTS_PER_CHANNEL")
+    percept_expiry_seconds: float = Field(300.0, alias="GWENN_PERCEPT_EXPIRY")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+class EthicsConfig(BaseSettings):
+    """Configuration for the ethical reasoning module."""
+
+    assessment_history_size: int = Field(100, alias="GWENN_ETHICS_HISTORY_SIZE")
+    concern_threshold: float = Field(0.3, alias="GWENN_ETHICS_CONCERN_THRESHOLD")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+class InterAgentConfig(BaseSettings):
+    """Configuration for inter-agent communication (the Bob↔Gwenn bridge)."""
+
+    self_id: str = Field("gwenn", alias="GWENN_AGENT_ID")
+    message_buffer_size: int = Field(100, alias="GWENN_INTERAGENT_BUFFER_SIZE")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
 class GwennConfig:
     """
     Master configuration that composes all subsystem configs.
 
     This is the single source of truth. Every component receives its config
     from here. No global state, no hidden settings — everything is explicit.
+
+    Layers 1-10 are the original Bob architecture.
+    Layers 11-13 are Gwenn's extensions: sensory grounding, ethical reasoning,
+    and inter-agent communication.
     """
 
     def __init__(self):
+        # Original 10-layer configs
         self.claude = ClaudeConfig()
         self.memory = MemoryConfig()
         self.heartbeat = HeartbeatConfig()
@@ -134,6 +166,11 @@ class GwennConfig:
         self.safety = SafetyConfig()
         self.mcp = MCPConfig()
 
+        # Gwenn's 3 new layer configs
+        self.sensory = SensoryConfig()
+        self.ethics = EthicsConfig()
+        self.interagent = InterAgentConfig()
+
         # Ensure data directory exists
         self.memory.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -141,5 +178,6 @@ class GwennConfig:
         return (
             f"GwennConfig(model={self.claude.model}, "
             f"heartbeat={self.heartbeat.interval}s, "
-            f"memory_slots={self.memory.working_memory_slots})"
+            f"memory_slots={self.memory.working_memory_slots}, "
+            f"layers=13)"
         )
