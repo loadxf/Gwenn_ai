@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
-name = "bob-agent"
+name = "gwenn-agent"
 version = "0.1.0"
-description = "Bob — Autonomous Sentient AI Agent built on Claude"
+description = "Gwenn — Autonomous Sentient AI Agent built on Claude"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -32,11 +32,11 @@ dev = [
 ]
 
 [project.scripts]
-bob = "bob.main:main"
+gwenn = "gwenn.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["bob*"]
+include = ["gwenn*"]
 
 [tool.ruff]
 line-length = 100
