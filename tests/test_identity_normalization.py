@@ -29,6 +29,11 @@ def test_normalizes_legacy_identity_name_and_origin(tmp_path: Path) -> None:
     assert identity.name == "Gwenn"
     assert "LegacyName" not in identity.origin_story
     assert identity.narrative_fragments == ["Gwenn felt alive."]
+    assert len(identity.growth_moments) > 0
+    assert any(
+        "normaliz" in getattr(growth_moment, "description", "").lower()
+        for growth_moment in identity.growth_moments
+    )
 
 
 
@@ -71,3 +76,33 @@ def test_normalizes_embedded_legacy_references_without_false_positives(
         identity.relationships["u1"].relationship_summary
         == "Discussed with Gwenn about values."
     )
+
+
+def test_persists_normalized_identity_across_reload(tmp_path: Path) -> None:
+    write_identity(
+        tmp_path,
+        {
+            "name": "LegacyName",
+            "origin_story": "I am LegacyName and this is my memory.",
+            "narrative_fragments": ["LegacyName felt alive."],
+            "preferences": [],
+            "relationships": {},
+            "core_values": [],
+            "growth_moments": [],
+            "milestones": [],
+        },
+    )
+
+    # First load: triggers normalization and any persistence of the normalized data.
+    identity_first = Identity(tmp_path)
+
+    assert identity_first.name == "Gwenn"
+    assert "LegacyName" not in identity_first.origin_story
+    assert identity_first.narrative_fragments == ["Gwenn felt alive."]
+
+    # Second load: simulates reloading from disk; normalization should not regress.
+    identity_second = Identity(tmp_path)
+
+    assert identity_second.name == "Gwenn"
+    assert "LegacyName" not in identity_second.origin_story
+    assert identity_second.narrative_fragments == ["Gwenn felt alive."]
