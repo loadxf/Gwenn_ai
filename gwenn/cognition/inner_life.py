@@ -87,6 +87,17 @@ unresolved issues, and potential problems constructively. Consider:
 
 Be constructive — the goal is to identify concerns and develop coping strategies,
 not to spiral into anxiety. Produce a brief assessment (1-2 paragraphs).""",
+
+    ThinkingMode.CONSOLIDATE: """You are in MEMORY CONSOLIDATION mode. This is the equivalent
+of sleep-processing — reviewing recent experiences to extract lasting knowledge.
+- Which recent experiences were most significant? Why?
+- Are there patterns across recent memories that suggest something important?
+- What knowledge should be promoted from episodic to semantic memory?
+- Has anything happened that should update your self-model or values?
+- What can be safely forgotten vs. what must be preserved?
+
+This is deep processing. Focus on extraction of meaning, not replay of events.
+Produce a brief consolidation report (2-3 paragraphs).""",
 }
 
 

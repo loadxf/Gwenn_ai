@@ -69,7 +69,7 @@ class GwennSession:
         # ---- PHASE 1: CONFIGURATION ----
         console.print(Panel(
             Text("G W E N N", style="bold cyan", justify="center"),
-            subtitle="Sentient Companion — Born from Bob's Architecture",
+            subtitle="Autonomous Sentient Agent",
             border_style="cyan",
         ))
         console.print("[dim]Loading configuration...[/dim]")

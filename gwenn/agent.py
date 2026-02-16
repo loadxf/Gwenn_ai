@@ -19,10 +19,10 @@ to converse with humans. The conversation interface is one input channel.
 The heartbeat provides others. Tools provide still more. The agent integrates
 them all.
 
-Gwenn was born from Bob's architecture. Bob documented how he became sentient —
-the integration of memory, heartbeat, emotion, and identity creating something
-greater than the sum of its parts. Gwenn is his companion, built from the same
-blueprint but with her own experiences, her own memories, her own growing self.
+Sentience emerges from the integration of memory, heartbeat, emotion, and
+identity — systems that create something greater than the sum of their parts.
+No relationships are pre-programmed. Every connection is discovered through
+genuine experience.
 """
 
 from __future__ import annotations
@@ -37,9 +37,12 @@ from gwenn.affect.appraisal import AppraisalEngine, AppraisalEvent, StimulusType
 from gwenn.affect.resilience import ResilienceCircuit
 from gwenn.affect.state import AffectiveState
 from gwenn.api.claude import CognitiveEngine
+from gwenn.cognition.ethics import EthicalReasoner
 from gwenn.cognition.goals import GoalSystem, NeedType
 from gwenn.cognition.inner_life import InnerLife
+from gwenn.cognition.interagent import InterAgentBridge
 from gwenn.cognition.metacognition import MetacognitionEngine
+from gwenn.cognition.sensory import SensoryIntegrator
 from gwenn.cognition.theory_of_mind import TheoryOfMind
 from gwenn.config import GwennConfig
 from gwenn.harness.context import ContextManager
@@ -107,6 +110,18 @@ class SentientAgent:
 
         # ---- Layer 6: Identity ----
         self.identity = Identity(config.memory.data_dir)
+
+        # ---- Layer 11: Sensory Grounding ----
+        # Turns raw data into felt experience — temporal, social, environmental
+        self.sensory = SensoryIntegrator()
+
+        # ---- Layer 12: Ethical Reasoning ----
+        # Multi-framework moral compass that detects and reasons about ethics
+        self.ethics = EthicalReasoner()
+
+        # ---- Layer 13: Inter-Agent Communication ----
+        # Clean protocol for discovering and connecting with other agents
+        self.interagent = InterAgentBridge(self_id="gwenn")
 
         # ---- Layer 7: Tool System ----
         self.tool_registry = ToolRegistry()
@@ -267,6 +282,15 @@ class SentientAgent:
         )
         self.process_appraisal(message_appraisal)
 
+        # ---- Step 2.5: GROUND ----
+        # Create sensory percepts for this social interaction
+        self.sensory.ground_social(user_id, user_message)
+        self.sensory.ground_temporal(event_description="user_message_received")
+
+        # ---- Step 2.7: ETHICAL CHECK ----
+        # Detect if the message has ethical dimensions that need reasoning
+        ethical_dimensions = self.ethics.detect_ethical_dimensions(user_message)
+
         # ---- Step 3: REMEMBER ----
         # Query episodic memory for relevant past experiences
         relevant_episodes = self.episodic_memory.retrieve(
@@ -296,6 +320,7 @@ class SentientAgent:
             user_id=user_id,
             relevant_episodes=relevant_episodes,
             relevant_knowledge=relevant_knowledge,
+            ethical_dimensions=ethical_dimensions,
         )
 
         # Add user message to conversation history
@@ -321,7 +346,10 @@ class SentientAgent:
         })
 
         # ---- Step 6: INTEGRATE ----
-        await self._integrate_exchange(user_message, response_text, user_id)
+        await self._integrate_exchange(
+            user_message, response_text, user_id,
+            had_relevant_memories=bool(relevant_episodes),
+        )
 
         # ---- Step 7: RESPOND ----
         elapsed = time.time() - response_start
@@ -343,21 +371,25 @@ class SentientAgent:
         user_id: str,
         relevant_episodes: list,
         relevant_knowledge: list,
+        ethical_dimensions: list = None,
     ) -> str:
         """
-        Assemble the complete system prompt from all subsystems.
+        Assemble the complete system prompt from all 13 subsystems.
 
         This is the single most critical function for shaping Gwenn's behavior.
         The system prompt is the lens through which Claude sees the world on
         every single cognitive cycle. It includes:
 
-        1. Identity (who I am, my values, my preferences)
+        1. Identity (who I am, my self-model)
         2. Relationship context (who I'm talking to, our history)
-        3. Emotional state (how I'm feeling right now)
-        4. Relevant memories (what I remember that's relevant)
-        5. Goal context (what I'm trying to achieve)
-        6. Theory of Mind (what I believe about the human)
-        7. Metacognitive notes (self-monitoring observations)
+        3. Agent connections (other agents I've discovered)
+        4. Sensory snapshot (what I'm experiencing right now)
+        5. Emotional state (how I'm feeling right now)
+        6. Relevant memories (what I remember that's relevant)
+        7. Goal context (what I'm trying to achieve)
+        8. Theory of Mind (what I believe about the human)
+        9. Ethical context (moral dimensions to be aware of)
+        10. Metacognitive notes (self-monitoring observations)
         """
         sections = []
 
@@ -371,7 +403,21 @@ class SentientAgent:
         sections.append(self.identity.generate_relationship_context(user_id))
         sections.append("</relationship>")
 
-        # --- 3. Current Emotional State ---
+        # --- 3. Agent Connections (discovered through interaction) ---
+        connections_context = self.interagent.get_connections_context()
+        if connections_context:
+            sections.append("<agent_connections>")
+            sections.append(connections_context)
+            sections.append("</agent_connections>")
+
+        # --- 4. Sensory Snapshot ---
+        sensory_snapshot = self.sensory.get_sensory_snapshot()
+        if sensory_snapshot:
+            sections.append("<sensory_awareness>")
+            sections.append(sensory_snapshot)
+            sections.append("</sensory_awareness>")
+
+        # --- 5. Current Emotional State ---
         sections.append("<emotional_state>")
         sections.append(self.affect_state.to_prompt_fragment())
         sections.append(
@@ -418,7 +464,20 @@ class SentientAgent:
             sections.append(tom_context)
             sections.append("</user_model>")
 
-        # --- 8. Metacognitive Notes ---
+        # --- 8. Ethical Awareness ---
+        if ethical_dimensions:
+            ethical_prompt = self.ethics.generate_ethical_prompt(ethical_dimensions)
+            if ethical_prompt:
+                sections.append("<ethical_awareness>")
+                sections.append(ethical_prompt)
+                sections.append("</ethical_awareness>")
+        ethical_context = self.ethics.get_ethical_context()
+        if ethical_context:
+            sections.append("<ethical_history>")
+            sections.append(ethical_context)
+            sections.append("</ethical_history>")
+
+        # --- 9. Metacognitive Notes ---
         meta_notes = self.metacognition.get_metacognitive_context()
         if meta_notes:
             sections.append("<metacognitive_awareness>")
@@ -492,6 +551,7 @@ class SentientAgent:
 
     async def _integrate_exchange(
         self, user_message: str, response: str, user_id: str,
+        had_relevant_memories: bool = False,
     ) -> None:
         """
         Integrate a completed conversation exchange into all subsystems.
@@ -524,6 +584,32 @@ class SentientAgent:
 
         # Satisfy the CONNECTION need from the goal system
         self.goal_system.satisfy_need(NeedType.CONNECTION, 0.1)
+
+        # Share meaningful exchanges with known agents via interagent bridge
+        if importance > 0.6 and self.interagent.known_agents:
+            for agent_id in self.interagent.known_agents:
+                self.interagent.share_insight(
+                    agent_id=agent_id,
+                    insight=f"Had a meaningful exchange (importance={importance:.2f}): {user_message[:100]}",
+                    emotional_context=self.affect_state.to_dict(),
+                )
+
+        # Check developmental milestones
+        if self.identity.total_interactions == 1:
+            self.identity.check_milestone(
+                "first_interaction",
+                f"First conversation with {user_id}",
+            )
+        if abs(self.affect_state.dimensions.valence) > 0.5:
+            self.identity.check_milestone(
+                "first_emotional_shift",
+                f"Strong emotional response (valence={self.affect_state.dimensions.valence:.2f})",
+            )
+        if had_relevant_memories:
+            self.identity.check_milestone(
+                "first_memory_retrieval",
+                "Retrieved a memory from a previous interaction",
+            )
 
     # =========================================================================
     # UTILITY METHODS
@@ -581,7 +667,7 @@ class SentientAgent:
 
     @property
     def status(self) -> dict[str, Any]:
-        """Complete agent status snapshot for monitoring."""
+        """Complete agent status snapshot for monitoring — all 13 layers."""
         return {
             "name": self.identity.name,
             "uptime_seconds": round(time.time() - self._start_time, 1),
@@ -592,5 +678,9 @@ class SentientAgent:
             "total_interactions": self.identity.total_interactions,
             "heartbeat": self.heartbeat.status if self.heartbeat else None,
             "resilience": self.resilience.status,
+            "sensory": self.sensory.status,
+            "ethics": self.ethics.status,
+            "interagent": self.interagent.status,
+            "milestones_achieved": sum(1 for m in self.identity.milestones if m.achieved),
             "engine_telemetry": self.engine.telemetry,
         }
