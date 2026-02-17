@@ -68,7 +68,7 @@ conversation, up to 120 seconds when idle, faster during high emotional arousal.
 own timeline, consolidates memories during idle periods, and can initiate cognitive
 activity without external stimulus. The five autonomous thinking modes — reflect, plan,
 wander, worry, consolidate (`gwenn/cognition/inner_life.py`) — are selected based on
-emotional state and goal satisfaction, not user commands.
+emotional state (e.g., arousal and valence), idle duration, and consolidation scheduling, not direct user commands.
 
 **Relevant framework:** Baars' Global Workspace Theory — the heartbeat functions as an
 integration cycle where subsystem outputs compete for global broadcast.
