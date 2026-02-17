@@ -110,9 +110,8 @@ class SafetyGuard:
         # Regex patterns for more complex matching
         import re
         self._dangerous_regexes = [
-            (re.compile(r"curl\s+.*\|\s*bash", re.IGNORECASE), "curl pipe to bash"),
-            (re.compile(r"wget\s+.*\|\s*bash", re.IGNORECASE), "wget pipe to bash"),
-            (re.compile(r"curl\s+.*\|\s*sh", re.IGNORECASE), "curl pipe to sh"),
+            (re.compile(r"curl\s+.*\|\s*(?:bash|sh)\b", re.IGNORECASE), "curl pipe to bash"),
+            (re.compile(r"wget\s+.*\|\s*(?:bash|sh)\b", re.IGNORECASE), "wget pipe to bash"),
         ]
 
         logger.info(

@@ -322,4 +322,4 @@ class LoopResult:
 
     @property
     def tool_names_used(self) -> list[str]:
-        return list(set(tc["name"] for tc in self.tool_calls))
+        return list(set(tc["name"] for tc in self.tool_calls if "name" in tc))

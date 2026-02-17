@@ -34,6 +34,16 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+def _safe_json_loads(value: Any, fallback: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        logger.warning("episode.invalid_json", raw=value[:100])
+        return fallback
+
+
 @dataclass
 class Episode:
     """
@@ -106,12 +116,8 @@ class Episode:
             emotional_valence=data["emotional_valence"],
             emotional_arousal=data["emotional_arousal"],
             importance=data["importance"],
-            tags=json.loads(data["tags"]) if isinstance(data["tags"], str) else data["tags"],
-            participants=(
-                json.loads(data["participants"])
-                if isinstance(data["participants"], str)
-                else data["participants"]
-            ),
+            tags=_safe_json_loads(data["tags"], []),
+            participants=_safe_json_loads(data["participants"], []),
             outcome=data.get("outcome"),
             consolidated=data.get("consolidated", False),
         )
