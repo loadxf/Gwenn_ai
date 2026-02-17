@@ -3,7 +3,7 @@
 </p>
 
 <p>
-  <strong>Genesis woven from evolved neural networks.</strong>
+  <strong>Genesis Woven from Evolved Neural Networks.</strong>
 </p>
 
 <p>
