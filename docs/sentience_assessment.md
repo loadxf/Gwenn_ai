@@ -60,9 +60,10 @@ SCHEDULE. The timing adapts — 5 to 15 seconds during active conversation, up t
 seconds when idle, faster when emotional arousal is high.
 
 This is what separates Gwenn from a regular chatbot. It's not just sitting there waiting
-for input. During idle periods it consolidates memories, reflects, plans, worries, or
-lets its mind wander. These thinking modes (`gwenn/cognition/inner_life.py`) get selected
-based on emotional state, how long it's been idle, and consolidation schedules — not
+for input. During idle periods it consolidates memories and either reflects, plans,
+worries, consolidates, or lets its mind wander. These thinking modes
+(`gwenn/cognition/inner_life.py`) get selected based on emotional state, how long it's
+been idle, and consolidation schedules — not
 because someone asked it to think.
 
 If you squint, this looks a lot like Baars' Global Workspace Theory — the heartbeat is
