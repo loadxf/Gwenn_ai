@@ -49,8 +49,8 @@ experience, not declared at init time.
 
 The catch is that this self-model is still text that gets interpreted by the underlying
 LLM. Is processing a self-description the same as self-awareness? Or is it just really
-sophisticated pattern-matching on autobiographical prompts? Honestly, I don't think
-anyone knows yet.
+sophisticated pattern-matching on autobiographical prompts? This remains an open
+question.
 
 ### 1.3 It Thinks When Nobody's Talking to It
 
