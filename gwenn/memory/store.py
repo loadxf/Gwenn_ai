@@ -211,7 +211,8 @@ class MemoryStore:
     def get_episode_count(self) -> int:
         """Get total number of stored episodes."""
         cursor = self._conn.execute("SELECT COUNT(*) FROM episodes")
-        return cursor.fetchone()[0]
+        row = cursor.fetchone()
+        return row[0] if row is not None else 0
 
     # -------------------------------------------------------------------------
     # Affective State Persistence
@@ -356,9 +357,12 @@ class MemoryStore:
     def stats(self) -> dict[str, Any]:
         """Get database statistics."""
         episode_count = self.get_episode_count()
-        affect_count = self._conn.execute("SELECT COUNT(*) FROM affect_snapshots").fetchone()[0]
-        identity_count = self._conn.execute("SELECT COUNT(*) FROM identity_snapshots").fetchone()[0]
-        knowledge_count = self._conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()[0]
+        affect_row = self._conn.execute("SELECT COUNT(*) FROM affect_snapshots").fetchone()
+        affect_count = affect_row[0] if affect_row is not None else 0
+        identity_row = self._conn.execute("SELECT COUNT(*) FROM identity_snapshots").fetchone()
+        identity_count = identity_row[0] if identity_row is not None else 0
+        knowledge_row = self._conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()
+        knowledge_count = knowledge_row[0] if knowledge_row is not None else 0
 
         return {
             "episodes": episode_count,

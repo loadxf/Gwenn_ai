@@ -114,14 +114,30 @@ class Heartbeat:
 
     async def _loop(self) -> None:
         """The eternal heartbeat loop."""
+        _consecutive_failures = 0
+        _MAX_CONSECUTIVE = 10
+
         while self._running:
             try:
                 await self._beat()
+                _consecutive_failures = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                # The heartbeat must never crash
-                logger.error("heartbeat.beat_failed", error=str(e), exc_info=True)
+                _consecutive_failures += 1
+                logger.error(
+                    "heartbeat.beat_failed",
+                    error=str(e),
+                    consecutive=_consecutive_failures,
+                    exc_info=True,
+                )
+                if _consecutive_failures >= _MAX_CONSECUTIVE:
+                    logger.critical(
+                        "heartbeat.circuit_open",
+                        failures=_consecutive_failures,
+                    )
+                    self._running = False
+                    break
 
             # Wait for the adaptive interval before the next beat
             await asyncio.sleep(self._interval)

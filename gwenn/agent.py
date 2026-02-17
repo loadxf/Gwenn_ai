@@ -362,7 +362,8 @@ class SentientAgent:
 
         # ---- Step 1: RECEIVE ----
         logger.info("agent.message_received", user_id=user_id, length=len(user_message))
-        self.heartbeat.notify_user_activity()
+        if self.heartbeat is not None:
+            self.heartbeat.notify_user_activity()
         self.identity.update_relationship(user_id)
         self.identity.total_interactions += 1
 

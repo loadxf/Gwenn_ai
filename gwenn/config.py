@@ -112,19 +112,19 @@ class SafetyConfig(BaseSettings):
     def parse_approval_list(self) -> list[str]:
         """Handle comma-separated string from env or list from code."""
         if isinstance(self.require_approval_for, str):
-            return [s.strip() for s in self.require_approval_for.split(",")]
+            return [s.strip() for s in self.require_approval_for.split(",") if s.strip()]
         return self.require_approval_for
 
     def parse_allowed_tools(self) -> list[str]:
         """Handle comma-separated string from env or list from code."""
         if isinstance(self.allowed_tools, str):
-            return [s.strip() for s in self.allowed_tools.split(",")]
+            return [s.strip() for s in self.allowed_tools.split(",") if s.strip()]
         return self.allowed_tools
 
     def parse_denied_tools(self) -> list[str]:
         """Handle comma-separated string from env or list from code."""
         if isinstance(self.denied_tools, str):
-            return [s.strip() for s in self.denied_tools.split(",")]
+            return [s.strip() for s in self.denied_tools.split(",") if s.strip()]
         return self.denied_tools
 
 
