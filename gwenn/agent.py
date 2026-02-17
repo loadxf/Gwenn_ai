@@ -300,6 +300,7 @@ class SentientAgent:
                 last_updated=node.last_updated,
                 access_count=node.access_count,
             )
+        self.memory_store.clear_knowledge_edges()
         for edge in self.semantic_memory._edges:
             self.memory_store.save_knowledge_edge(
                 source_id=edge.source_id,

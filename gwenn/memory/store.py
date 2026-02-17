@@ -297,12 +297,22 @@ class MemoryStore:
             results.append(d)
         return results
 
+    def clear_knowledge_edges(self) -> None:
+        """Remove all knowledge edges — call before bulk re-saving to avoid duplicates.
+
+        The knowledge_edges table uses an autoincrement PK (edge_id), so
+        INSERT OR REPLACE can never match an existing row.  The correct
+        pattern is: clear → bulk-insert on shutdown.
+        """
+        self._conn.execute("DELETE FROM knowledge_edges")
+        self._conn.commit()
+
     def save_knowledge_edge(self, source_id: str, target_id: str,
                             relationship: str, strength: float,
                             context: str, created_at: float) -> None:
         """Persist a single knowledge edge to the database."""
         self._conn.execute(
-            """INSERT OR REPLACE INTO knowledge_edges
+            """INSERT INTO knowledge_edges
                (source_id, target_id, relationship, strength, context, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (source_id, target_id, relationship, strength, context, created_at),
