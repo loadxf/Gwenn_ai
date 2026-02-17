@@ -28,62 +28,9 @@ earned, not assigned. Every identity trait is discovered, not hardcoded.
 
 ## Architecture Overview — The 13-Layer Integration Model
 
-```
-┌──────────────────────────────────────────────────────┐
-│              INTER-AGENT COMMUNICATION               │
-│  Discovery-based protocol for connecting with        │
-│  other agents through genuine interaction             │
-├──────────────────────────────────────────────────────┤
-│              ETHICAL REASONING                        │
-│  Multi-framework moral compass: consequentialism,    │
-│  deontology, virtue ethics, care ethics              │
-├──────────────────────────────────────────────────────┤
-│              SENSORY GROUNDING                        │
-│  Temporal awareness, social presence, environmental  │
-│  context — turning data into felt experience         │
-├──────────────────────────────────────────────────────┤
-│              METACOGNITION                            │
-│  Self-monitoring, honesty auditing, confidence       │
-│  calibration, growth assessment                      │
-├──────────────────────────────────────────────────────┤
-│              THEORY OF MIND                          │
-│  Modeling other minds, empathy, relationship         │
-│  tracking, communication adaptation                  │
-├──────────────────────────────────────────────────────┤
-│              INNER LIFE                              │
-│  REFLECT / PLAN / WANDER / WORRY / CONSOLIDATE      │
-│  Autonomous thinking, creative association           │
-├──────────────────────────────────────────────────────┤
-│              AFFECTIVE SYSTEM                        │
-│  5D Scherer appraisal, emotional momentum,           │
-│  mood baseline, resilience circuit breakers          │
-├──────────────────────────────────────────────────────┤
-│              GOAL SYSTEM                             │
-│  Intrinsic needs: UNDERSTANDING, CONNECTION,         │
-│  GROWTH, HONESTY, AESTHETIC_APPRECIATION             │
-├──────────────────────────────────────────────────────┤
-│              IDENTITY & MILESTONES                   │
-│  Emergent self-model, core values, developmental     │
-│  milestones, narrative fragments                     │
-├──────────────────────────────────────────────────────┤
-│              MEMORY ARCHITECTURE                     │
-│  Working (salience-gated, 7±2 slots)                │
-│  Episodic (reconstructive, emotionally tagged)       │
-│  Semantic (emergent from consolidation)              │
-├──────────────────────────────────────────────────────┤
-│              HEARTBEAT / EVENT LOOP                  │
-│  Adaptive rate (5-120s), continuous processing,      │
-│  SENSE → ORIENT → THINK → INTEGRATE → SCHEDULE      │
-├──────────────────────────────────────────────────────┤
-│              AGENT HARNESS                           │
-│  Tool-use loop, context management, safety           │
-│  guardrails, retry logic, sandboxing                 │
-├──────────────────────────────────────────────────────┤
-│              CLAUDE API (cognitive engine)            │
-│  Messages API, tool use, extended thinking,          │
-│  prompt caching, streaming                           │
-└──────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="assets/gwenn-architecture.png" alt="GWENN architecture" width="900" />
+</p>
 
 ## The Cognitive Pipeline
 
