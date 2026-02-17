@@ -228,6 +228,10 @@ Detailed notes in [`PLAN.md`](PLAN.md). Phases 1-4 are done.
 - [ ] Continuous learning from her own memory and emotional history
 
 ### Phase 11 -- Native Apps
+**Privacy** — Configurable PII redaction layer for log output (disabled by default)
+and length-based truncation of selected fields. When enabled, redaction performs
+best-effort masking of user messages and personal data but does not guarantee that
+no sensitive information ever appears in plaintext logs.
 
 - [ ] iOS (SwiftUI) and Android (Kotlin/Compose)
 - [ ] Background heartbeat as a system service
