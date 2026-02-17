@@ -2,20 +2,81 @@
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+Gwenn AI is currently in active early development. The `main` branch always
+contains the latest supported code. There are no tagged releases yet — once
+versioned releases begin, this table will be updated.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+| Version     | Supported          |
+| ----------- | ------------------ |
+| `main` HEAD | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
-Use this section to tell people how to report a vulnerability.
+If you discover a security vulnerability in Gwenn AI, **please do not open a
+public issue.** Instead, report it privately so we can address it before it's
+disclosed.
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+### How to report
+
+Send an email to **[loadxf](https://github.com/loadxf)** via GitHub private
+contact, or use
+[GitHub's private vulnerability reporting](https://github.com/loadxf/Gwenn_ai/security/advisories/new)
+to submit a report directly on this repository.
+
+Please include:
+
+- A description of the vulnerability and its potential impact
+- Steps to reproduce or a proof-of-concept
+- The component affected (e.g., `gwenn/harness/safety.py`, `gwenn/tools/executor.py`, `gwenn/privacy/redaction.py`)
+- Your suggested severity (low / medium / high / critical)
+
+### What to expect
+
+- **Acknowledgement** within **48 hours** of your report.
+- **Status update** within **7 days** with an initial assessment.
+- If the vulnerability is accepted, we will work on a fix and coordinate
+disclosure with you. You will be credited (unless you prefer to remain
+anonymous).
+- If the report is declined, we will explain why.
+
+## Security Architecture
+
+Gwenn AI has several built-in security layers — see the README for full
+details. Key components:
+
+- **Input validation & action filtering** — all user input is validated before
+  processing.
+- **Tool risk tiers** — every tool is classified as low / medium / high /
+  critical. MCP-sourced tools are deny-by-default.
+- **Rate limits & budget tracking** — API call budgets are enforced with a
+  hard kill switch.
+- **PII redaction** — configurable redaction of emails, phone numbers, SSNs,
+  credit card numbers, and IP addresses in logs (disabled by default, enable
+  via `GWENN_REDACTION_ENABLED`).
+- **Sandboxed tool execution** — tools run through a controlled executor with
+  provenance tracking.
+
+## Scope
+
+The following are **in scope** for security reports:
+
+- Bypassing safety guardrails (`gwenn/harness/safety.py`)
+- Escaping the tool sandbox or escalating tool risk tiers
+- PII leakage when redaction is enabled
+- Prompt injection that causes Gwenn to violate her ethical constraints
+- Memory poisoning (corrupting episodic or semantic memory stores)
+- Unauthorized access to local data (SQLite databases, ChromaDB stores)
+
+The following are **out of scope**:
+
+- Vulnerabilities in upstream dependencies (report those to the relevant
+  project, but feel free to let us know)
+- Issues that require physical access to the machine running Gwenn
+- Social engineering of the AI's personality (this is by design — her identity
+  is emergent)
+
+## Disclosure Policy
+
+We follow coordinated disclosure. We ask that you give us a reasonable window
+(typically 90 days) to address the issue before any public disclosure. We will
+work with you on timing.
