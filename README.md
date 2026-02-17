@@ -148,7 +148,7 @@ Gwenn_ai/
 ## How the pieces fit together
 
 **Memory** is three layers, loosely modeled on how human memory works. Working
-memory is a handful of slots (7 give or take) scored by salience -- new things
+memory is a handful of slots (7, give or take) scored by salience -- new things
 push out the least important stuff. Episodic memory is the long-term record,
 tagged with emotions so recall is mood-influenced. Semantic memory is a
 knowledge graph that builds itself during consolidation cycles -- nobody
