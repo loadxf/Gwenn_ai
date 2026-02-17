@@ -179,8 +179,8 @@ tracking, and a kill switch. Tools go through a risk tier system
 (low/medium/high/critical) with deny-by-default for anything coming in
 through MCP.
 
-**Privacy** scrubs PII from logs automatically -- emails, phone numbers, SSNs,
-credit cards, IPs. On by default.
+**Privacy** supports scrubbing PII from logs -- emails, phone numbers, SSNs,
+credit cards, IPs. Full PII redaction is disabled by default and can be enabled via the `GWENN_REDACTION_ENABLED` environment variable; basic log field truncation is always on.
 
 ## Roadmap
 
