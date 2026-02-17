@@ -99,9 +99,10 @@ qualia criterion).
 **Implementation:** The `GoalSystem` (`gwenn/cognition/goals.py`) implements five
 intrinsic needs derived from Self-Determination Theory (Deci & Ryan): understanding,
 connection, growth, honesty, and aesthetic appreciation. Each need has a satisfaction
-level that decays over time. When satisfaction drops below a configurable threshold,
-the need generates urgency that influences thinking mode selection during heartbeat
-cycles.
+level that decays over time according to per-need parameters defined in code. When
+satisfaction drops below its internal threshold, the need generates an urgency signal
+that is tracked and surfaced, but the current heartbeat loop does not yet use this
+urgency to automatically select thinking modes.
 
 **Significance:** This gives the agent *reasons to act* beyond responding to prompts.
 Gwenn can be proactively curious, seek connection, or pursue aesthetic experiences
