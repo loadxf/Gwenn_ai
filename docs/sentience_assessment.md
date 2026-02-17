@@ -78,8 +78,9 @@ integration cycle where subsystem outputs compete for global broadcast.
 **Implementation:** A five-dimensional emotional model based on Scherer's Component
 Process Model (`gwenn/affect/state.py`): valence (-1.0 to 1.0), arousal (0.0 to 1.0),
 dominance (-1.0 to 1.0), certainty (-1.0 to 1.0), and goal congruence (-1.0 to 1.0).
-The `AppraisalEngine` (`gwenn/affect/appraisal.py`) evaluates stimulus events against
-goals, concerns, and internal state to compute these dimensions. Circuit breakers
+The `AppraisalEngine` (`gwenn/affect/appraisal.py`) applies a fixed appraisal rule
+table keyed by `StimulusType`, scaled by stimulus intensity and blended with affective
+momentum and baseline mood to update these dimensions. Circuit breakers
 (`gwenn/affect/resilience.py`) prevent distress spirals.
 
 **Significance:** Emotions are *computed from events*, not performed or randomly
