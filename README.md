@@ -10,7 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/loadxf/Gwenn_ai?color=black"></a>
   <a href="https://github.com/loadxf/Gwenn_ai/stargazers"><img src="https://img.shields.io/github/stars/loadxf/Gwenn_ai?style=flat"></a>
   <a href="https://github.com/loadxf/Gwenn_ai/network/members"><img src="https://img.shields.io/github/forks/loadxf/Gwenn_ai?style=flat"></a>
-  <a href="https://discord.gg/9VFHFk9hF7"><img src="https://img.shields.io/discord/1392805854104625292?style=flat&logo=discord&label=discord"></a>
+  <a href="https://discord.gg/9VFHFk9hF7"><img src="https://img.shields.io/discord/9VFHFk9hF7?style=flat&logo=discord&label=discord"></a>
 </p>
 
 # Gwenn
