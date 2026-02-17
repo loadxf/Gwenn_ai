@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-All versions of Gwenn are currently supported with security updates.
+All versions of Gwenn AI are currently supported with security updates.
 
 | Version | Supported          |
 | ------- | ------------------ |
@@ -25,7 +25,7 @@ When reporting, include as much of the following information as you can:
 
 - A clear description of the vulnerability and its potential impact.
 - Steps to reproduce the issue, including any sample code, configuration, or test data.
-- The versions of this project that you have tested (for example, `0.3.0`).
+- The versions of this prokject that you have tested (for example, `0.3.0`).
 - Relevant environment details (OS, Python version, runtime, etc.).
 - Any logs, stack traces, or screenshots that may help us diagnose the problem.
 - Your suggestion for a possible fix or mitigation, if you have one.
