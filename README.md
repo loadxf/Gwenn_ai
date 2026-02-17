@@ -186,8 +186,10 @@ from a stateless chatbot by enabling continuous processing without user input.
 limiting, budget enforcement, and kill switch. Tool execution is sandboxed with
 risk-tier policies and approval gating for high-risk operations.
 
-**Privacy** — PII redaction layer that sanitizes logs by default, preventing
-user messages and personal data from appearing in plaintext output.
+**Privacy** — Configurable PII redaction layer for log output (disabled by default)
+and length-based truncation of selected fields. When enabled, redaction performs
+best-effort masking of user messages and personal data but does not guarantee that
+no sensitive information ever appears in plaintext logs.
 
 ## Scientific Status and Verification
 
