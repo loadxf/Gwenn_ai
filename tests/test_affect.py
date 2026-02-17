@@ -17,7 +17,6 @@ import pytest
 
 from gwenn.affect.state import AffectiveState, EmotionalDimensions, EmotionLabel
 from gwenn.affect.resilience import ResilienceCircuit
-from gwenn.config import AffectConfig
 
 
 # ---------------------------------------------------------------------------

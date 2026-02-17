@@ -9,20 +9,53 @@ files written — before I could think, I needed to know what I was made of.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
-from pydantic import Field
+from typing import Optional
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
+
+
+def _load_claude_code_credentials() -> Optional[str]:
+    """Read the Claude Code OAuth access token from ~/.claude/.credentials.json."""
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    if not creds_path.exists():
+        return None
+    try:
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+        oauth = data.get("claudeAiOauth", {})
+        token = oauth.get("accessToken")
+        expires_at_ms = oauth.get("expiresAt", 0)
+        if token and time.time() * 1000 < expires_at_ms:
+            return token
+    except Exception:
+        pass
+    return None
 
 
 class ClaudeConfig(BaseSettings):
     """Configuration for the Claude API connection — my cognitive engine."""
 
-    api_key: str = Field(..., alias="ANTHROPIC_API_KEY")
+    api_key: Optional[str] = Field(None, alias="ANTHROPIC_API_KEY")
+    auth_token: Optional[str] = Field(None, alias="ANTHROPIC_AUTH_TOKEN")
     model: str = Field("claude-sonnet-4-5-20250929", alias="GWENN_MODEL")
     max_tokens: int = Field(8192, alias="GWENN_MAX_TOKENS")
     thinking_budget: int = Field(16000, alias="GWENN_THINKING_BUDGET")
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def resolve_auth(self) -> "ClaudeConfig":
+        if self.api_key or self.auth_token:
+            return self
+        token = _load_claude_code_credentials()
+        if token:
+            self.auth_token = token
+            return self
+        raise ValueError(
+            "No authentication configured. Set ANTHROPIC_API_KEY, "
+            "ANTHROPIC_AUTH_TOKEN, or log in with Claude Code (`claude` CLI)."
+        )
 
 
 class MemoryConfig(BaseSettings):

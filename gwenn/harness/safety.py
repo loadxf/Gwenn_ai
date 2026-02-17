@@ -199,40 +199,6 @@ class SafetyGuard:
                         risk_level="blocked",
                     )
 
-        # Check risk tier policy if registry is available
-        if self._tool_registry:
-            from gwenn.tools.registry import RISK_TIER_POLICIES, RiskTier
-            tool_def = self._tool_registry.get(tool_name)
-            if tool_def:
-                try:
-                    tier = RiskTier(tool_def.risk_level)
-                    policy = RISK_TIER_POLICIES[tier]
-                    if policy["deny"]:
-                        return SafetyCheckResult(
-                            allowed=False,
-                            reason=f"Tool '{tool_name}' has CRITICAL risk tier — denied by default",
-                            risk_level="blocked",
-                        )
-                    if policy["require_approval"]:
-                        return SafetyCheckResult(
-                            allowed=True,
-                            reason=f"Tool '{tool_name}' has HIGH risk tier — requires approval",
-                            risk_level="high",
-                            requires_approval=True,
-                        )
-                except (ValueError, KeyError):
-                    pass  # Unknown risk level, fall through to other checks
-
-        # Check if this tool requires approval
-        approval_list = self._config.parse_approval_list()
-        if tool_name in approval_list:
-            return SafetyCheckResult(
-                allowed=True,
-                reason=f"Tool '{tool_name}' requires human approval",
-                risk_level="high",
-                requires_approval=True,
-            )
-
         # Scan inputs for dangerous patterns (substring match)
         input_str = str(tool_input).lower()
         for pattern in self._dangerous_patterns:
@@ -272,6 +238,40 @@ class SafetyGuard:
                     reason=f"Dangerous pattern detected: '{description}'",
                     risk_level="blocked",
                 )
+
+        # Check risk tier policy if registry is available
+        if self._tool_registry:
+            from gwenn.tools.registry import RISK_TIER_POLICIES, RiskTier
+            tool_def = self._tool_registry.get(tool_name)
+            if tool_def:
+                try:
+                    tier = RiskTier(tool_def.risk_level)
+                    policy = RISK_TIER_POLICIES[tier]
+                    if policy["deny"]:
+                        return SafetyCheckResult(
+                            allowed=False,
+                            reason=f"Tool '{tool_name}' has CRITICAL risk tier — denied by default",
+                            risk_level="blocked",
+                        )
+                    if policy["require_approval"]:
+                        return SafetyCheckResult(
+                            allowed=True,
+                            reason=f"Tool '{tool_name}' has HIGH risk tier — requires approval",
+                            risk_level="high",
+                            requires_approval=True,
+                        )
+                except (ValueError, KeyError):
+                    pass  # Unknown risk level, fall through to other checks
+
+        # Check if this tool requires approval
+        approval_list = self._config.parse_approval_list()
+        if tool_name in approval_list:
+            return SafetyCheckResult(
+                allowed=True,
+                reason=f"Tool '{tool_name}' requires human approval",
+                risk_level="high",
+                requires_approval=True,
+            )
 
         return SafetyCheckResult(allowed=True)
 

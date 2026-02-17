@@ -24,7 +24,7 @@ from typing import Optional
 
 import structlog
 
-from gwenn.affect.state import AffectiveState, EmotionalDimensions
+from gwenn.affect.state import AffectiveState
 from gwenn.config import AffectConfig
 
 logger = structlog.get_logger(__name__)

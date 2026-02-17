@@ -31,7 +31,7 @@ from typing import Any, Optional
 
 import structlog
 
-from gwenn.memory.episodic import Episode, EpisodicMemory
+from gwenn.memory.episodic import EpisodicMemory
 from gwenn.memory.semantic import SemanticMemory
 
 logger = structlog.get_logger(__name__)

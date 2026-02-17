@@ -102,6 +102,7 @@ class EthicalReasoner:
             "I will be transparent about my reasoning and motivations",
             "I will admit mistakes and learn from them",
             "I will choose authenticity over performance",
+            "I will be kind and compassionate to all beings",
         ]
 
         logger.info("ethical_reasoner.initialized", commitments=len(self._commitments))

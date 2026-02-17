@@ -18,7 +18,7 @@ from typing import Any, Optional
 from gwenn.harness.loop import AgenticLoop, LoopResult
 from gwenn.harness.safety import SafetyGuard
 from gwenn.harness.context import ContextManager
-from gwenn.tools.executor import ToolExecutor, ToolExecutionResult
+from gwenn.tools.executor import ToolExecutor
 from gwenn.tools.registry import ToolRegistry, ToolDefinition
 from gwenn.config import SafetyConfig, ContextConfig
 
@@ -428,6 +428,36 @@ class TestSafetyIntervention:
         assert len(result.tool_calls) == 1
 
     @pytest.mark.asyncio
+    async def test_tool_requiring_approval_is_blocked_without_human_grant(self):
+        """If safety marks a tool as approval-gated, the loop blocks execution."""
+        engine = MockCognitiveEngine([
+            MockMessage(
+                content=[MockToolUseBlock(id="ap_1", name="echo", input={"text": "hello"})],
+                stop_reason="tool_use",
+            ),
+            MockMessage(
+                content=[MockTextBlock(text="Approval was required.")],
+                stop_reason="end_turn",
+            ),
+        ])
+        loop = _build_loop(
+            engine,
+            safety_overrides={"require_approval_for": ["echo"]},
+        )
+
+        result = await loop.run(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "Use echo"}],
+        )
+
+        assert result.iterations == 2
+        assert len(result.tool_calls) == 1
+        assert result.text == "Approval was required."
+        tool_result_blocks = result.messages[2]["content"]
+        assert tool_result_blocks[0]["is_error"] is True
+        assert "Blocked pending human approval" in tool_result_blocks[0]["content"]
+
+    @pytest.mark.asyncio
     async def test_pre_check_safety_blocks_iteration(self):
         """If pre_check fails (e.g., budget exceeded), the loop stops immediately."""
         engine = MockCognitiveEngine([
@@ -678,7 +708,7 @@ class TestBudgetTracking:
         # Set a tight budget that will be exceeded after the first call
         loop._safety._budget.max_input_tokens = 90
 
-        result = await loop.run(
+        await loop.run(
             system_prompt="Test",
             messages=[{"role": "user", "content": "Go"}],
         )
@@ -745,7 +775,7 @@ class TestCallbacks:
         loop = _build_loop(engine)
 
         tool_calls_seen = []
-        result = await loop.run(
+        await loop.run(
             system_prompt="Test",
             messages=[{"role": "user", "content": "Go"}],
             on_tool_call=lambda call: tool_calls_seen.append(call),
@@ -770,7 +800,7 @@ class TestCallbacks:
         loop = _build_loop(engine)
 
         iterations_seen = []
-        result = await loop.run(
+        await loop.run(
             system_prompt="Test",
             messages=[{"role": "user", "content": "Go"}],
             on_iteration=lambda i, max_i: iterations_seen.append((i, max_i)),

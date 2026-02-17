@@ -146,7 +146,6 @@ class TestRetrieveScoring:
 
     def test_recency_bias_override(self, populated_episodic_memory):
         """Passing recency_bias should override the default recency weight."""
-        results_default = populated_episodic_memory.retrieve(query="", top_k=5)
         results_biased = populated_episodic_memory.retrieve(query="", top_k=5, recency_bias=0.99)
         # With a very high recency bias, the most recent episode should dominate
         most_recent_id = results_biased[0][0].episode_id

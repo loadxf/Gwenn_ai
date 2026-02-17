@@ -22,9 +22,7 @@ import time
 import pytest
 
 from gwenn.memory.episodic import Episode, EpisodicMemory
-from gwenn.memory.semantic import SemanticMemory, KnowledgeNode
-from gwenn.memory.working import WorkingMemory, WorkingMemoryItem
-from gwenn.affect.state import AffectiveState, EmotionalDimensions
+from gwenn.memory.working import WorkingMemoryItem
 
 
 # ---------------------------------------------------------------------------
