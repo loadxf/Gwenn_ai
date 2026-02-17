@@ -261,6 +261,38 @@ class SemanticMemory:
 
         return "\n".join(lines)
 
+    def verify_provenance(self, node_id: str, episodic_memory) -> dict:
+        """
+        Verify that a knowledge node's source episodes actually support it.
+
+        Returns a dict with:
+          - supported: bool — whether source episodes exist and are findable
+          - source_count: int — number of source episodes linked
+          - found_count: int — number of source episodes still in episodic memory
+          - missing: list[str] — episode IDs that couldn't be found
+        """
+        node = self._nodes.get(node_id)
+        if not node:
+            return {"supported": False, "source_count": 0, "found_count": 0, "missing": []}
+
+        source_ids = node.source_episodes
+        missing = []
+        found = 0
+
+        for ep_id in source_ids:
+            episodes = [e for e in episodic_memory._episodes if e.episode_id == ep_id]
+            if episodes:
+                found += 1
+            else:
+                missing.append(ep_id)
+
+        return {
+            "supported": found > 0,
+            "source_count": len(source_ids),
+            "found_count": found,
+            "missing": missing,
+        }
+
     @property
     def node_count(self) -> int:
         return len(self._nodes)

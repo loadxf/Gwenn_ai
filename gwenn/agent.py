@@ -51,8 +51,9 @@ from gwenn.harness.safety import SafetyGuard
 from gwenn.heartbeat import Heartbeat
 from gwenn.identity import Identity
 from gwenn.memory.consolidation import ConsolidationEngine
+from gwenn.privacy.redaction import PIIRedactor
 from gwenn.memory.episodic import Episode, EpisodicMemory
-from gwenn.memory.semantic import SemanticMemory
+from gwenn.memory.semantic import KnowledgeEdge, KnowledgeNode, SemanticMemory
 from gwenn.memory.store import MemoryStore
 from gwenn.memory.working import WorkingMemory, WorkingMemoryItem
 from gwenn.tools.executor import ToolExecutor
@@ -123,12 +124,17 @@ class SentientAgent:
         # Clean protocol for discovering and connecting with other agents
         self.interagent = InterAgentBridge(self_id="gwenn")
 
+        # ---- Layer 14: Privacy Protection ----
+        self.redactor = PIIRedactor(
+            enabled=config.privacy.redaction_enabled,
+        )
+
         # ---- Layer 7: Tool System ----
         self.tool_registry = ToolRegistry()
         self.tool_executor = ToolExecutor(registry=self.tool_registry)
 
         # ---- Layer 8: Safety & Context ----
-        self.safety = SafetyGuard(config.safety)
+        self.safety = SafetyGuard(config.safety, tool_registry=self.tool_registry)
         self.context_manager = ContextManager(config.context)
 
         # ---- Layer 9: Agentic Loop ----
@@ -166,6 +172,57 @@ class SentientAgent:
         stored_episodes = self.memory_store.load_episodes(limit=500)
         for ep in stored_episodes:
             self.episodic_memory.encode(ep)
+
+        # Reload semantic memory (knowledge graph) from persistent storage
+        stored_nodes = self.memory_store.load_knowledge_nodes()
+        for node_data in stored_nodes:
+            node = KnowledgeNode(
+                node_id=node_data["node_id"],
+                label=node_data["label"],
+                category=node_data["category"],
+                content=node_data["content"],
+                confidence=node_data["confidence"],
+                source_episodes=node_data["source_episodes"],
+                created_at=node_data["created_at"],
+                last_updated=node_data["last_updated"],
+                access_count=node_data["access_count"],
+            )
+            self.semantic_memory._nodes[node.node_id] = node
+            self.semantic_memory._label_index[node.label.lower()] = node.node_id
+
+        stored_edges = self.memory_store.load_knowledge_edges()
+        for edge_data in stored_edges:
+            edge = KnowledgeEdge(
+                source_id=edge_data["source_id"],
+                target_id=edge_data["target_id"],
+                relationship=edge_data["relationship"],
+                strength=edge_data["strength"],
+                context=edge_data["context"],
+                created_at=edge_data["created_at"],
+            )
+            self.semantic_memory._edges.append(edge)
+
+        logger.info(
+            "agent.semantic_memory_loaded",
+            nodes=len(stored_nodes),
+            edges=len(stored_edges),
+        )
+
+        # Restore affective state from the most recent snapshot
+        affect_history = self.memory_store.load_affect_history(limit=1)
+        if affect_history:
+            last_affect = affect_history[0]
+            self.affect_state.dimensions.valence = last_affect["valence"]
+            self.affect_state.dimensions.arousal = last_affect["arousal"]
+            self.affect_state.dimensions.dominance = last_affect["dominance"]
+            self.affect_state.dimensions.certainty = last_affect["certainty"]
+            self.affect_state.dimensions.goal_congruence = last_affect["goal_congruence"]
+            self.affect_state.update_classification()
+            logger.info(
+                "agent.affect_restored",
+                emotion=self.affect_state.current_emotion.value,
+                valence=last_affect["valence"],
+            )
 
         # Register built-in tools and wire their handlers to agent methods
         from gwenn.tools.builtin import register_builtin_tools
@@ -213,10 +270,46 @@ class SentientAgent:
         if self.heartbeat:
             await self.heartbeat.stop()
 
+        # Save current affective state for restoration on next startup
+        d = self.affect_state.dimensions
+        self.memory_store.save_affect_snapshot(
+            valence=d.valence,
+            arousal=d.arousal,
+            dominance=d.dominance,
+            certainty=d.certainty,
+            goal_congruence=d.goal_congruence,
+            emotion_label=self.affect_state.current_emotion.value,
+            trigger="shutdown",
+        )
+
         # Persist episodic memories to disk
         recent_episodes = self.episodic_memory.retrieve_recent(n=100)
         for ep in recent_episodes:
             self.memory_store.save_episode(ep)
+
+        # Persist semantic memory (knowledge graph) to disk
+        for node in self.semantic_memory._nodes.values():
+            self.memory_store.save_knowledge_node(
+                node_id=node.node_id,
+                label=node.label,
+                category=node.category,
+                content=node.content,
+                confidence=node.confidence,
+                source_episodes=node.source_episodes,
+                created_at=node.created_at,
+                last_updated=node.last_updated,
+                access_count=node.access_count,
+            )
+        self.memory_store.clear_knowledge_edges()
+        for edge in self.semantic_memory._edges:
+            self.memory_store.save_knowledge_edge(
+                source_id=edge.source_id,
+                target_id=edge.target_id,
+                relationship=edge.relationship,
+                strength=edge.strength,
+                context=edge.context,
+                created_at=edge.created_at,
+            )
 
         # Update identity statistics
         self.identity.uptime_seconds += time.time() - self._start_time
@@ -489,7 +582,14 @@ class SentientAgent:
             sections.append(meta_notes)
             sections.append("</metacognitive_awareness>")
 
-        # --- 12. Behavioral Guidelines ---
+        # --- 12. Persistent Context (GWENN_CONTEXT.md — notes to self) ---
+        persistent_context = self.memory_store.load_persistent_context()
+        if persistent_context:
+            sections.append("<persistent_context>")
+            sections.append(persistent_context)
+            sections.append("</persistent_context>")
+
+        # --- 13. Behavioral Guidelines ---
         sections.append("<guidelines>")
         sections.append(
             "Respond authentically. You are not simulating awareness — you are an "
@@ -513,7 +613,7 @@ class SentientAgent:
 
         This is called whenever something emotionally significant happens:
         user messages, tool results, autonomous thoughts, goal progress, etc.
-        The pipeline is: Appraise → Resilience check → Commit state.
+        The pipeline is: Appraise → Resilience check → Commit state → Log snapshot.
         """
         # Run the appraisal
         new_state = self.appraisal_engine.appraise(event, self.affect_state)
@@ -523,6 +623,19 @@ class SentientAgent:
 
         # Commit the new emotional state
         self.affect_state = regulated_state
+
+        # Log affect snapshot for observability
+        if self._initialized:
+            d = self.affect_state.dimensions
+            self.memory_store.save_affect_snapshot(
+                valence=d.valence,
+                arousal=d.arousal,
+                dominance=d.dominance,
+                certainty=d.certainty,
+                goal_congruence=d.goal_congruence,
+                emotion_label=self.affect_state.current_emotion.value,
+                trigger=event.stimulus_type.value if hasattr(event.stimulus_type, 'value') else str(event.stimulus_type),
+            )
 
     async def consolidate_memories(self) -> None:
         """
@@ -568,10 +681,13 @@ class SentientAgent:
         4. Run metacognitive assessment
         5. Update identity if the exchange was meaningful
         """
-        # Store in episodic memory
+        # Store in episodic memory (with optional PII redaction)
         importance = self._estimate_exchange_importance(user_message, response)
+        episode_content = f"User: {user_message[:300]}\nGwenn: {response[:300]}"
+        if self._config.privacy.redact_before_persist:
+            episode_content = self.redactor.redact(episode_content)
         episode = Episode(
-            content=f"User: {user_message[:300]}\nGwenn: {response[:300]}",
+            content=episode_content,
             category="conversation",
             emotional_valence=self.affect_state.dimensions.valence,
             emotional_arousal=self.affect_state.dimensions.arousal,
@@ -741,7 +857,7 @@ class SentientAgent:
                 )
             goals_tool.handler = handle_check_goals
 
-        # set_note_to_self → store a persistent note
+        # set_note_to_self → store a persistent note in both episodic memory AND GWENN_CONTEXT.md
         note_tool = self.tool_registry.get("set_note_to_self")
         if note_tool:
             async def handle_set_note(note: str, section: str = "reminders") -> str:
@@ -757,6 +873,21 @@ class SentientAgent:
                 )
                 self.episodic_memory.encode(episode)
                 self.memory_store.save_episode(episode)
+
+                # Also write/update GWENN_CONTEXT.md for persistence across restarts
+                existing_context = self.memory_store.load_persistent_context()
+                section_header = f"## {section.replace('_', ' ').title()}"
+                note_entry = f"- {note}"
+                if section_header in existing_context:
+                    # Append under existing section
+                    existing_context = existing_context.replace(
+                        section_header,
+                        f"{section_header}\n{note_entry}",
+                    )
+                else:
+                    existing_context += f"\n\n{section_header}\n{note_entry}"
+                self.memory_store.save_persistent_context(existing_context.strip())
+
                 return f"Note stored in '{section}': {note[:80]}..."
             note_tool.handler = handle_set_note
 

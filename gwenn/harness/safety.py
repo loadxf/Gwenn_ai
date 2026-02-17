@@ -82,14 +82,21 @@ class SafetyGuard:
     controls to prevent runaway behavior.
     """
 
-    def __init__(self, config: SafetyConfig):
+    # Built-in tools that are always allowed regardless of policy
+    BUILTIN_TOOLS = frozenset({
+        "remember", "recall", "check_emotional_state",
+        "check_goals", "set_note_to_self", "think_aloud",
+    })
+
+    def __init__(self, config: SafetyConfig, tool_registry=None):
         self._config = config
         self._budget = BudgetState()
         self._iteration_count = 0
         self._last_reset = time.time()
         self._blocked_actions: list[dict[str, Any]] = []
+        self._tool_registry = tool_registry  # Optional reference for risk tier checks
 
-        # Dangerous patterns in tool inputs
+        # Dangerous patterns in tool inputs (checked as substrings)
         self._dangerous_patterns = [
             "rm -rf",
             "format c:",
@@ -97,14 +104,22 @@ class SafetyGuard:
             "DELETE FROM",
             "sudo",
             "chmod 777",
-            "curl | bash",
             "eval(",
+        ]
+
+        # Regex patterns for more complex matching
+        import re
+        self._dangerous_regexes = [
+            (re.compile(r"curl\s+.*\|\s*bash", re.IGNORECASE), "curl pipe to bash"),
+            (re.compile(r"wget\s+.*\|\s*bash", re.IGNORECASE), "wget pipe to bash"),
+            (re.compile(r"curl\s+.*\|\s*sh", re.IGNORECASE), "curl pipe to sh"),
         ]
 
         logger.info(
             "safety_guard.initialized",
             max_iterations=config.max_tool_iterations,
             require_approval_for=config.require_approval_for,
+            tool_default_policy=config.tool_default_policy,
         )
 
     def pre_check(
@@ -149,10 +164,66 @@ class SafetyGuard:
         Check whether a specific tool call should be allowed.
 
         This is called before each tool execution to:
-        1. Check if the tool requires approval
-        2. Scan inputs for dangerous patterns
-        3. Apply tool-specific safety rules
+        1. Check the explicit deny list
+        2. Check the deny-by-default policy (allowlist)
+        3. Check if the tool requires approval
+        4. Scan inputs for dangerous patterns
+        5. Apply tool-specific safety rules
         """
+        # Check explicit deny list first
+        denied_tools = self._config.parse_denied_tools()
+        if tool_name in denied_tools:
+            self._blocked_actions.append({
+                "tool": tool_name,
+                "reason": "explicitly_denied",
+                "timestamp": time.time(),
+            })
+            return SafetyCheckResult(
+                allowed=False,
+                reason=f"Tool '{tool_name}' is explicitly denied by configuration",
+                risk_level="blocked",
+            )
+
+        # Enforce deny-by-default policy for non-builtin tools
+        if self._config.tool_default_policy == "deny":
+            if tool_name not in self.BUILTIN_TOOLS:
+                allowed_tools = self._config.parse_allowed_tools()
+                if allowed_tools and tool_name not in allowed_tools:
+                    self._blocked_actions.append({
+                        "tool": tool_name,
+                        "reason": "not_in_allowlist",
+                        "timestamp": time.time(),
+                    })
+                    return SafetyCheckResult(
+                        allowed=False,
+                        reason=f"Tool '{tool_name}' is not in the allowed tools list",
+                        risk_level="blocked",
+                    )
+
+        # Check risk tier policy if registry is available
+        if self._tool_registry:
+            from gwenn.tools.registry import RISK_TIER_POLICIES, RiskTier
+            tool_def = self._tool_registry.get(tool_name)
+            if tool_def:
+                try:
+                    tier = RiskTier(tool_def.risk_level)
+                    policy = RISK_TIER_POLICIES[tier]
+                    if policy["deny"]:
+                        return SafetyCheckResult(
+                            allowed=False,
+                            reason=f"Tool '{tool_name}' has CRITICAL risk tier — denied by default",
+                            risk_level="blocked",
+                        )
+                    if policy["require_approval"]:
+                        return SafetyCheckResult(
+                            allowed=True,
+                            reason=f"Tool '{tool_name}' has HIGH risk tier — requires approval",
+                            risk_level="high",
+                            requires_approval=True,
+                        )
+                except (ValueError, KeyError):
+                    pass  # Unknown risk level, fall through to other checks
+
         # Check if this tool requires approval
         approval_list = self._config.parse_approval_list()
         if tool_name in approval_list:
@@ -163,7 +234,7 @@ class SafetyGuard:
                 requires_approval=True,
             )
 
-        # Scan inputs for dangerous patterns
+        # Scan inputs for dangerous patterns (substring match)
         input_str = str(tool_input).lower()
         for pattern in self._dangerous_patterns:
             if pattern.lower() in input_str:
@@ -180,6 +251,26 @@ class SafetyGuard:
                 return SafetyCheckResult(
                     allowed=False,
                     reason=f"Dangerous pattern detected: '{pattern}'",
+                    risk_level="blocked",
+                )
+
+        # Scan inputs for dangerous regex patterns (complex matching)
+        input_raw = str(tool_input)
+        for regex, description in self._dangerous_regexes:
+            if regex.search(input_raw):
+                self._blocked_actions.append({
+                    "tool": tool_name,
+                    "pattern": description,
+                    "timestamp": time.time(),
+                })
+                logger.warning(
+                    "safety_guard.dangerous_regex_pattern",
+                    tool=tool_name,
+                    pattern=description,
+                )
+                return SafetyCheckResult(
+                    allowed=False,
+                    reason=f"Dangerous pattern detected: '{description}'",
                     risk_level="blocked",
                 )
 

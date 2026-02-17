@@ -21,11 +21,37 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Optional
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+class RiskTier(str, Enum):
+    """
+    Formal risk tiers with associated default policies.
+
+    Each tier defines a default behavior that the safety system enforces:
+    - LOW: Auto-allow, no logging overhead
+    - MEDIUM: Allow but log every invocation
+    - HIGH: Require explicit human approval before execution
+    - CRITICAL: Deny by default — must be explicitly unlocked per-session
+    """
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+# Default policies per risk tier
+RISK_TIER_POLICIES: dict[RiskTier, dict[str, Any]] = {
+    RiskTier.LOW: {"auto_allow": True, "log": False, "require_approval": False, "deny": False},
+    RiskTier.MEDIUM: {"auto_allow": True, "log": True, "require_approval": False, "deny": False},
+    RiskTier.HIGH: {"auto_allow": False, "log": True, "require_approval": True, "deny": False},
+    RiskTier.CRITICAL: {"auto_allow": False, "log": True, "require_approval": False, "deny": True},
+}
 
 
 @dataclass

@@ -132,9 +132,16 @@ class ConsolidationEngine:
         memory. It handles the parsing robustly — if the model doesn't follow
         the exact format, it still extracts what it can.
 
+        All extracted knowledge nodes are linked back to their source episodes
+        via provenance tracking, enabling verification of semantic facts.
+
         Returns counts of items extracted by type.
         """
         counts = {"facts": 0, "relationships": 0, "self_knowledge": 0, "patterns": 0}
+
+        # Gather source episode IDs for provenance tracking
+        source_episodes = self._episodic.get_unconsolidated()
+        source_episode_ids = [e.episode_id for e in source_episodes]
 
         for line in response_text.strip().split("\n"):
             line = line.strip()
@@ -143,24 +150,23 @@ class ConsolidationEngine:
 
             try:
                 if line.startswith("FACT:"):
-                    self._process_fact(line)
+                    self._process_fact(line, source_episode_ids=source_episode_ids)
                     counts["facts"] += 1
                 elif line.startswith("RELATIONSHIP:"):
-                    self._process_relationship(line)
-                    counts["relationships"] += 1
+                    if self._process_relationship(line):
+                        counts["relationships"] += 1
                 elif line.startswith("SELF:"):
-                    self._process_self_knowledge(line)
+                    self._process_self_knowledge(line, source_episode_ids=source_episode_ids)
                     counts["self_knowledge"] += 1
                 elif line.startswith("PATTERN:"):
-                    self._process_pattern(line)
+                    self._process_pattern(line, source_episode_ids=source_episode_ids)
                     counts["patterns"] += 1
             except (ValueError, IndexError) as e:
                 logger.warning("consolidation.parse_error", line=line[:80], error=str(e))
                 continue
 
         # Mark episodes as consolidated
-        episodes = self._episodic.get_unconsolidated()
-        self._episodic.mark_consolidated([e.episode_id for e in episodes])
+        self._episodic.mark_consolidated(source_episode_ids)
 
         self._last_consolidation = time.time()
         self._total_consolidations += 1
@@ -168,8 +174,8 @@ class ConsolidationEngine:
         logger.info("consolidation.complete", **counts, total_passes=self._total_consolidations)
         return counts
 
-    def _process_fact(self, line: str) -> None:
-        """Parse and store a FACT line."""
+    def _process_fact(self, line: str, source_episode_ids: list[str] = None) -> None:
+        """Parse and store a FACT line with provenance tracking."""
         # Format: FACT: [content] | confidence: [0.0-1.0] | category: [cat]
         parts = line[5:].split("|")
         content = parts[0].strip()
@@ -188,39 +194,48 @@ class ConsolidationEngine:
 
         # Use first few words as label
         label = " ".join(content.split()[:5])
-        self._semantic.store_knowledge(
+        node = self._semantic.store_knowledge(
             label=label,
             content=content,
             category=category,
             confidence=confidence,
         )
+        # Attach provenance: link the node back to its source episodes
+        if source_episode_ids:
+            for ep_id in source_episode_ids:
+                if ep_id not in node.source_episodes:
+                    node.source_episodes.append(ep_id)
 
-    def _process_relationship(self, line: str) -> None:
-        """Parse and store a RELATIONSHIP line."""
+    def _process_relationship(self, line: str) -> bool:
+        """Parse and store a RELATIONSHIP line. Returns True if successfully parsed."""
         # Format: RELATIONSHIP: [source] -> [rel_type] -> [target] | strength: [0-1]
         parts = line[14:].split("|")
         rel_parts = parts[0].split("->")
-        if len(rel_parts) >= 3:
-            source = rel_parts[0].strip()
-            relationship = rel_parts[1].strip()
-            target = rel_parts[2].strip()
-            strength = 0.5
+        if len(rel_parts) < 3:
+            logger.warning("consolidation.relationship_malformed", line=line[:80])
+            return False
 
-            for part in parts[1:]:
-                part = part.strip()
-                if part.startswith("strength:"):
-                    try:
-                        strength = float(part.split(":")[1].strip())
-                    except ValueError:
-                        pass
+        source = rel_parts[0].strip()
+        relationship = rel_parts[1].strip()
+        target = rel_parts[2].strip()
+        strength = 0.5
 
-            # Ensure both nodes exist
-            self._semantic.store_knowledge(label=source, content=source, category="concept")
-            self._semantic.store_knowledge(label=target, content=target, category="concept")
-            self._semantic.add_relationship(source, target, relationship, strength)
+        for part in parts[1:]:
+            part = part.strip()
+            if part.startswith("strength:"):
+                try:
+                    strength = float(part.split(":")[1].strip())
+                except ValueError:
+                    pass
 
-    def _process_self_knowledge(self, line: str) -> None:
-        """Parse and store a SELF-knowledge line."""
+        # Ensure both nodes exist
+        self._semantic.store_knowledge(label=source, content=source, category="concept")
+        self._semantic.store_knowledge(label=target, content=target, category="concept")
+        self._semantic.add_relationship(source, target, relationship, strength)
+        return True
+
+    def _process_self_knowledge(self, line: str, source_episode_ids: list[str] = None) -> None:
+        """Parse and store a SELF-knowledge line with provenance tracking."""
         parts = line[5:].split("|")
         content = parts[0].strip()
         confidence = 0.5
@@ -234,15 +249,19 @@ class ConsolidationEngine:
                     pass
 
         label = "self: " + " ".join(content.split()[:4])
-        self._semantic.store_knowledge(
+        node = self._semantic.store_knowledge(
             label=label,
             content=content,
             category="self",
             confidence=confidence,
         )
+        if source_episode_ids:
+            for ep_id in source_episode_ids:
+                if ep_id not in node.source_episodes:
+                    node.source_episodes.append(ep_id)
 
-    def _process_pattern(self, line: str) -> None:
-        """Parse and store a PATTERN line."""
+    def _process_pattern(self, line: str, source_episode_ids: list[str] = None) -> None:
+        """Parse and store a PATTERN line with provenance tracking."""
         parts = line[8:].split("|")
         content = parts[0].strip()
         confidence = 0.5
@@ -256,12 +275,16 @@ class ConsolidationEngine:
                     pass
 
         label = "pattern: " + " ".join(content.split()[:4])
-        self._semantic.store_knowledge(
+        node = self._semantic.store_knowledge(
             label=label,
             content=content,
             category="pattern",
             confidence=confidence,
         )
+        if source_episode_ids:
+            for ep_id in source_episode_ids:
+                if ep_id not in node.source_episodes:
+                    node.source_episodes.append(ep_id)
 
     @property
     def stats(self) -> dict[str, Any]:
