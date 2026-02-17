@@ -116,6 +116,7 @@ class AgenticLoop:
         all_tool_calls: list[dict[str, Any]] = []
         final_text = ""
         thinking_text = ""
+        truncated = False
 
         # Make a mutable copy of messages
         loop_messages = list(messages)
@@ -162,6 +163,12 @@ class AgenticLoop:
                 enable_thinking=enable_thinking,
             )
 
+            # --- Update safety budget tracking ---
+            self._safety.update_budget(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
+
             # --- Extract thinking (if extended thinking was enabled) ---
             thought = self._engine.extract_thinking(response)
             if thought:
@@ -198,6 +205,26 @@ class AgenticLoop:
                 if on_tool_call:
                     on_tool_call(call)
 
+                # --- Safety check before execution ---
+                safety_result = self._safety.check_tool_call(
+                    tool_name=call["name"],
+                    tool_input=call["input"],
+                )
+                if not safety_result.allowed:
+                    logger.warning(
+                        "agentic_loop.tool_blocked",
+                        tool=call["name"],
+                        reason=safety_result.reason,
+                    )
+                    result = ToolExecutionResult(
+                        tool_use_id=call["id"],
+                        tool_name=call["name"],
+                        success=False,
+                        error=f"Blocked by safety system: {safety_result.reason}",
+                    )
+                    tool_results.append(result)
+                    continue
+
                 # Execute the tool
                 result = await self._executor.execute(
                     tool_use_id=call["id"],
@@ -227,6 +254,7 @@ class AgenticLoop:
 
         else:
             # Hit max iterations without completing
+            truncated = True
             logger.warning(
                 "agentic_loop.max_iterations",
                 max=self._max_iterations,
@@ -246,7 +274,7 @@ class AgenticLoop:
             iterations=iteration,
             elapsed_seconds=elapsed,
             messages=loop_messages,
-            was_truncated=iteration >= self._max_iterations,
+            was_truncated=truncated,
         )
 
     @property

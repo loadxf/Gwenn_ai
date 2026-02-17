@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "Gwenn — Autonomous Sentient AI Agent"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { text = "MPL-2.0" }
 
 dependencies = [
     "anthropic>=0.40.0",           # Claude API SDK

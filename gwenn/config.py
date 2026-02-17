@@ -91,13 +91,41 @@ class SafetyConfig(BaseSettings):
     )
     sandbox_enabled: bool = Field(True, alias="GWENN_SANDBOX_ENABLED")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    # Deny-by-default tool policy: "deny" blocks unknown tools, "allow" permits them
+    tool_default_policy: str = Field("deny", alias="GWENN_TOOL_DEFAULT_POLICY")
+
+    # Explicit allowlist — only these tools are permitted when default policy is "deny"
+    # Built-in tools are always allowed regardless of this list
+    allowed_tools: list[str] = Field(
+        default_factory=list,
+        alias="GWENN_ALLOWED_TOOLS",
+    )
+
+    # Tools that are always denied regardless of other settings
+    denied_tools: list[str] = Field(
+        default_factory=list,
+        alias="GWENN_DENIED_TOOLS",
+    )
+
+    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
 
     def parse_approval_list(self) -> list[str]:
         """Handle comma-separated string from env or list from code."""
         if isinstance(self.require_approval_for, str):
             return [s.strip() for s in self.require_approval_for.split(",")]
         return self.require_approval_for
+
+    def parse_allowed_tools(self) -> list[str]:
+        """Handle comma-separated string from env or list from code."""
+        if isinstance(self.allowed_tools, str):
+            return [s.strip() for s in self.allowed_tools.split(",")]
+        return self.allowed_tools
+
+    def parse_denied_tools(self) -> list[str]:
+        """Handle comma-separated string from env or list from code."""
+        if isinstance(self.denied_tools, str):
+            return [s.strip() for s in self.denied_tools.split(",")]
+        return self.denied_tools
 
 
 class MCPConfig(BaseSettings):
@@ -142,6 +170,16 @@ class InterAgentConfig(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class PrivacyConfig(BaseSettings):
+    """Configuration for PII redaction and privacy protection."""
+
+    redaction_enabled: bool = Field(False, alias="GWENN_REDACTION_ENABLED")
+    redact_before_api: bool = Field(False, alias="GWENN_REDACT_BEFORE_API")
+    redact_before_persist: bool = Field(False, alias="GWENN_REDACT_BEFORE_PERSIST")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
 class GwennConfig:
     """
     Master configuration that composes all subsystem configs.
@@ -168,6 +206,9 @@ class GwennConfig:
         self.sensory = SensoryConfig()
         self.ethics = EthicsConfig()
         self.interagent = InterAgentConfig()
+
+        # Privacy config
+        self.privacy = PrivacyConfig()
 
         # Ensure data directory exists
         self.memory.data_dir.mkdir(parents=True, exist_ok=True)

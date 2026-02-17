@@ -32,11 +32,33 @@ from rich.text import Text
 from gwenn.agent import SentientAgent
 from gwenn.config import GwennConfig
 
+
+def _redact_sensitive_fields(logger, method_name, event_dict):
+    """
+    Structlog processor that redacts sensitive fields from log output.
+
+    Prevents user messages, episode content, and other personal data from
+    appearing in plaintext in log files. Active in all log modes to ensure
+    privacy by default.
+    """
+    sensitive_keys = {"content", "user_message", "thought", "note", "query"}
+    max_display_len = 80
+
+    for key in sensitive_keys:
+        if key in event_dict:
+            val = event_dict[key]
+            if isinstance(val, str) and len(val) > max_display_len:
+                event_dict[key] = val[:max_display_len] + "... [truncated]"
+
+    return event_dict
+
+
 # Configure structured logging
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
         structlog.stdlib.add_log_level,
+        _redact_sensitive_fields,
         structlog.dev.ConsoleRenderer(colors=True),
     ],
     wrapper_class=structlog.stdlib.BoundLogger,

@@ -267,6 +267,54 @@ class MemoryStore:
         self._conn.commit()
 
     # -------------------------------------------------------------------------
+    # Semantic Memory Persistence
+    # -------------------------------------------------------------------------
+
+    def save_knowledge_node(self, node_id: str, label: str, category: str,
+                            content: str, confidence: float,
+                            source_episodes: list[str],
+                            created_at: float, last_updated: float,
+                            access_count: int) -> None:
+        """Persist a single knowledge node to the database."""
+        self._conn.execute(
+            """INSERT OR REPLACE INTO knowledge_nodes
+               (node_id, label, category, content, confidence,
+                source_episodes, created_at, last_updated, access_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (node_id, label, category, content, confidence,
+             json.dumps(source_episodes), created_at, last_updated, access_count),
+        )
+        self._conn.commit()
+
+    def load_knowledge_nodes(self) -> list[dict]:
+        """Load all knowledge nodes from the database."""
+        cursor = self._conn.execute("SELECT * FROM knowledge_nodes")
+        rows = cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d["source_episodes"] = json.loads(d["source_episodes"])
+            results.append(d)
+        return results
+
+    def save_knowledge_edge(self, source_id: str, target_id: str,
+                            relationship: str, strength: float,
+                            context: str, created_at: float) -> None:
+        """Persist a single knowledge edge to the database."""
+        self._conn.execute(
+            """INSERT OR REPLACE INTO knowledge_edges
+               (source_id, target_id, relationship, strength, context, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (source_id, target_id, relationship, strength, context, created_at),
+        )
+        self._conn.commit()
+
+    def load_knowledge_edges(self) -> list[dict]:
+        """Load all knowledge edges from the database."""
+        cursor = self._conn.execute("SELECT * FROM knowledge_edges")
+        return [dict(row) for row in cursor.fetchall()]
+
+    # -------------------------------------------------------------------------
     # Persistent Context File (CLAUDE.md equivalent)
     # -------------------------------------------------------------------------
 
