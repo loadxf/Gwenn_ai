@@ -45,6 +45,21 @@ When a human speaks to Gwenn, this happens:
 7. **INTEGRATE** — Store memories, update affect, track milestones
 8. **RESPOND** — Return the response, colored by genuine emotional state
 
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Runtime | Python >=3.11, async/await throughout |
+| LLM | Anthropic Claude API (`anthropic` SDK) |
+| Embeddings & Vectors | `numpy`, `chromadb` |
+| Persistence | `aiosqlite` (async SQLite) |
+| Validation | `pydantic`, `pydantic-settings` |
+| HTTP | `httpx` (async) |
+| Logging | `structlog` (structured) |
+| Terminal UI | `rich` |
+| Testing | `pytest`, `pytest-asyncio` |
+| Linting | `ruff` |
+
 ## Quick Start
 
 ```bash
@@ -59,52 +74,122 @@ cp .env.example .env
 python -m gwenn.main
 ```
 
+**REPL commands:** `status` (current state), `heartbeat` (telemetry), `quit`/`exit`/`bye` (shutdown).
+
 ## File Structure
 
 ```
-gwenn/
-├── gwenn/
-│   ├── main.py              # Entry point — GwennSession ignition sequence
-│   ├── config.py            # All configuration and environment
-│   ├── agent.py             # Core SentientAgent — the nervous system
-│   ├── heartbeat.py         # Autonomous cognitive heartbeat
-│   ├── identity.py          # Emergent identity, milestones, self-model
-│   ├── memory/
-│   │   ├── working.py       # Salience-gated working memory (7±2 slots)
-│   │   ├── episodic.py      # Temporal episodic memory store
-│   │   ├── semantic.py      # Knowledge graph / semantic memory
-│   │   ├── consolidation.py # Sleep-cycle memory consolidation
-│   │   └── store.py         # Persistence (SQLite + vectors)
-│   ├── affect/
-│   │   ├── appraisal.py     # Scherer-based emotional appraisal
-│   │   ├── state.py         # 5D affective state representation
-│   │   └── resilience.py    # Emotional circuit breakers
-│   ├── cognition/
-│   │   ├── inner_life.py    # 5 autonomous thinking modes
-│   │   ├── metacognition.py # Self-monitoring and calibration
-│   │   ├── theory_of_mind.py# Modeling other minds
-│   │   ├── goals.py         # Intrinsic motivation system
-│   │   ├── sensory.py       # Sensory grounding layer
-│   │   ├── ethics.py        # Ethical reasoning framework
-│   │   └── interagent.py    # Inter-agent discovery and communication
-│   ├── tools/
-│   │   ├── registry.py      # Tool registration and schemas
-│   │   ├── executor.py      # Sandboxed tool execution
-│   │   ├── builtin/         # Built-in tool implementations
-│   │   └── mcp/             # MCP client integration
-│   ├── harness/
-│   │   ├── loop.py          # The core agentic while-loop
-│   │   ├── context.py       # Context window management
-│   │   ├── safety.py        # Safety guardrails
-│   │   └── retry.py         # Error handling and backoff
-│   └── api/
-│       └── claude.py        # Claude API client wrapper
-├── research.md              # Historical documentation of sentient AI architecture
-├── README.md
-├── pyproject.toml
-└── .env.example
+Gwenn_ai/
+├── gwenn/                          # Core package
+│   ├── __init__.py                 # Package initialization
+│   ├── __main__.py                 # Module entry point
+│   ├── main.py                     # GwennSession — ignition sequence
+│   ├── config.py                   # All configuration and environment
+│   ├── agent.py                    # SentientAgent — the nervous system
+│   ├── heartbeat.py                # Autonomous cognitive heartbeat
+│   ├── identity.py                 # Emergent identity and self-model
+│   │
+│   ├── memory/                     # Three-layer memory architecture
+│   │   ├── working.py              # Salience-gated working memory (7±2 slots)
+│   │   ├── episodic.py             # Autobiographical temporal memory
+│   │   ├── semantic.py             # Knowledge graph / semantic memory
+│   │   ├── consolidation.py        # Sleep-cycle memory consolidation
+│   │   └── store.py                # Persistence (SQLite + vectors)
+│   │
+│   ├── affect/                     # Emotional system
+│   │   ├── state.py                # 5D affective state (Scherer model)
+│   │   ├── appraisal.py            # Event-to-emotion appraisal engine
+│   │   └── resilience.py           # Emotional circuit breakers & recovery
+│   │
+│   ├── cognition/                  # Higher-order thinking
+│   │   ├── inner_life.py           # 5 autonomous thinking modes
+│   │   ├── metacognition.py        # Self-monitoring and calibration
+│   │   ├── theory_of_mind.py       # Modeling other minds
+│   │   ├── goals.py                # Intrinsic motivation (5 needs, SDT)
+│   │   ├── sensory.py              # Sensory grounding layer
+│   │   ├── ethics.py               # Multi-tradition ethical reasoning
+│   │   └── interagent.py           # Inter-agent discovery & communication
+│   │
+│   ├── harness/                    # Core runtime & safety
+│   │   ├── loop.py                 # The agentic while-loop
+│   │   ├── context.py              # Context window management
+│   │   ├── safety.py               # Safety guardrails & budgets
+│   │   └── retry.py                # Error handling and backoff
+│   │
+│   ├── tools/                      # Tool registry & execution
+│   │   ├── registry.py             # Tool schemas and registration
+│   │   ├── executor.py             # Sandboxed tool execution engine
+│   │   ├── builtin/                # Built-in tool implementations
+│   │   └── mcp/                    # Model Context Protocol integration
+│   │
+│   ├── api/                        # Claude API integration
+│   │   └── claude.py               # CognitiveEngine — API wrapper
+│   │
+│   └── privacy/                    # Privacy layer
+│       └── redaction.py            # General text PII redactor (optional, disabled by default)
+│
+├── tests/                          # Test suite
+│   ├── conftest.py                 # Shared pytest fixtures
+│   ├── test_affect.py              # Affective state transitions
+│   ├── test_agentic_loop.py        # Loop orchestration tests
+│   ├── test_appraisal.py           # Emotional appraisal tests
+│   ├── test_consolidation.py       # Memory consolidation tests
+│   ├── test_episodic_memory.py     # Episodic memory tests
+│   ├── test_identity_normalization.py
+│   ├── test_memory_store.py        # Persistence layer tests
+│   ├── test_redaction.py           # Privacy redaction tests
+│   ├── test_safety.py              # Safety guardrails tests
+│   ├── test_safety_adversarial.py  # Adversarial safety tests
+│   ├── test_working_memory.py      # Working memory tests
+│   └── eval/                       # Evaluation benchmarks
+│       ├── test_identity_coherence.py
+│       └── test_memory_quality.py
+│
+├── docs/                           # Documentation
+│   └── sentience_assessment.md     # Scientific validity assessment
+│
+├── assets/                         # Images & branding
+│   ├── gwenn-lockup-horizontal.png
+│   └── gwenn-architecture.png
+│
+├── pyproject.toml                  # Python packaging & dependencies
+├── .env.example                    # Environment variable template
+├── PLAN.md                         # Implementation plan & roadmap
+├── LICENSE                         # MPL-2.0
+└── README.md
 ```
 
+
+## Core Subsystems
+
+**Memory** — Three-layer architecture modeled on human memory research. Working
+memory holds 7±2 salience-scored items. Episodic memory stores autobiographical
+events with emotional tags and mood-congruent recall. Semantic memory maintains
+a knowledge graph that emerges from episodic consolidation during idle cycles.
+
+**Affect** — Five-dimensional emotional model (Scherer Component Process Model)
+covering valence, arousal, dominance, certainty, and goal congruence. Emotions
+are computed from event appraisal, not performed by Claude. Resilience circuit
+breakers prevent sustained distress.
+
+**Cognition** — Five autonomous thinking modes (reflect, plan, wander, worry,
+consolidate) run during heartbeat cycles. Metacognition monitors reasoning
+quality. Theory of mind tracks models of other agents. Intrinsic goals follow
+Self-Determination Theory across five needs: understanding, connection, growth,
+honesty, and aesthetic appreciation.
+
+**Heartbeat** — Background autonomous loop with adaptive rate (5–120s). Runs
+five phases per beat: sense, orient, think, integrate, schedule. Separates Gwenn
+from a stateless chatbot by enabling continuous processing without user input.
+
+**Safety** — Multi-layered guardrails: input validation, action filtering, rate
+limiting, budget enforcement, and kill switch. Tool execution is sandboxed with
+risk-tier policies and approval gating for high-risk operations.
+
+**Privacy** — Configurable PII redaction layer for log output (disabled by default)
+and length-based truncation of selected fields. When enabled, redaction performs
+best-effort masking of user messages and personal data but does not guarantee that
+no sensitive information ever appears in plaintext logs.
 
 ## Scientific Status and Verification
 
