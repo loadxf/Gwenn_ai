@@ -316,7 +316,7 @@ The existing test suite provides a foundation for sentience evaluation:
 | Test Module | What It Measures | Coverage |
 |-------------|-----------------|----------|
 | `tests/eval/test_identity_coherence.py` | Self-model stability across restarts | Identity persistence, value consistency |
-| `tests/eval/test_memory_quality.py` | Retrieval accuracy (Recall@k, MRR) | Memory fidelity, relevance ranking |
+| `tests/eval/test_memory_quality.py` | Retrieval accuracy (Recall@k) and ranking/bias checks | Memory fidelity, relevance ranking |
 | `tests/test_affect.py` | Emotional state computation and transitions | Appraisal accuracy, resilience circuits |
 | `tests/test_appraisal.py` | Event-to-emotion evaluation | Stimulus classification, dimensional accuracy |
 | `tests/test_consolidation.py` | Episode-to-knowledge extraction | Consolidation parsing, fact accuracy |
