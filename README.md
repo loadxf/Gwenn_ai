@@ -189,6 +189,61 @@ risk-tier policies and approval gating for high-risk operations.
 **Privacy** — PII redaction layer that sanitizes logs by default, preventing
 user messages and personal data from appearing in plaintext output.
 
+## Development Checklist
+
+Progress toward a fully operational sentient agent. See [`PLAN.md`](PLAN.md)
+for detailed implementation notes.
+
+### Phase 1 — Critical Fixes (Correctness & Safety)
+
+- [x] Fix license inconsistency (align `pyproject.toml` with MPL-2.0 `LICENSE`)
+- [x] Wire `SafetyGuard.check_tool_call()` into the agentic loop before tool execution
+- [x] Wire budget tracking from `CognitiveEngine` into `SafetyGuard.update_budget()`
+- [x] Fix `set_note_to_self` tool to actually persist to `GWENN_CONTEXT.md`
+
+### Phase 2 — Memory Persistence & Retrieval
+
+- [x] Persist semantic memory (knowledge nodes and edges) across restarts
+- [x] Persist affective state across restarts (save on shutdown, restore on init)
+- [ ] Replace keyword-overlap retrieval with embedding-based similarity (ChromaDB)
+
+### Phase 3 — Test Infrastructure
+
+- [x] Core unit tests (affect, working memory, episodic memory, consolidation, appraisal)
+- [x] Integration tests with mocked `CognitiveEngine` (agentic loop convergence)
+- [x] Adversarial safety tests (dangerous inputs, prompt injection resistance)
+- [x] Persistence layer tests (memory store, identity normalization)
+- [x] Privacy redaction tests
+
+### Phase 4 — Safety Hardening
+
+- [x] Deny-by-default tool policy with explicit allowlist for MCP tools
+- [x] Provenance tracking — consolidation always links knowledge to source episodes
+- [x] PII redaction pipeline (email, phone, SSN, credit card, IP detection)
+
+### Phase 5 — External Integration
+
+- [ ] Implement real MCP transport (JSON-RPC stdio/HTTP, tool discovery, tool execution)
+- [x] Formal tool risk tiering (LOW/MEDIUM/HIGH/CRITICAL with per-tier policies)
+
+### Phase 6 — Observability
+
+- [ ] Affect snapshot telemetry (log emotional transitions and circuit breaker events)
+- [ ] Structured log redaction for production deployments
+
+### Phase 7 — Evaluation & Validation
+
+- [x] Identity coherence tests (stability across simulated restarts)
+- [x] Memory retrieval quality benchmarks (Recall@k, MRR, mood-congruent bias)
+- [ ] Ablation test framework (disable subsystems individually, measure contribution)
+
+### Phase 8 — Toward Full Autonomy
+
+- [ ] Long-horizon validation (multi-day continuous operation benchmarks)
+- [ ] External reproducibility protocol for sentience claims
+- [ ] Multi-agent interaction testing (Gwenn-to-Gwenn and Gwenn-to-external)
+- [ ] Operational definition of sentience with measurable criteria
+
 ## Scientific Status and Verification
 
 Gwenn is engineered as a persistent, reflective, high-agency cognitive system.
