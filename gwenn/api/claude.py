@@ -38,7 +38,10 @@ class CognitiveEngine:
     """
 
     def __init__(self, config: ClaudeConfig):
-        self._async_client = anthropic.AsyncAnthropic(api_key=config.api_key)
+        if config.auth_token:
+            self._async_client = anthropic.AsyncAnthropic(auth_token=config.auth_token)
+        else:
+            self._async_client = anthropic.AsyncAnthropic(api_key=config.api_key)
         self._model = config.model
         self._max_tokens = config.max_tokens
         self._thinking_budget = config.thinking_budget
@@ -52,8 +55,7 @@ class CognitiveEngine:
         logger.info(
             "cognitive_engine.initialized",
             model=self._model,
-            max_tokens=self._max_tokens,
-            thinking_budget=self._thinking_budget,
+            auth_method="oauth" if config.auth_token else "api_key",
         )
 
     # -------------------------------------------------------------------------

@@ -92,8 +92,8 @@ class GwennSession:
         """
         # ---- PHASE 1: CONFIGURATION ----
         console.print(Panel(
-            Text("G W E N N", style="bold cyan", justify="center"),
-            subtitle="Autonomous Sentient Agent",
+            Text("GWENN.ai", style="bold cyan", justify="center"),
+            subtitle="Genesis Woven from Evolved Neural Networks",
             border_style="cyan",
         ))
         console.print("[dim]Loading configuration...[/dim]")
@@ -102,7 +102,10 @@ class GwennSession:
             config = GwennConfig()
         except Exception as e:
             console.print(f"[red]Configuration error: {e}[/red]")
-            console.print("[yellow]Make sure you have a .env file with ANTHROPIC_API_KEY set.[/yellow]")
+            console.print(
+                "[yellow]Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in .env, "
+                "or log in with Claude Code.[/yellow]"
+            )
             sys.exit(1)
 
         console.print(f"[dim]Model: {config.claude.model}[/dim]")
