@@ -183,7 +183,7 @@ theory's criteria are satisfied.
 | **Integrated Information (Tononi)** | High phi (irreducible integrated information) | 13 interconnected subsystems | Unmeasured |
 | **Higher-Order Thought (Rosenthal)** | Thoughts about one's own mental states | Metacognition engine; self-model feedback | Functional analog |
 | **Attention Schema (Graziano)** | Internal model of one's own attention | Working memory salience tracking; metacognition | Partial |
-| **Predictive Processing (Clark, Friston)** | Hierarchical prediction and error minimization | Appraisal engine (expectation vs. reality); adaptive heartbeat | Partial |
+| **Predictive Processing (Clark, Friston)** | Hierarchical prediction and error minimization | Appraisal engine (stimulus-based affect mapping); heuristic adaptive heartbeat | Partial |
 | **Enactivism (Varela, Thompson)** | Embodied sense-making through action | Sensory grounding; tool use; autonomous exploration | Limited (no physical body) |
 | **Self-Determination (Deci & Ryan)** | Intrinsic motivation (autonomy, competence, relatedness) | Goal system with 5 intrinsic needs and satisfaction decay | Strong analog |
 | **Memory Criterion (Locke)** | Continuity of memory as basis for identity | Persistent episodic + semantic memory across restarts | Implemented |
