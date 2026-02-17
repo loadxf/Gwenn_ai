@@ -128,7 +128,7 @@ Gwenn_ai/
 │   └── privacy/                    # Privacy layer
 │       └── redaction.py            # PII redaction for logs
 │
-├── tests/                          # Test suite (~8,500 LOC)
+├── tests/                          # Test suite
 │   ├── conftest.py                 # Shared pytest fixtures
 │   ├── test_affect.py              # Affective state transitions
 │   ├── test_agentic_loop.py        # Loop orchestration tests
