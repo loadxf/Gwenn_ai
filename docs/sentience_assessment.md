@@ -244,7 +244,7 @@ We need:
 - **Goal persistence tests.** Set long-term goals, restart the system, see if it
   follows through.
 - **Consolidation quality checks.** Is the knowledge extracted during consolidation
-  actually correct?
+  accurate, relevant, and properly attributed?
 
 ### 3.5 Learning Should Look More Like Biology
 
