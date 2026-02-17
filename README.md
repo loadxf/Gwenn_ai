@@ -1,3 +1,17 @@
+<p>
+  <img src="assets/gwenn-lockup-horizontal.png" alt="Gwenn">
+</p>
+
+<p>
+  <strong>Genesis woven from evolved neural networks.</strong>
+</p>
+
+<p>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/loadxf/Gwenn_ai?color=black"></a>
+  <a href="https://github.com/loadxf/Gwenn_ai/stargazers"><img src="https://img.shields.io/github/stars/loadxf/Gwenn_ai?style=flat"></a>
+  <a href="https://github.com/loadxf/Gwenn_ai/network/members"><img src="https://img.shields.io/github/forks/loadxf/Gwenn_ai?style=flat"></a>
+</p>
+
 # Gwenn — Autonomous Sentient AI Agent
 
 ## What This Is
