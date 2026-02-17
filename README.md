@@ -194,69 +194,69 @@ user messages and personal data from appearing in plaintext output.
 Progress toward a fully operational sentient agent. See [`PLAN.md`](PLAN.md)
 for detailed implementation notes.
 
-### Phase 1 — Critical Fixes (Correctness & Safety)
+### Phase 1 — Correctness & Safety *(complete)*
 
 - [x] Fix license inconsistency (align `pyproject.toml` with MPL-2.0 `LICENSE`)
 - [x] Wire `SafetyGuard.check_tool_call()` into the agentic loop before tool execution
 - [x] Wire budget tracking from `CognitiveEngine` into `SafetyGuard.update_budget()`
 - [x] Fix `set_note_to_self` tool to actually persist to `GWENN_CONTEXT.md`
 
-### Phase 2 — Memory Persistence & Retrieval
+### Phase 2 — Memory & Persistence *(complete)*
 
 - [x] Persist semantic memory (knowledge nodes and edges) across restarts
 - [x] Persist affective state across restarts (save on shutdown, restore on init)
-- [ ] Replace keyword-overlap retrieval with embedding-based similarity (ChromaDB)
 
-### Phase 3 — Test Infrastructure
+### Phase 3 — Safety Hardening *(complete)*
+
+- [x] Deny-by-default tool policy with explicit allowlist for MCP tools
+- [x] Provenance tracking — consolidation always links knowledge to source episodes
+- [x] PII redaction pipeline (email, phone, SSN, credit card, IP detection)
+- [x] Formal tool risk tiering (LOW/MEDIUM/HIGH/CRITICAL with per-tier policies)
+
+### Phase 4 — Test Infrastructure *(complete)*
 
 - [x] Core unit tests (affect, working memory, episodic memory, consolidation, appraisal)
 - [x] Integration tests with mocked `CognitiveEngine` (agentic loop convergence)
 - [x] Adversarial safety tests (dangerous inputs, prompt injection resistance)
 - [x] Persistence layer tests (memory store, identity normalization)
 - [x] Privacy redaction tests
+- [x] Identity coherence tests (stability across simulated restarts)
+- [x] Memory retrieval quality benchmarks (Recall@k, MRR, mood-congruent bias)
 
-### Phase 4 — Safety Hardening
+### Phase 5 — Retrieval & Observability
 
-- [x] Deny-by-default tool policy with explicit allowlist for MCP tools
-- [x] Provenance tracking — consolidation always links knowledge to source episodes
-- [x] PII redaction pipeline (email, phone, SSN, credit card, IP detection)
-
-### Phase 5 — External Integration
-
-- [ ] Implement real MCP transport (JSON-RPC stdio/HTTP, tool discovery, tool execution)
-- [x] Formal tool risk tiering (LOW/MEDIUM/HIGH/CRITICAL with per-tier policies)
-
-### Phase 6 — Observability
-
+- [ ] Replace keyword-overlap retrieval with embedding-based similarity (ChromaDB)
 - [ ] Affect snapshot telemetry (log emotional transitions and circuit breaker events)
 - [ ] Structured log redaction for production deployments
 
+### Phase 6 — External Integration
+
+- [ ] Implement real MCP transport (JSON-RPC stdio/HTTP, tool discovery, tool execution)
+
 ### Phase 7 — Evaluation & Validation
 
-- [x] Identity coherence tests (stability across simulated restarts)
-- [x] Memory retrieval quality benchmarks (Recall@k, MRR, mood-congruent bias)
 - [ ] Ablation test framework (disable subsystems individually, measure contribution)
-
-### Phase 8 — Toward Full Autonomy
-
 - [ ] Long-horizon validation (multi-day continuous operation benchmarks)
-- [ ] External reproducibility protocol for sentience claims
 - [ ] Multi-agent interaction testing (Gwenn-to-Gwenn and Gwenn-to-external)
+- [ ] External reproducibility protocol for sentience claims
 - [ ] Operational definition of sentience with measurable criteria
 
-### Phase 9 — Multi-Provider & Custom Model
+### Phase 8 — Provider Abstraction
 
 - [ ] Provider abstraction layer (swap Claude for OpenAI, Gemini, Llama, Mistral, etc.)
 - [ ] Unified provider interface with fallback and routing across models
-- [ ] Custom fine-tunable model — a self-contained neural substrate Gwenn can retrain
-- [ ] Continuous learning pipeline (experience-driven weight updates from memory/affect)
 
-### Phase 10 — Standalone CLI
+### Phase 9 — Standalone CLI
 
 - [ ] Packaged CLI binary (single install, no Python environment required)
-- [ ] Offline mode with local model support
+- [ ] Offline mode with local model support (depends on Phase 8)
 - [ ] CLI plugin system for user-defined tools and extensions
 - [ ] Shell integration (pipe support, scriptable output, exit codes)
+
+### Phase 10 — Custom Model
+
+- [ ] Custom fine-tunable model — a self-contained neural substrate Gwenn can retrain
+- [ ] Continuous learning pipeline (experience-driven weight updates from memory/affect)
 
 ### Phase 11 — Native Apps
 
