@@ -44,15 +44,59 @@ through experience. Every opinion is formed, every bond is earned.
 
 ## Getting started
 
+### 1) Install
+
 ```bash
+# Option A (recommended): uv
+uv sync --extra dev
+
+# Option B: pip
 pip install -e ".[dev]"
-cp .env.example .env
-# add your ANTHROPIC_API_KEY to .env
-python -m gwenn.main
 ```
 
-Once she's running, just type. You can also use `status` to see her current
-state, `heartbeat` for loop telemetry, or `quit` to shut down gracefully.
+### 2) Configure
+
+```bash
+cp .env.example .env
+# add your ANTHROPIC_API_KEY to .env
+```
+
+### 3) Run (CLI mode, default)
+
+```bash
+gwenn
+# or: python -m gwenn.main
+```
+
+Once running in CLI mode, you can use `status` for current state, `heartbeat`
+for loop telemetry, and `quit` to shut down gracefully.
+
+### Optional: run on Telegram / Discord channels
+
+Install channel dependencies:
+
+```bash
+# uv
+uv sync --extra channels
+
+# or pip
+pip install -e ".[channels]"
+```
+
+Then set channel tokens in `.env`:
+- `TELEGRAM_BOT_TOKEN` for Telegram
+- `DISCORD_BOT_TOKEN` for Discord
+
+Run with a specific channel:
+
+```bash
+gwenn --channel telegram
+gwenn --channel discord
+gwenn --channel all
+```
+
+You can also set the default mode via `GWENN_CHANNEL=cli|telegram|discord|all`
+in `.env`.
 
 ## Tech stack
 

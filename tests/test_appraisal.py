@@ -14,7 +14,6 @@ Covers:
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import pytest
 
@@ -760,7 +759,6 @@ class TestEdgeCases:
 
     def test_zero_intensity_from_any_stimulus_produces_no_change(self):
         config = _make_config(momentum_decay=0.0, baseline_pull=0.0)
-        engine = AppraisalEngine(config)
         state = _zero_state()
         for stim_type in StimulusType:
             engine_inner = AppraisalEngine(config)

@@ -225,6 +225,24 @@ class AgenticLoop:
                     tool_results.append(result)
                     continue
 
+                if safety_result.requires_approval:
+                    logger.warning(
+                        "agentic_loop.tool_requires_approval",
+                        tool=call["name"],
+                        reason=safety_result.reason,
+                    )
+                    result = ToolExecutionResult(
+                        tool_use_id=call["id"],
+                        tool_name=call["name"],
+                        success=False,
+                        error=(
+                            "Blocked pending human approval: "
+                            f"{safety_result.reason}"
+                        ),
+                    )
+                    tool_results.append(result)
+                    continue
+
                 # Execute the tool
                 result = await self._executor.execute(
                     tool_use_id=call["id"],

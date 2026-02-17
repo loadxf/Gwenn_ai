@@ -23,7 +23,6 @@ Retrieval uses the Generative Agents formula (Park et al., 2023):
 from __future__ import annotations
 
 import json
-import math
 import time
 import uuid
 from dataclasses import dataclass, field

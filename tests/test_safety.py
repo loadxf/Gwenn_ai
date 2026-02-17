@@ -234,14 +234,12 @@ class TestCheckToolCallBlocking:
     """Integration of approval list + dangerous patterns in check_tool_call."""
 
     def test_approval_tool_with_dangerous_input(self):
-        """Even if a tool requires approval, dangerous pattern takes priority over the approval path.
-        The check happens: first check approval, then check patterns.
-        Since file_write is in the approval list, it returns early with requires_approval=True."""
+        """Dangerous input is hard-blocked even when the tool is approval-gated."""
         guard = _guard(approval_for=["file_write"])
         result = guard.check_tool_call("file_write", {"command": "rm -rf /"})
-        # Because approval list check happens first and file_write is in the list,
-        # it returns with requires_approval=True before pattern scanning
-        assert result.requires_approval is True
+        assert result.allowed is False
+        assert result.risk_level == "blocked"
+        assert "Dangerous pattern" in result.reason
 
     def test_non_approval_tool_with_dangerous_input_is_blocked(self):
         guard = _guard(approval_for=["file_write"])

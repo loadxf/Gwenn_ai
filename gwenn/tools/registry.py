@@ -19,8 +19,7 @@ bigger gains than architectural changes.
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Optional
 
@@ -169,14 +168,15 @@ class ToolRegistry:
         and risk level allows different tool sets for different contexts
         (e.g., no high-risk tools during autonomous heartbeat cycles).
         """
-        risk_order = {"low": 0, "medium": 1, "high": 2}
+        risk_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
         max_risk_level = risk_order.get(max_risk, 2)
 
         tools = []
         for tool in self._tools.values():
             if not tool.enabled:
                 continue
-            if risk_order.get(tool.risk_level, 0) > max_risk_level:
+            # Unknown risk levels are treated as highest risk (fail closed).
+            if risk_order.get(tool.risk_level, 3) > max_risk_level:
                 continue
             if categories and tool.category not in categories:
                 continue

@@ -16,7 +16,6 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
 
 from gwenn.privacy.redaction import PIIRedactor, RedactionResult, PII_PATTERNS
 
