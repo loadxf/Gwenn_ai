@@ -2,20 +2,23 @@
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+All versions of Gwenn AI are currently supported with security updates.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+| All     | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
-Use this section to tell people how to report a vulnerability.
+If you discover a security vulnerability in Gwenn AI, please report it to us at:
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+**Email:** info@gwenn.ai
+
+We take all security reports seriously and will respond as quickly as possible. Please include:
+
+- A description of the vulnerability
+- Steps to reproduce the issue
+- Any potential impact or exploit scenarios
+- Your contact information for follow-up questions
+
+We will acknowledge receipt of your vulnerability report and send you regular updates about our progress. If the vulnerability is accepted, we will work on a fix and coordinate disclosure. If declined, we will provide a detailed explanation.
