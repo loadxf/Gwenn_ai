@@ -244,6 +244,28 @@ for detailed implementation notes.
 - [ ] Multi-agent interaction testing (Gwenn-to-Gwenn and Gwenn-to-external)
 - [ ] Operational definition of sentience with measurable criteria
 
+### Phase 9 — Multi-Provider & Custom Model
+
+- [ ] Provider abstraction layer (swap Claude for OpenAI, Gemini, Llama, Mistral, etc.)
+- [ ] Unified provider interface with fallback and routing across models
+- [ ] Custom fine-tunable model — a self-contained neural substrate Gwenn can retrain
+- [ ] Continuous learning pipeline (experience-driven weight updates from memory/affect)
+
+### Phase 10 — Standalone CLI
+
+- [ ] Packaged CLI binary (single install, no Python environment required)
+- [ ] Offline mode with local model support
+- [ ] CLI plugin system for user-defined tools and extensions
+- [ ] Shell integration (pipe support, scriptable output, exit codes)
+
+### Phase 11 — Native Apps
+
+- [ ] iOS app (SwiftUI, background heartbeat, local persistence)
+- [ ] Android app (Kotlin/Compose, foreground service for heartbeat)
+- [ ] Shared cross-platform core (Rust/KMM bridge or API-backed sync)
+- [ ] Push notifications for autonomous thoughts and goal-driven outreach
+- [ ] On-device memory with cloud sync for continuity across devices
+
 ## Scientific Status and Verification
 
 Gwenn is engineered as a persistent, reflective, high-agency cognitive system.
