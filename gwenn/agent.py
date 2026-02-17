@@ -27,7 +27,6 @@ genuine experience.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any, Optional
 
@@ -282,6 +281,9 @@ class SentientAgent:
             trigger="shutdown",
         )
 
+        # Final consolidation pass before persisting so consolidated state is durable
+        await self.consolidate_memories()
+
         # Persist episodic memories to disk
         recent_episodes = self.episodic_memory.retrieve_recent(n=100)
         for ep in recent_episodes:
@@ -315,9 +317,6 @@ class SentientAgent:
         self.identity.uptime_seconds += time.time() - self._start_time
         self.identity._save()
 
-        # Final consolidation pass
-        await self.consolidate_memories()
-
         # Close persistence
         self.memory_store.close()
 
@@ -335,6 +334,7 @@ class SentientAgent:
         self,
         user_message: str,
         user_id: str = "default_user",
+        conversation_history: list[dict[str, Any]] | None = None,
     ) -> str:
         """
         Process a user message and generate Gwenn's response.
@@ -353,12 +353,17 @@ class SentientAgent:
         Args:
             user_message: What the human said.
             user_id: Identifier for the human (for relationship tracking).
+            conversation_history: Optional external history list. When provided
+                (e.g. from a channel SessionManager), this list is used instead
+                of self._conversation_history and mutated in-place.  CLI callers
+                omit this argument and the instance history is used as before.
 
         Returns:
             Gwenn's response as a string.
         """
         response_start = time.time()
         self._current_user_id = user_id
+        _history = conversation_history if conversation_history is not None else self._conversation_history
 
         # ---- Step 1: RECEIVE ----
         logger.info("agent.message_received", user_id=user_id, length=len(user_message))
@@ -419,25 +424,34 @@ class SentientAgent:
         )
 
         # Add user message to conversation history
-        self._conversation_history.append({
+        _history.append({
             "role": "user",
             "content": user_message,
         })
+
+        # Prepare API-facing payload (tool list + optional redaction)
+        available_tools = self.tool_registry.get_api_tools(max_risk="high")
+        api_system_prompt = system_prompt
+        api_messages = list(_history)
+        if self._config.privacy.redact_before_api:
+            api_system_prompt = self.redactor.redact(system_prompt)
+            api_messages = self._redact_messages_for_api(api_messages)
 
         # ---- Step 5: THINK ----
         # Reset safety iteration counter for this new agentic run
         self.safety.reset_iteration_count()
         # Run the full agentic loop (may involve multiple tool calls)
         loop_result = await self.agentic_loop.run(
-            system_prompt=system_prompt,
-            messages=self._conversation_history,
+            system_prompt=api_system_prompt,
+            messages=api_messages,
+            tools=available_tools,
         )
 
         # Extract the final text response
         response_text = loop_result.text
 
         # Add assistant response to conversation history
-        self._conversation_history.append({
+        _history.append({
             "role": "assistant",
             "content": response_text,
         })
@@ -907,6 +921,34 @@ class SentientAgent:
         making room for more relevant information.
         """
         self.working_memory.decay_all(rate=0.02)
+
+    def _redact_messages_for_api(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Redact content/text fields in a message list before API transmission."""
+        redacted_messages: list[dict[str, Any]] = []
+        for msg in messages:
+            msg_copy = dict(msg)
+            if "content" in msg_copy:
+                msg_copy["content"] = self._redact_api_payload_value(msg_copy["content"])
+            redacted_messages.append(msg_copy)
+        return redacted_messages
+
+    def _redact_api_payload_value(self, value: Any) -> Any:
+        """Recursively redact only textual payload fields (content/text)."""
+        if isinstance(value, str):
+            return self.redactor.redact(value)
+
+        if isinstance(value, list):
+            return [self._redact_api_payload_value(item) for item in value]
+
+        if isinstance(value, dict):
+            value_copy = dict(value)
+            if "content" in value_copy:
+                value_copy["content"] = self._redact_api_payload_value(value_copy["content"])
+            if "text" in value_copy:
+                value_copy["text"] = self._redact_api_payload_value(value_copy["text"])
+            return value_copy
+
+        return value
 
     @property
     def status(self) -> dict[str, Any]:

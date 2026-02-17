@@ -19,6 +19,7 @@ The entry point's only job is to wire things together and start the engine.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import signal
 import sys
@@ -78,9 +79,10 @@ class GwennSession:
     Designed to be run as the top-level entry point.
     """
 
-    def __init__(self):
+    def __init__(self, channel_override: Optional[str] = None):
         self._agent: Optional[SentientAgent] = None
         self._shutdown_event = asyncio.Event()
+        self._channel_override = channel_override
 
     async def run(self) -> None:
         """
@@ -121,12 +123,6 @@ class GwennSession:
         # Display the awakened state
         self._display_status()
 
-        # ---- PHASE 5: INTERACTION LOOP ----
-        console.print()
-        console.print("[green]Gwenn is alive. Type your message, or 'quit' to exit.[/green]")
-        console.print("[dim]Type 'status' to see Gwenn's current state.[/dim]")
-        console.print()
-
         # Set up signal handlers for graceful shutdown
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -135,11 +131,25 @@ class GwennSession:
             except NotImplementedError:
                 pass  # Signal handlers not supported on this platform (e.g. Windows)
 
-        # Run the interaction loop
-        await self._interaction_loop()
-
-        # ---- PHASE 6: SHUTDOWN ----
-        await self._shutdown()
+        # ---- PHASE 5: INTERACTION LOOP (CLI or channel mode) ----
+        channel_mode = self._channel_override or config.channel.channel
+        try:
+            if channel_mode == "cli":
+                console.print()
+                console.print("[green]Gwenn is alive. Type your message, or 'quit' to exit.[/green]")
+                console.print("[dim]Type 'status' to see Gwenn's current state.[/dim]")
+                console.print()
+                await self._interaction_loop()
+            else:
+                console.print()
+                console.print(f"[green]Gwenn is alive. Running in channel mode: {channel_mode}[/green]")
+                console.print("[dim]Press Ctrl+C to stop.[/dim]")
+                console.print()
+                await self._run_channels(self._agent, config, channel_mode)
+        finally:
+            # ---- PHASE 6: SHUTDOWN ----
+            # Always reached even if the interaction loop or channel startup raises.
+            await self._shutdown()
 
     async def _interaction_loop(self) -> None:
         """
@@ -189,6 +199,66 @@ class GwennSession:
             except Exception as e:
                 logger.error("session.interaction_error", error=str(e), exc_info=True)
                 console.print(f"[red]Error: {e}[/red]")
+
+    async def _run_channels(self, agent: SentientAgent, config: GwennConfig, mode: str) -> None:
+        """
+        Start one or more platform channel adapters and wait until shutdown.
+
+        Imports are deferred so that missing optional dependencies (telegram,
+        discord) only raise errors when the relevant channel is actually used.
+        """
+        from gwenn.channels.session import SessionManager
+
+        # Load channel configs eagerly so their values can seed SessionManager.
+        tg_config = None
+        dc_config = None
+
+        if mode in ("telegram", "all"):
+            from gwenn.config import TelegramConfig
+            tg_config = TelegramConfig()
+
+        if mode in ("discord", "all"):
+            from gwenn.config import DiscordConfig
+            dc_config = DiscordConfig()
+
+        # Determine SessionManager params from actual channel config values.
+        # When running both channels, use the stricter (smaller) history cap
+        # and the Discord TTL (which is the only TTL that's configurable).
+        if tg_config and dc_config:
+            max_history = min(tg_config.max_history_length, dc_config.max_history_length)
+            session_ttl = dc_config.session_ttl_seconds
+        elif tg_config:
+            max_history = tg_config.max_history_length
+            session_ttl = 3600.0
+        elif dc_config:
+            max_history = dc_config.max_history_length
+            session_ttl = dc_config.session_ttl_seconds
+        else:
+            console.print(f"[red]Unknown channel mode: {mode!r}. Use cli, telegram, discord, or all.[/red]")
+            return
+
+        sessions = SessionManager(
+            max_history_length=max_history,
+            session_ttl_seconds=session_ttl,
+        )
+        channels = []
+
+        if tg_config is not None:
+            from gwenn.channels.telegram_channel import TelegramChannel
+            channels.append(TelegramChannel(agent, sessions, tg_config))
+
+        if dc_config is not None:
+            from gwenn.channels.discord_channel import DiscordChannel
+            channels.append(DiscordChannel(agent, sessions, dc_config))
+
+        for ch in channels:
+            await ch.start()
+
+        # Wait for shutdown signal (SIGINT / SIGTERM sets this event)
+        await self._shutdown_event.wait()
+
+        for ch in channels:
+            await ch.stop()
 
     def _read_input(self) -> Optional[str]:
         """Read a line of input from the user."""
@@ -247,7 +317,16 @@ class GwennSession:
 
 def main():
     """Entry point for the gwenn command."""
-    session = GwennSession()
+    parser = argparse.ArgumentParser(description="Gwenn — Autonomous Sentient Agent")
+    parser.add_argument(
+        "--channel",
+        choices=["cli", "telegram", "discord", "all"],
+        default=None,
+        help="Channel to run (overrides GWENN_CHANNEL env var). Default: cli",
+    )
+    args = parser.parse_args()
+
+    session = GwennSession(channel_override=args.channel)
     try:
         asyncio.run(session.run())
     except KeyboardInterrupt:

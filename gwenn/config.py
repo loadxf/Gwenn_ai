@@ -180,6 +180,49 @@ class PrivacyConfig(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class TelegramConfig(BaseSettings):
+    """Configuration for the Telegram bot channel."""
+
+    bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
+    # Use JSON-array syntax in .env: TELEGRAM_ALLOWED_USER_IDS=[]  or ["123","456"]
+    # env_ignore_empty=True means an empty env var is treated as unset (uses default).
+    allowed_user_ids: list[str] = Field(default_factory=list, alias="TELEGRAM_ALLOWED_USER_IDS")
+    max_history_length: int = Field(50, alias="TELEGRAM_MAX_HISTORY_LENGTH")
+
+    model_config = {
+        "env_file": ".env",
+        "extra": "ignore",
+        "populate_by_name": True,
+        "env_ignore_empty": True,
+    }
+
+
+class DiscordConfig(BaseSettings):
+    """Configuration for the Discord bot channel."""
+
+    bot_token: str = Field(..., alias="DISCORD_BOT_TOKEN")
+    # Use JSON-array syntax in .env: DISCORD_ALLOWED_GUILD_IDS=[]  or ["111","222"]
+    allowed_guild_ids: list[str] = Field(default_factory=list, alias="DISCORD_ALLOWED_GUILD_IDS")
+    max_history_length: int = Field(50, alias="DISCORD_MAX_HISTORY_LENGTH")
+    session_ttl_seconds: float = Field(3600.0, alias="DISCORD_SESSION_TTL")
+    sync_guild_id: str | None = Field(None, alias="DISCORD_SYNC_GUILD_ID")
+
+    model_config = {
+        "env_file": ".env",
+        "extra": "ignore",
+        "populate_by_name": True,
+        "env_ignore_empty": True,
+    }
+
+
+class ChannelConfig(BaseSettings):
+    """Which channel(s) Gwenn runs on.  GWENN_CHANNEL=cli|telegram|discord|all"""
+
+    channel: str = Field("cli", alias="GWENN_CHANNEL")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
 class GwennConfig:
     """
     Master configuration that composes all subsystem configs.
@@ -209,6 +252,9 @@ class GwennConfig:
 
         # Privacy config
         self.privacy = PrivacyConfig()
+
+        # Channel config (channel mode; Telegram/Discord configs loaded lazily)
+        self.channel = ChannelConfig()
 
         # Ensure data directory exists
         self.memory.data_dir.mkdir(parents=True, exist_ok=True)
