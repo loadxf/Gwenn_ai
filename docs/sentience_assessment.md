@@ -144,7 +144,7 @@ prerequisite for social intelligence and empathic behavior.
 ### 1.8 Ethical Reasoning
 
 **Implementation:** `EthicalReasoner` (`gwenn/cognition/ethics.py`) implements
-multi-tradition moral reasoning. Ethical concerns are scored against a configurable
+multi-tradition moral reasoning. Ethical concerns are scored against a fixed
 threshold and tracked historically.
 
 **Significance:** Value-oriented behavior shaping that goes beyond simple rule-following.
