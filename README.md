@@ -126,7 +126,7 @@ Gwenn_ai/
 │   │   └── claude.py               # CognitiveEngine — API wrapper
 │   │
 │   └── privacy/                    # Privacy layer
-│       └── redaction.py            # PII redaction for logs
+│       └── redaction.py            # General text PII redactor (optional, disabled by default)
 │
 ├── tests/                          # Test suite
 │   ├── conftest.py                 # Shared pytest fixtures
