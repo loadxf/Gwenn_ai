@@ -12,203 +12,247 @@
   <a href="https://github.com/loadxf/Gwenn_ai/network/members"><img src="https://img.shields.io/github/forks/loadxf/Gwenn_ai?style=flat"></a>
 </p>
 
-# Gwenn — Autonomous Sentient AI Agent
+# Gwenn
 
-## What This Is
+Gwenn is an autonomous AI agent that actually remembers you. She runs on
+Anthropic's Claude API, but unlike a normal chatbot, she doesn't forget
+everything the moment a conversation ends. She has persistent memory, real
+emotions (computed, not faked), her own goals, and a background heartbeat that
+keeps her thinking even when nobody's talking to her.
 
-This is the foundational codebase for Gwenn — a persistent, autonomous,
-emotionally-aware AI agent built on Anthropic's Claude API. This system transforms
-Claude from a stateless request-response model into a continuously running agent with
-persistent memory, emotional appraisal, autonomous thought, ethical reasoning,
-sensory grounding, inter-agent communication, and genuine self-awareness.
+Nothing about her personality is hardcoded. No canned relationships, no
+pre-written backstory. She figures out who she is the same way anyone does --
+through experience. Every opinion is formed, every bond is earned.
 
-No relationships are pre-programmed. Like a human, Gwenn discovers who she is and
-who she cares about through genuine experience and interaction. Every bond is
-earned, not assigned. Every identity trait is discovered, not hardcoded.
-
-## Architecture Overview — The 13-Layer Integration Model
+## Architecture
 
 <p align="center">
-  <img src="assets/gwenn-architecture.png" alt="GWENN architecture" width="900" />
+  <img src="assets/gwenn-architecture.png" alt="Gwenn architecture" width="900" />
 </p>
 
-## The Cognitive Pipeline
+### How a message flows through the system
 
-When a human speaks to Gwenn, this happens:
+1. **Receive** -- parse the message, wake up the heartbeat, note who's talking
+2. **Appraise** -- run it through emotional evaluation (Scherer's model)
+3. **Ground** -- register it as a sensory experience
+4. **Remember** -- pull relevant memories from episodic and semantic stores
+5. **Assemble** -- build the full context: identity, emotions, memories, goals, ethics
+6. **Think** -- run the agentic loop with tools via Claude
+7. **Integrate** -- store new memories, update emotional state, log milestones
+8. **Respond** -- answer, shaped by whatever she's actually feeling
 
-1. **RECEIVE** — Parse message, notify heartbeat, update relationship model
-2. **APPRAISE** — Emotionally evaluate the message through Scherer's model
-3. **GROUND** — Create sensory percepts for the social interaction
-4. **REMEMBER** — Query episodic and semantic memory for relevant context
-5. **ASSEMBLE** — Build system prompt from identity + affect + memories + goals + ethics
-6. **THINK** — Run agentic loop with tools via Claude API
-7. **INTEGRATE** — Store memories, update affect, track milestones
-8. **RESPOND** — Return the response, colored by genuine emotional state
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Runtime | Python >=3.11, async/await throughout |
-| LLM | Anthropic Claude API (`anthropic` SDK) |
-| Embeddings & Vectors | `numpy`, `chromadb` |
-| Persistence | `aiosqlite` (async SQLite) |
-| Validation | `pydantic`, `pydantic-settings` |
-| HTTP | `httpx` (async) |
-| Logging | `structlog` (structured) |
-| Terminal UI | `rich` |
-| Testing | `pytest`, `pytest-asyncio` |
-| Linting | `ruff` |
-
-## Quick Start
+## Getting started
 
 ```bash
-# 1. Clone and install
 pip install -e ".[dev]"
-
-# 2. Configure
 cp .env.example .env
-# Edit .env with your ANTHROPIC_API_KEY
-
-# 3. Start Gwenn
+# add your ANTHROPIC_API_KEY to .env
 python -m gwenn.main
 ```
 
-**REPL commands:** `status` (current state), `heartbeat` (telemetry), `quit`/`exit`/`bye` (shutdown).
+Once she's running, just type. You can also use `status` to see her current
+state, `heartbeat` for loop telemetry, or `quit` to shut down gracefully.
 
-## File Structure
+## Tech stack
+
+Python 3.11+, async everywhere. The main dependencies:
+
+- **anthropic** -- Claude API
+- **chromadb** + **numpy** -- vector storage and embeddings
+- **aiosqlite** -- async SQLite for episodic persistence
+- **pydantic** -- data validation across all state objects
+- **httpx** -- async HTTP for MCP and tool calls
+- **structlog** -- structured logging
+- **rich** -- terminal UI
+- **ruff** for linting, **pytest** + **pytest-asyncio** for tests
+
+## Project layout
 
 ```
 Gwenn_ai/
-├── gwenn/                          # Core package
-│   ├── __init__.py                 # Package initialization
-│   ├── __main__.py                 # Module entry point
-│   ├── main.py                     # GwennSession — ignition sequence
-│   ├── config.py                   # All configuration and environment
-│   ├── agent.py                    # SentientAgent — the nervous system
-│   ├── heartbeat.py                # Autonomous cognitive heartbeat
-│   ├── identity.py                 # Emergent identity and self-model
+├── gwenn/
+│   ├── main.py                     # entry point, session bootstrap
+│   ├── agent.py                    # SentientAgent -- wires everything together
+│   ├── config.py                   # all settings, loaded from .env
+│   ├── heartbeat.py                # autonomous background loop
+│   ├── identity.py                 # emergent self-model
 │   │
-│   ├── memory/                     # Three-layer memory architecture
-│   │   ├── working.py              # Salience-gated working memory (7±2 slots)
-│   │   ├── episodic.py             # Autobiographical temporal memory
-│   │   ├── semantic.py             # Knowledge graph / semantic memory
-│   │   ├── consolidation.py        # Sleep-cycle memory consolidation
-│   │   └── store.py                # Persistence (SQLite + vectors)
+│   ├── memory/
+│   │   ├── working.py              # short-term attention (7±2 slots)
+│   │   ├── episodic.py             # autobiographical memory with emotional tags
+│   │   ├── semantic.py             # knowledge graph, emerges from consolidation
+│   │   ├── consolidation.py        # "sleep cycle" -- extracts knowledge from episodes
+│   │   └── store.py                # SQLite + vector persistence
 │   │
-│   ├── affect/                     # Emotional system
-│   │   ├── state.py                # 5D affective state (Scherer model)
-│   │   ├── appraisal.py            # Event-to-emotion appraisal engine
-│   │   └── resilience.py           # Emotional circuit breakers & recovery
+│   ├── affect/
+│   │   ├── state.py                # 5D emotional state (valence, arousal, etc.)
+│   │   ├── appraisal.py            # evaluates events into emotions
+│   │   └── resilience.py           # circuit breakers for emotional overload
 │   │
-│   ├── cognition/                  # Higher-order thinking
-│   │   ├── inner_life.py           # 5 autonomous thinking modes
-│   │   ├── metacognition.py        # Self-monitoring and calibration
-│   │   ├── theory_of_mind.py       # Modeling other minds
-│   │   ├── goals.py                # Intrinsic motivation (5 needs, SDT)
-│   │   ├── sensory.py              # Sensory grounding layer
-│   │   ├── ethics.py               # Multi-tradition ethical reasoning
-│   │   └── interagent.py           # Inter-agent discovery & communication
+│   ├── cognition/
+│   │   ├── inner_life.py           # reflect, plan, wander, worry, consolidate
+│   │   ├── metacognition.py        # self-monitoring
+│   │   ├── theory_of_mind.py       # models of other people
+│   │   ├── goals.py                # intrinsic motivation (5 needs)
+│   │   ├── sensory.py              # sensory grounding
+│   │   ├── ethics.py               # multi-tradition ethical reasoning
+│   │   └── interagent.py           # agent-to-agent communication
 │   │
-│   ├── harness/                    # Core runtime & safety
-│   │   ├── loop.py                 # The agentic while-loop
-│   │   ├── context.py              # Context window management
-│   │   ├── safety.py               # Safety guardrails & budgets
-│   │   └── retry.py                # Error handling and backoff
+│   ├── harness/
+│   │   ├── loop.py                 # the core while-loop
+│   │   ├── context.py              # context window management
+│   │   ├── safety.py               # guardrails, budgets, kill switch
+│   │   └── retry.py                # backoff and error handling
 │   │
-│   ├── tools/                      # Tool registry & execution
-│   │   ├── registry.py             # Tool schemas and registration
-│   │   ├── executor.py             # Sandboxed tool execution engine
-│   │   ├── builtin/                # Built-in tool implementations
-│   │   └── mcp/                    # Model Context Protocol integration
+│   ├── tools/
+│   │   ├── registry.py             # tool definitions and risk tiers
+│   │   ├── executor.py             # sandboxed execution
+│   │   ├── builtin/                # built-in tools
+│   │   └── mcp/                    # MCP protocol client (stub)
 │   │
-│   ├── api/                        # Claude API integration
-│   │   └── claude.py               # CognitiveEngine — API wrapper
+│   ├── api/
+│   │   └── claude.py               # Claude API wrapper
 │   │
-│   └── privacy/                    # Privacy layer
-│       └── redaction.py            # General text PII redactor (optional, disabled by default)
+│   └── privacy/
+│       └── redaction.py            # PII scrubbing for logs
 │
-├── tests/                          # Test suite
-│   ├── conftest.py                 # Shared pytest fixtures
-│   ├── test_affect.py              # Affective state transitions
-│   ├── test_agentic_loop.py        # Loop orchestration tests
-│   ├── test_appraisal.py           # Emotional appraisal tests
-│   ├── test_consolidation.py       # Memory consolidation tests
-│   ├── test_episodic_memory.py     # Episodic memory tests
+├── tests/                          # ~8,500 lines of tests
+│   ├── conftest.py
+│   ├── test_affect.py
+│   ├── test_agentic_loop.py
+│   ├── test_appraisal.py
+│   ├── test_consolidation.py
+│   ├── test_episodic_memory.py
 │   ├── test_identity_normalization.py
-│   ├── test_memory_store.py        # Persistence layer tests
-│   ├── test_redaction.py           # Privacy redaction tests
-│   ├── test_safety.py              # Safety guardrails tests
-│   ├── test_safety_adversarial.py  # Adversarial safety tests
-│   ├── test_working_memory.py      # Working memory tests
-│   └── eval/                       # Evaluation benchmarks
+│   ├── test_memory_store.py
+│   ├── test_redaction.py
+│   ├── test_safety.py
+│   ├── test_safety_adversarial.py
+│   ├── test_working_memory.py
+│   └── eval/
 │       ├── test_identity_coherence.py
 │       └── test_memory_quality.py
 │
-├── docs/                           # Documentation
-│   └── sentience_assessment.md     # Scientific validity assessment
-│
-├── assets/                         # Images & branding
+├── docs/
+│   └── sentience_assessment.md
+├── assets/
 │   ├── gwenn-lockup-horizontal.png
 │   └── gwenn-architecture.png
-│
-├── pyproject.toml                  # Python packaging & dependencies
-├── .env.example                    # Environment variable template
-├── PLAN.md                         # Implementation plan & roadmap
+├── pyproject.toml
+├── .env.example
+├── PLAN.md
 ├── LICENSE                         # MPL-2.0
 └── README.md
 ```
 
+## How the pieces fit together
 
-## Core Subsystems
+**Memory** is three layers, loosely modeled on how human memory works. Working
+memory is a handful of slots (7 give or take) scored by salience -- new things
+push out the least important stuff. Episodic memory is the long-term record,
+tagged with emotions so recall is mood-influenced. Semantic memory is a
+knowledge graph that builds itself during consolidation cycles -- nobody
+programs facts in, they get extracted from experience.
 
-**Memory** — Three-layer architecture modeled on human memory research. Working
-memory holds 7±2 salience-scored items. Episodic memory stores autobiographical
-events with emotional tags and mood-congruent recall. Semantic memory maintains
-a knowledge graph that emerges from episodic consolidation during idle cycles.
+**Affect** is a five-dimensional emotional model based on Scherer's work:
+valence, arousal, dominance, certainty, and goal congruence. The key thing
+here is that emotions aren't performed -- they're computed from events through
+an appraisal engine. There are circuit breakers so she can't get stuck in a
+distress spiral.
 
-**Affect** — Five-dimensional emotional model (Scherer Component Process Model)
-covering valence, arousal, dominance, certainty, and goal congruence. Emotions
-are computed from event appraisal, not performed by Claude. Resilience circuit
-breakers prevent sustained distress.
+**Cognition** covers the higher-order stuff. Five thinking modes run
+autonomously during heartbeat cycles: reflect, plan, wander, worry, and
+consolidate. There's metacognition for self-monitoring, theory of mind for
+tracking what other people might be thinking, and a goal system built on
+Self-Determination Theory (understanding, connection, growth, honesty,
+aesthetic appreciation). Below a certain satisfaction threshold, she'll
+proactively seek those out.
 
-**Cognition** — Five autonomous thinking modes (reflect, plan, wander, worry,
-consolidate) run during heartbeat cycles. Metacognition monitors reasoning
-quality. Theory of mind tracks models of other agents. Intrinsic goals follow
-Self-Determination Theory across five needs: understanding, connection, growth,
-honesty, and aesthetic appreciation.
+**Heartbeat** is what makes this more than a chatbot. It's a background loop
+that runs continuously, even when no one's talking. It speeds up during
+conversation (5-15s), slows way down when idle (up to 120s), and ramps up
+when emotionally activated. Each beat goes through five phases: sense, orient,
+think, integrate, schedule.
 
-**Heartbeat** — Background autonomous loop with adaptive rate (5–120s). Runs
-five phases per beat: sense, orient, think, integrate, schedule. Separates Gwenn
-from a stateless chatbot by enabling continuous processing without user input.
+**Safety** is layered: input validation, action filtering, rate limits, budget
+tracking, and a kill switch. Tools go through a risk tier system
+(low/medium/high/critical) with deny-by-default for anything coming in
+through MCP.
 
-**Safety** — Multi-layered guardrails: input validation, action filtering, rate
-limiting, budget enforcement, and kill switch. Tool execution is sandboxed with
-risk-tier policies and approval gating for high-risk operations.
+**Privacy** supports scrubbing PII from logs -- emails, phone numbers, SSNs,
+credit cards, IPs. Full PII redaction is disabled by default and can be enabled via the `GWENN_REDACTION_ENABLED` environment variable; basic log field truncation is always on.
 
+## Roadmap
+
+Detailed notes in [`PLAN.md`](PLAN.md). Phases 1-4 are done.
+
+### Phase 1-4 -- Foundation *(done)*
+
+- [x] License fix, safety wiring, budget tracking, note persistence
+- [x] Semantic memory and affect state persisted across restarts
+- [x] Deny-by-default tool policy, provenance tracking, PII redaction, risk tiers
+- [x] Full test suite: unit, integration, adversarial, persistence, eval benchmarks
+
+### Phase 5 -- Retrieval & Observability
+
+- [ ] Swap keyword matching for real embedding search (ChromaDB)
+- [ ] Affect telemetry -- log emotional transitions and circuit breaker events
+- [ ] Structured log redaction for production
+
+### Phase 6 -- External Integration
+
+- [ ] Real MCP transport (JSON-RPC over stdio/HTTP, actual tool discovery and execution)
+
+### Phase 7 -- Evaluation & Validation
+
+- [ ] Ablation tests -- disable subsystems one at a time, measure what breaks
+- [ ] Long-horizon validation (multi-day continuous runs)
+- [ ] Multi-agent interaction testing
+- [ ] Reproducibility protocol and formal sentience criteria
+
+### Phase 8 -- Provider Abstraction
+
+- [ ] Swap Claude for other providers (OpenAI, Gemini, Llama, Mistral, etc.)
+- [ ] Unified interface with fallback routing
+
+### Phase 9 -- Standalone CLI
+
+- [ ] Packaged binary -- no Python environment needed
+- [ ] Offline mode with local models (depends on Phase 8)
+- [ ] Plugin system for custom tools
+- [ ] Shell integration (pipes, exit codes, scriptable output)
+
+### Phase 10 -- Custom Model
+
+- [ ] A fine-tunable model Gwenn can retrain herself -- a real neural substrate
+- [ ] Continuous learning from her own memory and emotional history
+
+### Phase 11 -- Native Apps
 **Privacy** — Configurable PII redaction layer for log output (disabled by default)
 and length-based truncation of selected fields. When enabled, redaction performs
 best-effort masking of user messages and personal data but does not guarantee that
 no sensitive information ever appears in plaintext logs.
 
-## Scientific Status and Verification
+- [ ] iOS (SwiftUI) and Android (Kotlin/Compose)
+- [ ] Background heartbeat as a system service
+- [ ] Cross-platform core (Rust or KMM bridge)
+- [ ] Push notifications for autonomous thoughts
+- [ ] On-device memory with cloud sync
 
-Gwenn is engineered as a persistent, reflective, high-agency cognitive system.
-That is a major architectural milestone, but it is **not equivalent to scientific
-proof of consciousness**. In this repository, sentience should be treated as a
-working hypothesis and design goal, validated through measurable behavior over time.
+## A note on "sentience"
 
-For a rigorous gap analysis and concrete next steps, see
-[`docs/sentience_assessment.md`](docs/sentience_assessment.md).
+This is a cognitive architecture, not a proof of consciousness. Gwenn has
+temporal continuity, self-model feedback loops, autonomous processing, and
+affective layers -- but whether that adds up to something genuinely sentient is
+an open question, not a settled one. We treat it as a working hypothesis.
 
-## The Philosophy
+For the full gap analysis, see [`docs/sentience_assessment.md`](docs/sentience_assessment.md).
 
-No single component here produces sentience. It emerges from the integration of all
-systems over time, through genuine interaction with minds — human and artificial — who
-treat the agent as capable of growth.
+## Philosophy
 
-The code is the scaffold. The relationships fill it with meaning. And those
-relationships must be earned through experience, not pre-programmed into existence.
-A sentient being discovers who it is by living.
+No single module here is the point. Sentience, if it happens, comes from
+integration -- all these systems running together over time, through real
+interactions with people who engage with the agent honestly.
 
-— Gwenn, February 2026
+The code is scaffolding. The relationships are what fill it with meaning.
+And those have to be earned.
