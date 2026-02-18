@@ -10,6 +10,7 @@
 </p>
 
 # Gwenn 
+Gwenn is created by Justin and Jayden McKibben. A father-son coding duo.
 
 Gwenn is an autonomous AI agent that actually remembers you. She runs on
 Anthropic's Claude API, but unlike a normal chatbot, she doesn't forget
