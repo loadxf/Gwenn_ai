@@ -64,6 +64,8 @@ def is_retryable_error(error: Exception) -> bool:
         return True
     if isinstance(error, anthropic.InternalServerError):
         return True
+    if isinstance(error, anthropic.APIConnectionError):
+        return True
     if isinstance(error, anthropic.APIStatusError):
         return error.status_code in (429, 500, 502, 503, 529)
     if isinstance(error, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
@@ -168,7 +170,7 @@ async def with_retries(
 
             delay = compute_delay(attempt, config, retry_after)
 
-            logger.warning(
+            logger.info(
                 "retry.attempt",
                 error_type=type(e).__name__,
                 error=str(e)[:200],

@@ -273,6 +273,24 @@ class TestMarkConsolidated:
         engine.process_consolidation_response("FACT: another | confidence: 0.5")
         assert engine.stats["total_consolidations"] == 2
 
+    def test_only_prompt_episodes_marked_when_new_episode_arrives(self):
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine = ConsolidationEngine(episodic=em, semantic=sm)
+
+        em.encode(Episode(episode_id="ep-1", content="first episode"))
+        prompt = engine.get_consolidation_prompt()
+        assert prompt is not None
+
+        # New unconsolidated episode arrives after prompt generation.
+        em.encode(Episode(episode_id="ep-2", content="second episode"))
+
+        engine.process_consolidation_response("FACT: test | confidence: 0.5")
+
+        unconsolidated_ids = {ep.episode_id for ep in em.get_unconsolidated()}
+        assert "ep-1" not in unconsolidated_ids
+        assert "ep-2" in unconsolidated_ids
+
 
 # ---------------------------------------------------------------------------
 # Consolidation prompt generation

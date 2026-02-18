@@ -77,7 +77,6 @@ class Heartbeat:
 
         # Consolidation scheduling
         self._beats_since_consolidation = 0
-        self._consolidation_interval_beats = 20  # consolidate every ~20 beats
 
     # -------------------------------------------------------------------------
     # Lifecycle
@@ -236,7 +235,7 @@ class Heartbeat:
         is_active = state["is_user_active"]
 
         # Priority 1: Memory consolidation if due
-        if self._beats_since_consolidation >= self._consolidation_interval_beats:
+        if self._agent.consolidator.should_consolidate():
             return ThinkingMode.CONSOLIDATE
 
         # Priority 2: High arousal needs processing
@@ -282,6 +281,13 @@ class Heartbeat:
             affect=self._agent.affect_state,
             engine=self._agent.engine,
         )
+
+        if thought and thought.strip():
+            self._agent.identity.total_autonomous_thoughts += 1
+            self._agent.identity.check_milestone(
+                "first_autonomous_thought",
+                "Generated an autonomous thought during heartbeat.",
+            )
         return thought
 
     async def _integrate(self, mode: ThinkingMode, thought: Optional[str]) -> None:
@@ -347,6 +353,8 @@ class Heartbeat:
                 tags=["autonomous", mode.value],
             )
             self._agent.episodic_memory.encode(episode)
+            # Persist immediately so autonomous cognition isn't lost on crashes.
+            self._agent.memory_store.save_episode(episode)
 
     def _schedule(self, state: dict[str, Any]) -> None:
         """
@@ -369,7 +377,8 @@ class Heartbeat:
         else:
             # Gradually slow down as idle time increases
             idle_minutes = state["idle_duration"] / 60
-            activity_factor = min(1.0, 0.5 + idle_minutes * 0.1)
+            max_factor = max_interval / max(base, 1e-6)
+            activity_factor = min(max_factor, 1.0 + idle_minutes * 0.1)
 
         # Factor 2: Arousal pulls interval down (faster when aroused)
         arousal_factor = 1.0 - (state["arousal"] * 0.5)

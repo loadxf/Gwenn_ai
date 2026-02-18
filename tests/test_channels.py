@@ -9,18 +9,22 @@ channel layer.
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gwenn.channels.formatting import (
     DISCORD_MAX_LEN,
     TELEGRAM_MAX_LEN,
+    describe_mood,
+    format_uptime,
     format_for_discord,
     format_for_telegram,
+    render_heartbeat_text,
+    render_status_text,
     split_message,
 )
-from gwenn.channels.session import SessionManager, UserSession
+from gwenn.channels.session import SessionManager
 
 
 # ============================================================================
@@ -85,6 +89,16 @@ class TestSessionManager:
         sm._sessions["telegram_stale"].last_activity = time.time() - 1.0
         removed = sm.expire_stale_sessions()
         assert removed == 1
+        assert "telegram_stale" not in sm._sessions
+        assert "telegram_fresh" in sm._sessions
+
+    def test_get_or_create_expires_stale_sessions(self):
+        sm = SessionManager(session_ttl_seconds=0.01)
+        sm.get_or_create("telegram_stale")
+        sm._sessions["telegram_stale"].last_activity = time.time() - 1.0
+
+        sm.get_or_create("telegram_fresh")
+
         assert "telegram_stale" not in sm._sessions
         assert "telegram_fresh" in sm._sessions
 
@@ -156,6 +170,11 @@ class TestSplitMessage:
             for chunk in split_message(text, max_len):
                 assert len(chunk) <= max_len, f"Chunk exceeds {max_len}: {chunk[:50]!r}"
 
+    def test_preserves_whitespace_and_newlines_when_split(self):
+        text = "  Intro paragraph.\n\n    indented line\n\nTrailing spaces  "
+        chunks = split_message(text, 20)
+        assert "".join(chunks) == text
+
     def test_whitespace_only_returns_empty(self):
         assert split_message("   ", 100) == []
 
@@ -186,6 +205,47 @@ class TestPlatformFormatters:
 
     def test_format_for_discord_short(self):
         assert format_for_discord("Hi there!") == ["Hi there!"]
+
+
+class TestStatusFormatting:
+    def test_format_uptime_human_readable(self):
+        assert format_uptime(5) == "5s"
+        assert format_uptime(65) == "1m 5s"
+        assert format_uptime(3661) == "1h 1m 1s"
+
+    def test_describe_mood(self):
+        text = describe_mood("curiosity", valence=0.3, arousal=0.2)
+        assert "curiosity" in text
+        assert "positive" in text
+
+    def test_render_status_text_plain(self):
+        text = render_status_text(
+            {
+                "name": "Gwenn",
+                "emotion": "neutral",
+                "valence": 0.1,
+                "arousal": 0.2,
+                "working_memory_load": 0.4,
+                "total_interactions": 7,
+                "uptime_seconds": 125,
+                "resilience": {"breaker_active": False},
+            }
+        )
+        assert "Mood:" in text
+        assert "Stress guardrail: normal" in text
+        assert "Awake for: 2m 5s" in text
+
+    def test_render_heartbeat_text_plain(self):
+        text = render_heartbeat_text(
+            {
+                "running": True,
+                "beat_count": 3,
+                "current_interval": 30,
+                "beats_since_consolidation": 1,
+            }
+        )
+        assert "Heartbeat Status" in text
+        assert "Beat count: 3" in text
 
 
 # ============================================================================

@@ -160,6 +160,51 @@ class TestRetrieveScoring:
 
 
 # ---------------------------------------------------------------------------
+# Retrieval modes (keyword / embedding / hybrid)
+# ---------------------------------------------------------------------------
+
+class TestRetrievalModes:
+    """Ensure retrieval mode switching behaves predictably."""
+
+    def test_embedding_mode_uses_vector_scores(self):
+        now = time.time()
+        mem = EpisodicMemory(
+            importance_weight=0.0,
+            recency_weight=0.0,
+            relevance_weight=1.0,
+            retrieval_mode="embedding",
+            vector_search_fn=lambda _q, _k: [("ep-b", 0.9), ("ep-a", 0.1)],
+        )
+        mem.encode(Episode(episode_id="ep-a", content="alpha", timestamp=now))
+        mem.encode(Episode(episode_id="ep-b", content="beta", timestamp=now))
+
+        results = mem.retrieve(query="anything", top_k=2)
+        assert results[0][0].episode_id == "ep-b"
+
+    def test_hybrid_mode_blends_keyword_and_embedding(self):
+        now = time.time()
+        mem = EpisodicMemory(
+            importance_weight=0.0,
+            recency_weight=0.0,
+            relevance_weight=1.0,
+            retrieval_mode="hybrid",
+            hybrid_keyword_weight=0.2,
+            hybrid_embedding_weight=0.8,
+            vector_search_fn=lambda _q, _k: [("ep-vec", 1.0), ("ep-key", 0.0)],
+        )
+        mem.encode(Episode(episode_id="ep-key", content="python decorators", timestamp=now))
+        mem.encode(Episode(episode_id="ep-vec", content="unrelated text", timestamp=now))
+
+        results = mem.retrieve(query="python decorators", top_k=2)
+        assert results[0][0].episode_id == "ep-vec"
+
+    def test_get_episode_by_id(self, episodic_memory):
+        episodic_memory.encode(Episode(episode_id="known", content="known"))
+        assert episodic_memory.get_episode("known") is not None
+        assert episodic_memory.get_episode("missing") is None
+
+
+# ---------------------------------------------------------------------------
 # Mood-congruent retrieval bias
 # ---------------------------------------------------------------------------
 

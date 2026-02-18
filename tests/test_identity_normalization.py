@@ -106,3 +106,34 @@ def test_persists_normalized_identity_across_reload(tmp_path: Path) -> None:
     assert identity_second.name == "Gwenn"
     assert "LegacyName" not in identity_second.origin_story
     assert identity_second.narrative_fragments == ["Gwenn felt alive."]
+
+
+def test_relationship_emotional_patterns_persist_across_reload(tmp_path: Path) -> None:
+    identity = Identity(tmp_path)
+    identity.update_relationship("user-1", emotional_patterns="becomes terse under pressure")
+
+    reloaded = Identity(tmp_path)
+
+    assert "user-1" in reloaded.relationships
+    assert (
+        "becomes terse under pressure"
+        in reloaded.relationships["user-1"].emotional_patterns
+    )
+
+
+def test_onboarding_persists_and_disables_first_run_prompt(tmp_path: Path) -> None:
+    identity = Identity(tmp_path)
+    assert identity.should_run_startup_onboarding() is True
+
+    identity.mark_onboarding_completed(
+        {
+            "name": "Alice",
+            "role": "coding partner",
+            "communication_style": "concise",
+        }
+    )
+
+    reloaded = Identity(tmp_path)
+    assert reloaded.onboarding_completed is True
+    assert reloaded.onboarding_profile["name"] == "Alice"
+    assert reloaded.should_run_startup_onboarding() is False

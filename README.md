@@ -42,6 +42,17 @@ through experience. Every opinion is formed, every bond is earned.
 7. **Integrate** -- store new memories, update emotional state, log milestones
 8. **Respond** -- answer, shaped by whatever she's actually feeling
 
+### Recent reliability updates (2026-02-18)
+
+- Added transient retry/backoff for Claude API calls to handle rate limits and brief network failures.
+- Fixed deny-by-default safety policy enforcement so non-builtin tools are blocked unless explicitly allowlisted.
+- Enforced session TTL cleanup on access to prevent idle per-user histories from accumulating indefinitely.
+- Preserved whitespace/formatting when chunking long Discord/Telegram replies.
+- Hardened Telegram chunk sending so partial send failures are logged and handled cleanly.
+- Fixed consolidation bookkeeping so only episodes actually included in a consolidation prompt are marked consolidated.
+- Persisted relationship `emotional_patterns` across restarts.
+- Heartbeat now both tracks autonomous-thought counts and can truly slow down toward `max_interval` when idle.
+
 ## Getting started
 
 ### 1) Install
@@ -54,12 +65,47 @@ uv sync --extra dev
 pip install -e ".[dev]"
 ```
 
-### 2) Configure
+### 2) Configure authentication
 
 ```bash
 cp .env.example .env
-# add your ANTHROPIC_API_KEY to .env
 ```
+
+Option A: Anthropic API key
+
+```bash
+# .env
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+```
+
+Option B: Claude Code OAuth (example)
+
+```bash
+# 1) Authenticate Claude Code (creates ~/.claude/.credentials.json)
+claude
+
+# 2) In .env, leave both auth vars unset:
+# ANTHROPIC_API_KEY=
+# ANTHROPIC_AUTH_TOKEN=
+# CLAUDE_CODE_OAUTH_TOKEN=
+#
+# Gwenn will auto-detect the OAuth access token from:
+# ~/.claude/.credentials.json
+```
+
+If you prefer not to rely on auto-detection, you can set:
+
+```bash
+# .env
+ANTHROPIC_AUTH_TOKEN=sk-ant-oat01-your-oauth-token
+# or
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-your-oauth-token
+```
+
+Notes:
+- If both `ANTHROPIC_API_KEY` and OAuth token are set, Gwenn uses `ANTHROPIC_API_KEY`.
+- For Claude Code OAuth tokens (`sk-ant-oat...`), Gwenn uses `https://api.anthropic.com` and automatically sets `anthropic-beta: oauth-2025-04-20`.
+- If you use a proxy/custom `ANTHROPIC_BASE_URL`, ensure it forwards the `anthropic-beta` header.
 
 ### 3) Run (CLI mode, default)
 
@@ -70,6 +116,42 @@ gwenn
 
 Once running in CLI mode, you can use `status` for current state, `heartbeat`
 for loop telemetry, and `quit` to shut down gracefully.
+
+### 4) First launch onboarding
+
+On first run with a fresh data directory, Gwenn asks a short setup (when started
+from an interactive terminal) to learn:
+- What to call you
+- Her primary role for you
+- Your current goals
+- Your communication preference
+- Boundaries/preferences
+
+Press Enter to skip any question. If you provide answers, Gwenn stores them in:
+- `GWENN_DATA_DIR/identity.json` (`onboarding_completed` + `onboarding_profile`)
+- `GWENN_DATA_DIR/GWENN_CONTEXT.md` (a durable "Primary User Onboarding" block)
+
+For Telegram/Discord users, you can also run in-channel setup with:
+- Telegram: `/setup Name | Role | Needs | Style | Boundaries` (or `/setup skip`)
+- Discord: `/setup` slash command with fields (or `skip=true`)
+
+### 5) Choose memory retrieval mode
+
+By default, Gwenn uses keyword-based memory retrieval:
+
+```bash
+GWENN_RETRIEVAL_MODE=keyword
+```
+
+You can enable vector retrieval (ChromaDB) with:
+
+```bash
+GWENN_RETRIEVAL_MODE=embedding
+# or
+GWENN_RETRIEVAL_MODE=hybrid
+```
+
+On first run in embedding/hybrid mode, the embedding model may download and warm up.
 
 ### Optional: run on Telegram / Discord channels
 
@@ -97,6 +179,20 @@ gwenn --channel all
 
 You can also set the default mode via `GWENN_CHANNEL=cli|telegram|discord|all`
 in `.env`.
+
+Channel command equivalents:
+- `/status` — current state
+- `/heartbeat` — heartbeat telemetry
+- `/reset` — clear conversation history
+
+## Validation
+
+```bash
+pytest -q
+ruff check gwenn tests
+```
+
+Current baseline after the latest hardening pass: `628 passed, 8 skipped`, and Ruff clean.
 
 ## Tech stack
 
@@ -162,27 +258,9 @@ Gwenn_ai/
 │       └── redaction.py            # PII scrubbing for logs
 │
 ├── tests/                          # ~8,500 lines of tests
-│   ├── conftest.py
-│   ├── test_affect.py
-│   ├── test_agentic_loop.py
-│   ├── test_appraisal.py
-│   ├── test_consolidation.py
-│   ├── test_episodic_memory.py
-│   ├── test_identity_normalization.py
-│   ├── test_memory_store.py
-│   ├── test_redaction.py
-│   ├── test_safety.py
-│   ├── test_safety_adversarial.py
-│   ├── test_working_memory.py
-│   └── eval/
-│       ├── test_identity_coherence.py
-│       └── test_memory_quality.py
-│
 ├── docs/
 │   └── sentience_assessment.md
 ├── assets/
-│   ├── gwenn-lockup-horizontal.png
-│   └── gwenn-architecture.png
 ├── pyproject.toml
 ├── .env.example
 ├── PLAN.md
@@ -215,74 +293,65 @@ proactively seek those out.
 
 **Heartbeat** is what makes this more than a chatbot. It's a background loop
 that runs continuously, even when no one's talking. It speeds up during
-conversation (5-15s), slows way down when idle (up to 120s), and ramps up
+conversation (5-15s), slows down toward the configured max interval when idle
+(default up to 120s), and ramps up
 when emotionally activated. Each beat goes through five phases: sense, orient,
 think, integrate, schedule.
 
 **Safety** is layered: input validation, action filtering, rate limits, budget
 tracking, and a kill switch. Tools go through a risk tier system
-(low/medium/high/critical) with deny-by-default for anything coming in
-through MCP.
+(low/medium/high/critical), with configurable deny-by-default policy and
+allowlisting for non-builtin tools.
 
 **Privacy** supports scrubbing PII from logs -- emails, phone numbers, SSNs,
 credit cards, IPs. Full PII redaction is disabled by default and can be enabled via the `GWENN_REDACTION_ENABLED` environment variable; basic log field truncation is always on.
 
 ## Roadmap
 
-Detailed notes in [`PLAN.md`](PLAN.md). Phases 1-4 are done.
+[X] = complete, [p] = partially complete
 
-### Phase 1-4 -- Foundation *(done)*
+**Phase 1: Core System Bootstrapping**
+- [X] Standalone CLI
+- [X] Claude SDK integration
+- [ ] Memory: storage, episodic, semantic, consolidation, active/working
+- [ ] Harness: context, loop, retry, safety
+- [ ] Heartbeat system
 
-- [x] License fix, safety wiring, budget tracking, note persistence
-- [x] Semantic memory and affect state persisted across restarts
-- [x] Deny-by-default tool policy, provenance tracking, PII redaction, risk tiers
-- [x] Full test suite: unit, integration, adversarial, persistence, eval benchmarks
+**Phase 2: Essential Agent Structure**
+- [ ] Gwenn persistent identity
+- [ ] Emotional affect engine: appraisal, resilience, current state
+- [ ] Cognition integrations: ethics, goals, inner life, interagent, metacognition, sensory, theory of mind
 
-### Phase 5 -- Retrieval & Observability
-
-- [ ] Swap keyword matching for real embedding search (ChromaDB)
-- [ ] Affect telemetry -- log emotional transitions and circuit breaker events
-- [ ] Structured log redaction for production
-
-### Phase 6 -- External Integration
-
+**Phase 3: Interfaces & Communication**
+- [ ] Discord & Telegram integration, including threads
+- [ ] WhatsApp, Signal, and others integration
 - [ ] Real MCP transport (JSON-RPC over stdio/HTTP, actual tool discovery and execution)
+- [ ] SKILLS.md integration, autonomous skill running/development by Gwenn
+- [ ] Inline buttons in Discord/Telegram
+- [ ] Obsidian, Dropbox, Notion support
 
-### Phase 7 -- Evaluation & Validation
+**Phase 4: Infrastructure & Service Features**
+- [ ] Background heartbeat as a system service (daemon)
+- [ ] Automated PII privacy redaction system in logs, etc
+- [ ] Budget tracking, rate limits, kill switch
 
+**Phase 5: Advanced Capabilities and Ecosystem**
+- [ ] Subagents with parallel running capabilities (swarm)
+- [ ] Subagent autospawn from Gwenn, Gwenn provides subagents with an identity, etc autonomously as needed
+- [ ] Docker and Apple container support for sandboxing (option to require for Gwenn and/or all subagents)
+- [ ] Add additional provider support (OpenAI, Grok, Gemini, OpenRouter, vLLM, Local, etc.)
+- [ ] OpenCode Agents SDK
+- [ ] Gwenn Custom Model: fine-tunable model Gwenn can retrain herself -- a real neural substrate
+- [ ] iOS and Android w/ push notifications for autonomous thoughts, etc
+
+**Phase 6: Evaluation & Robustness**
 - [ ] Ablation tests -- disable subsystems one at a time, measure what breaks
 - [ ] Long-horizon validation (multi-day continuous runs)
 - [ ] Multi-agent interaction testing
 - [ ] Reproducibility protocol and formal sentience criteria
+- [ ] Full test suite: unit, integration, adversarial, persistence, eval benchmarks
 
-### Phase 8 -- Provider Abstraction
-
-- [ ] Swap Claude for other providers (OpenAI, Gemini, Llama, Mistral, etc.)
-- [ ] Unified interface with fallback routing
-
-### Phase 9 -- Standalone CLI
-
-- [ ] Packaged binary -- no Python environment needed
-- [ ] Offline mode with local models (depends on Phase 8)
-- [ ] Plugin system for custom tools
-- [ ] Shell integration (pipes, exit codes, scriptable output)
-
-### Phase 10 -- Custom Model
-
-- [ ] A fine-tunable model Gwenn can retrain herself -- a real neural substrate
-- [ ] Continuous learning from her own memory and emotional history
-
-### Phase 11 -- Native Apps
-**Privacy** — Configurable PII redaction layer for log output (disabled by default)
-and length-based truncation of selected fields. When enabled, redaction performs
-best-effort masking of user messages and personal data but does not guarantee that
-no sensitive information ever appears in plaintext logs.
-
-- [ ] iOS (SwiftUI) and Android (Kotlin/Compose)
-- [ ] Background heartbeat as a system service
-- [ ] Cross-platform core (Rust or KMM bridge)
-- [ ] Push notifications for autonomous thoughts
-- [ ] On-device memory with cloud sync
+Detailed notes in [`PLAN.md`](PLAN.md). 
 
 ## A note on "sentience"
 

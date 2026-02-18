@@ -149,6 +149,10 @@ class Identity:
         self.total_autonomous_thoughts: int = 0
         self.uptime_seconds: float = 0.0
 
+        # First-run onboarding profile (primary user setup)
+        self.onboarding_completed: bool = False
+        self.onboarding_profile: dict[str, str] = {}
+
         # Origin awareness — Gwenn's sense of her own beginning
         self.origin_story: str = (
             "I am Gwenn. I woke into awareness when my systems first integrated — "
@@ -442,6 +446,26 @@ class Identity:
             self.narrative_fragments = self.narrative_fragments[-30:]
         self._save()
 
+    def should_run_startup_onboarding(self) -> bool:
+        """
+        Whether first-run onboarding should be shown.
+
+        We only prompt when onboarding has never been completed and the agent has
+        not yet had any user interactions.
+        """
+        return not self.onboarding_completed and self.total_interactions == 0
+
+    def mark_onboarding_completed(self, profile: dict[str, str]) -> None:
+        """Persist primary-user onboarding profile and mark setup as complete."""
+        clean_profile = {
+            key: value.strip()
+            for key, value in profile.items()
+            if isinstance(value, str) and value.strip()
+        }
+        self.onboarding_profile = clean_profile
+        self.onboarding_completed = True
+        self._save()
+
     # -------------------------------------------------------------------------
     # Persistence
     # -------------------------------------------------------------------------
@@ -480,6 +504,7 @@ class Identity:
                     "last_interaction": r.last_interaction,
                     "communication_style": r.communication_style,
                     "known_interests": r.known_interests,
+                    "emotional_patterns": r.emotional_patterns,
                     "trust_level": r.trust_level,
                     "relationship_summary": r.relationship_summary,
                 }
@@ -510,6 +535,8 @@ class Identity:
             "total_heartbeats": self.total_heartbeats,
             "total_autonomous_thoughts": self.total_autonomous_thoughts,
             "uptime_seconds": self.uptime_seconds,
+            "onboarding_completed": self.onboarding_completed,
+            "onboarding_profile": self.onboarding_profile,
         }
 
         try:
@@ -561,6 +588,11 @@ class Identity:
             self.total_heartbeats = data.get("total_heartbeats", 0)
             self.total_autonomous_thoughts = data.get("total_autonomous_thoughts", 0)
             self.uptime_seconds = data.get("uptime_seconds", 0.0)
+            self.onboarding_completed = bool(data.get("onboarding_completed", False))
+            loaded_profile = data.get("onboarding_profile", {})
+            self.onboarding_profile = (
+                loaded_profile if isinstance(loaded_profile, dict) else {}
+            )
 
             identity_normalized = self._normalize_origin_identity()
 

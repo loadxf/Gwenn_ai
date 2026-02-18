@@ -22,6 +22,7 @@ import time
 import pytest
 
 from gwenn.memory.episodic import Episode, EpisodicMemory
+from gwenn.memory.semantic import SemanticMemory
 from gwenn.memory.working import WorkingMemoryItem
 
 
@@ -417,6 +418,28 @@ class TestSemanticMemoryQuality:
         context = seeded_semantic_memory.get_context_for("python")
         assert "python" in context.lower()
         assert len(context) > 0
+
+    def test_embedding_mode_uses_vector_scores(self):
+        semantic = SemanticMemory(retrieval_mode="embedding")
+        a = semantic.store_knowledge("alpha", "alpha content", confidence=0.9)
+        b = semantic.store_knowledge("beta", "beta content", confidence=0.9)
+        semantic.set_vector_search(lambda _q, _k: [(b.node_id, 0.9), (a.node_id, 0.1)])
+
+        results = semantic.query("anything", top_k=2)
+        assert results[0].label == "beta"
+
+    def test_hybrid_mode_blends_keyword_and_vector(self):
+        semantic = SemanticMemory(
+            retrieval_mode="hybrid",
+            hybrid_keyword_weight=0.2,
+            hybrid_embedding_weight=0.8,
+        )
+        kw = semantic.store_knowledge("python", "python decorators", confidence=0.8)
+        vec = semantic.store_knowledge("vectors", "unrelated text", confidence=0.8)
+        semantic.set_vector_search(lambda _q, _k: [(vec.node_id, 1.0), (kw.node_id, 0.0)])
+
+        results = semantic.query("python decorators", top_k=2)
+        assert results[0].label == "vectors"
 
 
 # ===========================================================================

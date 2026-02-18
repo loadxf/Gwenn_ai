@@ -27,6 +27,7 @@ import time
 from enum import Enum
 from typing import Any, Optional
 
+import anthropic
 import structlog
 
 from gwenn.affect.state import AffectiveState, EmotionLabel
@@ -124,6 +125,8 @@ class InnerLife:
             mode: 0 for mode in ThinkingMode
         }
         self._total_thoughts = 0
+        self._last_connection_warning_at = 0.0
+        self._last_auth_warning_at = 0.0
 
         logger.info("inner_life.initialized")
 
@@ -245,6 +248,38 @@ class InnerLife:
             )
             return thought
         except Exception as e:
+            if isinstance(e, anthropic.APIConnectionError):
+                now = time.time()
+                if now - self._last_connection_warning_at >= 60.0:
+                    self._last_connection_warning_at = now
+                    logger.warning(
+                        "inner_life.api_unreachable",
+                        mode=mode.value,
+                        error=str(e),
+                    )
+                else:
+                    logger.debug(
+                        "inner_life.api_unreachable_suppressed",
+                        mode=mode.value,
+                    )
+                return None
+
+            if isinstance(e, anthropic.AuthenticationError):
+                now = time.time()
+                if now - self._last_auth_warning_at >= 60.0:
+                    self._last_auth_warning_at = now
+                    logger.error(
+                        "inner_life.auth_failed",
+                        mode=mode.value,
+                        error=str(e),
+                    )
+                else:
+                    logger.debug(
+                        "inner_life.auth_failed_suppressed",
+                        mode=mode.value,
+                    )
+                return None
+
             logger.error("inner_life.thought_failed", mode=mode.value, error=str(e))
             return None
 

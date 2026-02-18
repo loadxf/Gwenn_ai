@@ -25,6 +25,8 @@ def _guard(
     max_iters: int = 25,
     approval_for: list[str] | None = None,
     sandbox: bool = True,
+    default_policy: str = "allow",
+    allowed_tools: list[str] | None = None,
 ) -> SafetyGuard:
     """Build a SafetyGuard with the given config, no ANTHROPIC_API_KEY needed.
 
@@ -35,6 +37,8 @@ def _guard(
         GWENN_MAX_TOOL_ITERATIONS=max_iters,
         GWENN_REQUIRE_APPROVAL_FOR=approval_for or ["file_write"],
         GWENN_SANDBOX_ENABLED=sandbox,
+        GWENN_TOOL_DEFAULT_POLICY=default_policy,
+        GWENN_ALLOWED_TOOLS=allowed_tools or [],
     )
     return SafetyGuard(cfg)
 
@@ -253,6 +257,17 @@ class TestCheckToolCallBlocking:
         assert result.allowed is True
         assert result.risk_level == "low"
         assert result.requires_approval is False
+
+    def test_deny_policy_blocks_non_builtin_when_allowlist_empty(self):
+        guard = _guard(default_policy="deny", allowed_tools=[])
+        result = guard.check_tool_call("echo", {"text": "hello"})
+        assert result.allowed is False
+        assert "allowed tools list" in result.reason
+
+    def test_deny_policy_allows_allowlisted_tool(self):
+        guard = _guard(default_policy="deny", allowed_tools=["echo"])
+        result = guard.check_tool_call("echo", {"text": "hello"})
+        assert result.allowed is True
 
 
 # ---------------------------------------------------------------------------

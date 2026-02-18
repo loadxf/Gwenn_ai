@@ -17,6 +17,7 @@ The store handles:
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from pathlib import Path
@@ -126,10 +127,20 @@ class MemoryStore:
     synchronous version is correct and easier to reason about.
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        vector_db_path: Optional[Path] = None,
+        enable_vector_search: bool = False,
+    ):
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
+        self._vector_db_path = vector_db_path or (self._db_path.parent / "semantic_vectors")
+        self._enable_vector_search = enable_vector_search
+        self._vector_client: Any = None
+        self._episodes_collection: Any = None
+        self._knowledge_collection: Any = None
 
         logger.info("memory_store.initializing", path=str(db_path))
 
@@ -147,6 +158,8 @@ class MemoryStore:
         self._conn.executescript(SEMANTIC_SCHEMA)
         self._conn.commit()
 
+        self._initialize_vector_store()
+
         logger.info("memory_store.initialized", path=str(self._db_path))
 
     def close(self) -> None:
@@ -154,6 +167,174 @@ class MemoryStore:
         if self._conn:
             self._conn.close()
             self._conn = None
+        self._vector_client = None
+        self._episodes_collection = None
+        self._knowledge_collection = None
+
+    # -------------------------------------------------------------------------
+    # Vector Store (Embedding Retrieval)
+    # -------------------------------------------------------------------------
+
+    def _initialize_vector_store(self) -> None:
+        """Initialize optional ChromaDB persistence for embedding retrieval."""
+        if not self._enable_vector_search:
+            return
+
+        try:
+            import chromadb
+        except Exception as e:
+            logger.warning(
+                "memory_store.vector_unavailable",
+                error=str(e),
+            )
+            self._enable_vector_search = False
+            return
+
+        try:
+            self._vector_db_path.mkdir(parents=True, exist_ok=True)
+            self._vector_client = chromadb.PersistentClient(path=str(self._vector_db_path))
+            self._episodes_collection = self._vector_client.get_or_create_collection(
+                name="gwenn_episodes"
+            )
+            self._knowledge_collection = self._vector_client.get_or_create_collection(
+                name="gwenn_knowledge_nodes"
+            )
+            logger.info(
+                "memory_store.vector_initialized",
+                path=str(self._vector_db_path),
+            )
+        except Exception as e:
+            logger.warning(
+                "memory_store.vector_init_failed",
+                error=str(e),
+            )
+            self._enable_vector_search = False
+            self._vector_client = None
+            self._episodes_collection = None
+            self._knowledge_collection = None
+
+    def _distance_to_similarity(self, distance: float) -> float:
+        """
+        Convert a Chroma distance value to a bounded similarity score [0, 1].
+
+        Chroma distances depend on collection settings; this transform is robust
+        for cosine/L2 distances and only needs monotonic behavior.
+        """
+        if distance is None:
+            return 0.0
+        if math.isnan(distance):
+            return 0.0
+        return 1.0 / (1.0 + max(0.0, float(distance)))
+
+    def _episode_document(self, episode: Episode) -> str:
+        tag_text = " ".join(episode.tags) if episode.tags else ""
+        return f"{episode.content}\n{tag_text}".strip()
+
+    def upsert_episode_embedding(self, episode: Episode) -> None:
+        """Upsert an episodic memory document in the vector index."""
+        if not self._episodes_collection:
+            return
+        try:
+            self._episodes_collection.upsert(
+                ids=[episode.episode_id],
+                documents=[self._episode_document(episode)],
+                metadatas=[{
+                    "category": episode.category or "general",
+                    "importance": float(episode.importance),
+                    "timestamp": float(episode.timestamp),
+                    "consolidated": int(bool(episode.consolidated)),
+                }],
+            )
+        except Exception as e:
+            logger.warning(
+                "memory_store.episode_vector_upsert_failed",
+                episode_id=episode.episode_id,
+                error=str(e),
+            )
+
+    def query_episode_embeddings(self, query_text: str, top_k: int = 20) -> list[tuple[str, float]]:
+        """Return (episode_id, similarity) results from vector search."""
+        if not self._episodes_collection or not query_text.strip():
+            return []
+        try:
+            result = self._episodes_collection.query(
+                query_texts=[query_text],
+                n_results=max(1, int(top_k)),
+                include=["distances"],
+            )
+            ids = (result.get("ids") or [[]])[0]
+            distances = (result.get("distances") or [[]])[0]
+            scored = [
+                (doc_id, self._distance_to_similarity(distance))
+                for doc_id, distance in zip(ids, distances)
+            ]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored
+        except Exception as e:
+            logger.warning(
+                "memory_store.episode_vector_query_failed",
+                error=str(e),
+            )
+            return []
+
+    def upsert_knowledge_embedding(
+        self,
+        node_id: str,
+        label: str,
+        category: str,
+        content: str,
+        confidence: float,
+        last_updated: float,
+    ) -> None:
+        """Upsert a semantic knowledge node in the vector index."""
+        if not self._knowledge_collection:
+            return
+        try:
+            self._knowledge_collection.upsert(
+                ids=[node_id],
+                documents=[f"{label}\n{content}".strip()],
+                metadatas=[{
+                    "label": label,
+                    "category": category or "concept",
+                    "confidence": float(confidence),
+                    "last_updated": float(last_updated),
+                }],
+            )
+        except Exception as e:
+            logger.warning(
+                "memory_store.knowledge_vector_upsert_failed",
+                node_id=node_id,
+                error=str(e),
+            )
+
+    def query_knowledge_embeddings(
+        self,
+        query_text: str,
+        top_k: int = 20,
+    ) -> list[tuple[str, float]]:
+        """Return (node_id, similarity) results from vector search."""
+        if not self._knowledge_collection or not query_text.strip():
+            return []
+        try:
+            result = self._knowledge_collection.query(
+                query_texts=[query_text],
+                n_results=max(1, int(top_k)),
+                include=["distances"],
+            )
+            ids = (result.get("ids") or [[]])[0]
+            distances = (result.get("distances") or [[]])[0]
+            scored = [
+                (doc_id, self._distance_to_similarity(distance))
+                for doc_id, distance in zip(ids, distances)
+            ]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored
+        except Exception as e:
+            logger.warning(
+                "memory_store.knowledge_vector_query_failed",
+                error=str(e),
+            )
+            return []
 
     # -------------------------------------------------------------------------
     # Episodic Memory Persistence
@@ -182,10 +363,11 @@ class MemoryStore:
             ),
         )
         self._conn.commit()
+        self.upsert_episode_embedding(episode)
 
     def load_episodes(
         self,
-        limit: int = 1000,
+        limit: Optional[int] = 1000,
         since: Optional[float] = None,
         category: Optional[str] = None,
     ) -> list[Episode]:
@@ -200,8 +382,10 @@ class MemoryStore:
             query += " AND category = ?"
             params.append(category)
 
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY timestamp DESC"
+        if limit is not None and limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
 
         cursor = self._conn.execute(query, params)
         rows = cursor.fetchall()
@@ -286,6 +470,14 @@ class MemoryStore:
              json.dumps(source_episodes), created_at, last_updated, access_count),
         )
         self._conn.commit()
+        self.upsert_knowledge_embedding(
+            node_id=node_id,
+            label=label,
+            category=category,
+            content=content,
+            confidence=confidence,
+            last_updated=last_updated,
+        )
 
     def load_knowledge_nodes(self) -> list[dict]:
         """Load all knowledge nodes from the database."""
@@ -370,4 +562,6 @@ class MemoryStore:
             "identity_snapshots": identity_count,
             "knowledge_nodes": knowledge_count,
             "db_path": str(self._db_path),
+            "vector_enabled": bool(self._episodes_collection and self._knowledge_collection),
+            "vector_db_path": str(self._vector_db_path),
         }

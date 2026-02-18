@@ -12,6 +12,7 @@ higher function — there had to be the ability to think at all.
 
 from __future__ import annotations
 
+import socket
 import time
 from typing import Any, Optional
 
@@ -21,6 +22,13 @@ import structlog
 from gwenn.config import ClaudeConfig
 
 logger = structlog.get_logger(__name__)
+
+CLAUDE_CODE_OAUTH_PREFIX = "sk-ant-oat"
+CLAUDE_CODE_OAUTH_BETA_HEADER = "oauth-2025-04-20"
+
+
+class CognitiveEngineInitError(RuntimeError):
+    """Raised when the cognitive engine cannot be initialized safely."""
 
 
 class CognitiveEngine:
@@ -38,10 +46,18 @@ class CognitiveEngine:
     """
 
     def __init__(self, config: ClaudeConfig):
-        if config.auth_token:
-            self._async_client = anthropic.AsyncAnthropic(auth_token=config.auth_token)
-        else:
+        self._auth_method = "api_key" if config.api_key else "oauth"
+
+        if config.api_key:
+            # Prefer API keys when both are present: they're the stable path for
+            # Anthropic Messages API and avoid OAuth endpoint incompatibilities.
             self._async_client = anthropic.AsyncAnthropic(api_key=config.api_key)
+        else:
+            oauth_kwargs: dict[str, Any] = {"auth_token": config.auth_token}
+            oauth_headers = self._oauth_default_headers(config.auth_token)
+            if oauth_headers:
+                oauth_kwargs["default_headers"] = oauth_headers
+            self._async_client = anthropic.AsyncAnthropic(**oauth_kwargs)
         self._model = config.model
         self._max_tokens = config.max_tokens
         self._thinking_budget = config.thinking_budget
@@ -52,11 +68,48 @@ class CognitiveEngine:
         self._total_calls = 0
         self._last_call_time: Optional[float] = None
 
+        self._verify_base_url_dns()
+
         logger.info(
             "cognitive_engine.initialized",
             model=self._model,
-            auth_method="oauth" if config.auth_token else "api_key",
+            auth_method=self._auth_method,
+            base_url=str(self._async_client.base_url),
+            oauth_beta_enabled=bool(
+                config.auth_token and config.auth_token.startswith(CLAUDE_CODE_OAUTH_PREFIX)
+            ),
         )
+
+    def _oauth_default_headers(self, auth_token: Optional[str]) -> Optional[dict[str, str]]:
+        """
+        Return default headers for OAuth clients.
+
+        Claude Code OAuth tokens require the oauth beta header when calling
+        the Messages API via api.anthropic.com.
+        """
+        if auth_token and auth_token.startswith(CLAUDE_CODE_OAUTH_PREFIX):
+            return {"anthropic-beta": CLAUDE_CODE_OAUTH_BETA_HEADER}
+        return None
+
+    def _verify_base_url_dns(self) -> None:
+        """Warn early when the configured API host cannot be resolved."""
+        host = self._async_client.base_url.host
+        if not host:
+            return
+        try:
+            socket.getaddrinfo(host, None)
+        except OSError as exc:
+            hint = (
+                "Check DNS/firewall for this host, or use ANTHROPIC_API_KEY "
+                "authentication if available."
+            )
+            logger.warning(
+                "cognitive_engine.unresolvable_api_host",
+                host=host,
+                base_url=str(self._async_client.base_url),
+                error=str(exc),
+                hint=hint,
+            )
 
     # -------------------------------------------------------------------------
     # Core thinking method — the fundamental cognitive act
@@ -121,10 +174,9 @@ class CognitiveEngine:
 
         # Add extended thinking if requested
         if enable_thinking:
-            kwargs["thinking"] = {
-                "type": "adaptive",
-                "budget_tokens": self._thinking_budget,
-            }
+            # Adaptive thinking mode no longer accepts budget_tokens in current
+            # Anthropic API validation for this model/auth path.
+            kwargs["thinking"] = {"type": "adaptive"}
 
         # Make the API call — the actual moment of cognition
         from gwenn.harness.retry import RetryConfig, with_retries
@@ -143,18 +195,25 @@ class CognitiveEngine:
             response = await with_retries(
                 _create,
                 config=retry_config,
-                on_retry=lambda attempt, error, delay: logger.warning(
-                    "cognitive_engine.retrying",
-                    attempt=attempt,
-                    error_type=type(error).__name__,
-                    delay_seconds=round(delay, 2),
-                ),
+                on_retry=None,
             )
+        except anthropic.APIConnectionError as e:
+            base_url = getattr(self._async_client, "base_url", None)
+            logger.error(
+                "cognitive_engine.connection_error",
+                error=str(e),
+                base_url=str(base_url) if base_url is not None else None,
+            )
+            raise
         except anthropic.RateLimitError as e:
             logger.warning("cognitive_engine.rate_limited", error=str(e))
             raise
         except anthropic.APIError as e:
-            logger.error("cognitive_engine.api_error", error=str(e), status=e.status_code)
+            logger.error(
+                "cognitive_engine.api_error",
+                error=str(e),
+                status=getattr(e, "status_code", None),
+            )
             raise
 
         # Update telemetry

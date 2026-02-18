@@ -15,6 +15,7 @@ Message routing:
 Slash commands (registered on guild or globally):
   /status    — Gwenn's cognitive state (ephemeral)
   /heartbeat — heartbeat status (ephemeral)
+  /setup     — first-run onboarding profile (ephemeral)
   /reset     — clear conversation history (ephemeral)
   /help      — command list (ephemeral)
 """
@@ -26,7 +27,11 @@ import asyncio
 import structlog
 
 from gwenn.channels.base import BaseChannel
-from gwenn.channels.formatting import format_for_discord
+from gwenn.channels.formatting import (
+    format_for_discord,
+    render_heartbeat_text,
+    render_status_text,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -135,6 +140,15 @@ class DiscordChannel(BaseChannel):
             return
 
         raw_id = str(message.author.id)
+
+        if self._agent.identity.should_run_startup_onboarding():
+            await message.reply(
+                "Before we begin, run `/setup` so I can tailor how I help you.\n"
+                "You can also run `/setup skip`.",
+                mention_author=False,
+            )
+            return
+
         lock = self._user_locks.setdefault(raw_id, asyncio.Lock())
         async with lock:
             async with message.channel.typing():
@@ -165,14 +179,7 @@ class DiscordChannel(BaseChannel):
         @tree.command(name="status", description="See Gwenn's current cognitive state")
         async def slash_status(interaction) -> None:
             status = channel._agent.status
-            text = (
-                f"**{status['name']}** — Status\n"
-                f"Emotion: {status['emotion']} "
-                f"(valence={status['valence']:.2f}, arousal={status['arousal']:.2f})\n"
-                f"Working memory load: {status['working_memory_load']:.1%}\n"
-                f"Total interactions: {status['total_interactions']}\n"
-                f"Uptime: {status['uptime_seconds']:.0f}s"
-            )
+            text = render_status_text(status, markdown_heading=True)
             await interaction.response.send_message(text, ephemeral=True)
 
         @tree.command(name="heartbeat", description="See Gwenn's heartbeat status")
@@ -183,14 +190,49 @@ class DiscordChannel(BaseChannel):
                 )
                 return
             hb = channel._agent.heartbeat.status
-            text = (
-                f"**Heartbeat Status**\n"
-                f"Running: {hb['running']}\n"
-                f"Beat count: {hb['beat_count']}\n"
-                f"Current interval: {hb['current_interval']}s\n"
-                f"Beats since consolidation: {hb['beats_since_consolidation']}"
-            )
+            text = render_heartbeat_text(hb, markdown_heading=True)
             await interaction.response.send_message(text, ephemeral=True)
+
+        @tree.command(name="setup", description="Run first-time profile setup")
+        async def slash_setup(
+            interaction,
+            name: str = "",
+            role: str = "",
+            needs: str = "",
+            communication_style: str = "",
+            boundaries: str = "",
+            skip: bool = False,
+        ) -> None:
+            raw_id = str(interaction.user.id)
+            user_id = channel.make_user_id(raw_id)
+
+            if skip:
+                channel._agent.identity.mark_onboarding_completed({})
+                await interaction.response.send_message(
+                    "First-run setup skipped.", ephemeral=True
+                )
+                return
+
+            profile = {
+                "name": name.strip(),
+                "role": role.strip(),
+                "needs": needs.strip(),
+                "communication_style": communication_style.strip(),
+                "boundaries": boundaries.strip(),
+            }
+            if not any(profile.values()):
+                await interaction.response.send_message(
+                    "Provide at least one field (name/role/needs/style/boundaries), "
+                    "or use `skip=true`.",
+                    ephemeral=True,
+                )
+                return
+
+            channel._agent.apply_startup_onboarding(profile, user_id=user_id)
+            await interaction.response.send_message(
+                "Setup saved. I will use this as ongoing guidance.",
+                ephemeral=True,
+            )
 
         @tree.command(name="reset", description="Clear your conversation history with Gwenn")
         async def slash_reset(interaction) -> None:
@@ -207,6 +249,7 @@ class DiscordChannel(BaseChannel):
                 "**Gwenn Commands**\n"
                 "/status — see my current cognitive state\n"
                 "/heartbeat — see my heartbeat status\n"
+                "/setup — first-run profile setup\n"
                 "/reset — clear our conversation history\n"
                 "/help — this message\n\n"
                 "DM me or @mention me in a server to chat.",

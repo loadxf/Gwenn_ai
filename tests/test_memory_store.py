@@ -214,6 +214,12 @@ class TestEpisodeCRUD:
         for i in range(len(loaded) - 1):
             assert loaded[i].timestamp >= loaded[i + 1].timestamp
 
+    def test_load_episodes_without_limit_returns_all(self, store: MemoryStore):
+        for i in range(4):
+            store.save_episode(_make_episode(episode_id=f"ep-all-{i}"))
+        loaded = store.load_episodes(limit=None)
+        assert len(loaded) == 4
+
 
 # ---------------------------------------------------------------------------
 # 3. Episode filtering by timestamp (since) and category
@@ -636,6 +642,10 @@ class TestEdgeCases:
         store.clear_knowledge_edges()  # no error
         assert store.load_knowledge_edges() == []
 
+    def test_vector_queries_empty_when_vector_store_disabled(self, store: MemoryStore):
+        assert store.query_episode_embeddings("python", top_k=5) == []
+        assert store.query_knowledge_embeddings("python", top_k=5) == []
+
     # -- INSERT OR REPLACE behaviour for episodes --
 
     def test_episode_insert_or_replace_same_id(self, store: MemoryStore):
@@ -730,6 +740,7 @@ class TestEdgeCases:
         assert s["affect_snapshots"] == 1
         assert s["identity_snapshots"] == 1
         assert s["knowledge_nodes"] == 1
+        assert s["vector_enabled"] is False
 
         ms2.close()
 

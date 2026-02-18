@@ -26,6 +26,7 @@ them well" becomes the semantic facts: "Alice is interested in Python" and
 
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import Any, Optional
 
@@ -80,6 +81,8 @@ class ConsolidationEngine:
         self._interval = consolidation_interval
         self._last_consolidation = 0.0
         self._total_consolidations = 0
+        self._pending_episode_ids: list[str] = []
+        self._last_processed_episode_ids: list[str] = []
 
         logger.info(
             "consolidation_engine.initialized",
@@ -90,6 +93,15 @@ class ConsolidationEngine:
         """Check if enough time has passed for another consolidation pass."""
         return (time.time() - self._last_consolidation) >= self._interval
 
+    def mark_checked_no_work(self) -> None:
+        """
+        Record a consolidation check where there were no episodes to process.
+
+        Without this, heartbeat orientation can become permanently biased toward
+        consolidation when the episodic queue is empty.
+        """
+        self._last_consolidation = time.time()
+
     def get_consolidation_prompt(self) -> Optional[str]:
         """
         Build the prompt for the cognitive engine to perform consolidation.
@@ -97,11 +109,14 @@ class ConsolidationEngine:
         Returns None if there are no unconsolidated episodes to process.
         This prompt is then sent to CognitiveEngine.reflect() for processing.
         """
-        episodes = self._episodic.get_unconsolidated(max_age_hours=24.0)
+        episodes = self._episodic.get_unconsolidated(max_age_hours=None)
 
         if not episodes:
+            self._pending_episode_ids = []
             logger.debug("consolidation.no_episodes")
             return None
+
+        self._pending_episode_ids = [ep.episode_id for ep in episodes]
 
         # Format episodes for the prompt
         episode_texts = []
@@ -139,9 +154,14 @@ class ConsolidationEngine:
         """
         counts = {"facts": 0, "relationships": 0, "self_knowledge": 0, "patterns": 0}
 
-        # Gather source episode IDs for provenance tracking
-        source_episodes = self._episodic.get_unconsolidated()
-        source_episode_ids = [e.episode_id for e in source_episodes]
+        # Use the exact episode set that was sent in the prompt when available.
+        # This avoids consolidating episodes that arrived while the model was thinking.
+        source_episode_ids = list(self._pending_episode_ids)
+        if not source_episode_ids:
+            source_episode_ids = [
+                e.episode_id for e in self._episodic.get_unconsolidated(max_age_hours=None)
+            ]
+        self._last_processed_episode_ids = list(source_episode_ids)
 
         for line in response_text.strip().split("\n"):
             line = line.strip()
@@ -150,23 +170,30 @@ class ConsolidationEngine:
 
             try:
                 if line.startswith("FACT:"):
-                    self._process_fact(line, source_episode_ids=source_episode_ids)
-                    counts["facts"] += 1
+                    if self._process_fact(line, source_episode_ids=source_episode_ids):
+                        counts["facts"] += 1
                 elif line.startswith("RELATIONSHIP:"):
                     if self._process_relationship(line):
                         counts["relationships"] += 1
                 elif line.startswith("SELF:"):
-                    self._process_self_knowledge(line, source_episode_ids=source_episode_ids)
-                    counts["self_knowledge"] += 1
+                    if self._process_self_knowledge(line, source_episode_ids=source_episode_ids):
+                        counts["self_knowledge"] += 1
                 elif line.startswith("PATTERN:"):
-                    self._process_pattern(line, source_episode_ids=source_episode_ids)
-                    counts["patterns"] += 1
+                    if self._process_pattern(line, source_episode_ids=source_episode_ids):
+                        counts["patterns"] += 1
             except (ValueError, IndexError) as e:
                 logger.warning("consolidation.parse_error", line=line[:80], error=str(e))
                 continue
 
-        # Mark episodes as consolidated
-        self._episodic.mark_consolidated(source_episode_ids)
+        # Only mark episodes when extraction produced durable knowledge.
+        if sum(counts.values()) > 0:
+            self._episodic.mark_consolidated(source_episode_ids)
+        elif source_episode_ids:
+            logger.warning(
+                "consolidation.no_items_extracted",
+                episode_count=len(source_episode_ids),
+            )
+        self._pending_episode_ids = []
 
         self._last_consolidation = time.time()
         self._total_consolidations += 1
@@ -295,3 +322,8 @@ class ConsolidationEngine:
             "semantic_nodes": self._semantic.node_count,
             "semantic_edges": self._semantic.edge_count,
         }
+
+    @property
+    def last_processed_episode_ids(self) -> list[str]:
+        """Episode IDs included in the most recent consolidation response processing."""
+        return list(self._last_processed_episode_ids)

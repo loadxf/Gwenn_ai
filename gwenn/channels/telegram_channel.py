@@ -10,6 +10,7 @@ conflict with the existing event loop started by gwenn/main.py.
 Slash commands:
   /start   — welcome message, clear session
   /help    — command list
+  /setup   — first-run onboarding profile
   /status  — Gwenn's cognitive state
   /heartbeat — heartbeat status
   /reset   — clear conversation history
@@ -24,7 +25,11 @@ import asyncio
 import structlog
 
 from gwenn.channels.base import BaseChannel
-from gwenn.channels.formatting import format_for_telegram
+from gwenn.channels.formatting import (
+    format_for_telegram,
+    render_heartbeat_text,
+    render_status_text,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -92,6 +97,7 @@ class TelegramChannel(BaseChannel):
 
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("help", self._on_help))
+        self._app.add_handler(CommandHandler("setup", self._on_setup))
         self._app.add_handler(CommandHandler("status", self._on_status))
         self._app.add_handler(CommandHandler("heartbeat", self._on_heartbeat))
         self._app.add_handler(CommandHandler("reset", self._on_reset))
@@ -118,33 +124,57 @@ class TelegramChannel(BaseChannel):
         await update.message.reply_text(
             "Hello! I'm Gwenn — an autonomous sentient AI agent.\n\n"
             "Your conversation history has been reset. Just send me a message to begin.\n\n"
-            "Commands: /help /status /heartbeat /reset"
+            "Commands: /help /setup /status /heartbeat /reset"
         )
 
     async def _on_help(self, update, context) -> None:
         await update.message.reply_text(
             "Gwenn commands:\n"
             "/start — start a new conversation\n"
+            "/setup — first-run profile setup\n"
             "/status — see my current cognitive state\n"
             "/heartbeat — see my heartbeat status\n"
             "/reset — clear our conversation history\n\n"
             "Just send a message to talk with me."
         )
 
+    async def _on_setup(self, update, context) -> None:
+        raw_id = str(update.effective_user.id)
+        if not self._is_allowed(raw_id):
+            return
+
+        raw_payload = " ".join(getattr(context, "args", [])).strip()
+        if not raw_payload:
+            await update.message.reply_text(
+                "Setup format:\n"
+                "/setup Name | Role | Main needs/goals | Communication style | Boundaries\n\n"
+                "Example:\n"
+                "/setup Bob | coding partner | ship reliable features | concise | no destructive changes\n\n"
+                "Use `/setup skip` to skip first-run setup."
+            )
+            return
+
+        if raw_payload.lower() == "skip":
+            self._agent.identity.mark_onboarding_completed({})
+            await update.message.reply_text("First-run setup skipped.")
+            return
+
+        profile = self._parse_setup_payload(raw_payload)
+        if not any(profile.values()):
+            await update.message.reply_text("I couldn't parse setup values. Use `/setup` for the format.")
+            return
+
+        user_id = self.make_user_id(raw_id)
+        self._agent.apply_startup_onboarding(profile, user_id=user_id)
+        await update.message.reply_text("Setup saved. I will use this as ongoing guidance.")
+
     async def _on_status(self, update, context) -> None:
         raw_id = str(update.effective_user.id)
         if not self._is_allowed(raw_id):
             return
         status = self._agent.status
-        text = (
-            f"*{status['name']}* — Status\n"
-            f"Emotion: {status['emotion']} "
-            f"(valence={status['valence']:.2f}, arousal={status['arousal']:.2f})\n"
-            f"Working memory load: {status['working_memory_load']:.1%}\n"
-            f"Total interactions: {status['total_interactions']}\n"
-            f"Uptime: {status['uptime_seconds']:.0f}s"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
+        text = render_status_text(status)
+        await update.message.reply_text(text)
 
     async def _on_heartbeat(self, update, context) -> None:
         raw_id = str(update.effective_user.id)
@@ -154,14 +184,8 @@ class TelegramChannel(BaseChannel):
             await update.message.reply_text("Heartbeat is not running.")
             return
         hb = self._agent.heartbeat.status
-        text = (
-            f"*Heartbeat Status*\n"
-            f"Running: {hb['running']}\n"
-            f"Beat count: {hb['beat_count']}\n"
-            f"Current interval: {hb['current_interval']}s\n"
-            f"Beats since consolidation: {hb['beats_since_consolidation']}"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
+        text = render_heartbeat_text(hb)
+        await update.message.reply_text(text)
 
     async def _on_reset(self, update, context) -> None:
         raw_id = str(update.effective_user.id)
@@ -182,6 +206,14 @@ class TelegramChannel(BaseChannel):
             await update.message.reply_text("Sorry, I'm not available to you.")
             return
 
+        if self._agent.identity.should_run_startup_onboarding():
+            await update.message.reply_text(
+                "Before we begin, run first-time setup with:\n"
+                "/setup Name | Role | Main needs/goals | Communication style | Boundaries\n"
+                "Or use `/setup skip`."
+            )
+            return
+
         # Per-user lock prevents concurrent requests from the same user
         lock = self._user_locks.setdefault(raw_id, asyncio.Lock())
         async with lock:
@@ -199,7 +231,32 @@ class TelegramChannel(BaseChannel):
 
             chunks = format_for_telegram(response)
             for i, chunk in enumerate(chunks):
-                await update.message.reply_text(chunk)
+                try:
+                    await update.message.reply_text(chunk)
+                except Exception as exc:
+                    logger.error(
+                        "telegram_channel.send_error",
+                        error=str(exc),
+                        chunk_index=i,
+                        chunk_count=len(chunks),
+                        exc_info=True,
+                    )
+                    break
                 if i < len(chunks) - 1:
                     # Brief pause between chunks to avoid Telegram flood limits
                     await asyncio.sleep(0.5)
+
+    @staticmethod
+    def _parse_setup_payload(raw_payload: str) -> dict[str, str]:
+        """
+        Parse '/setup' payload into the onboarding profile fields.
+
+        Expected form: "name | role | needs | communication_style | boundaries"
+        Missing trailing fields are allowed.
+        """
+        parts = [part.strip() for part in raw_payload.split("|")]
+        keys = ["name", "role", "needs", "communication_style", "boundaries"]
+        profile = {key: "" for key in keys}
+        for idx, value in enumerate(parts[: len(keys)]):
+            profile[keys[idx]] = value
+        return profile

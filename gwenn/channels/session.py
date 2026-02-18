@@ -60,6 +60,9 @@ class SessionManager:
         is the same object stored in the session — mutations are reflected
         immediately without any write-back.
         """
+        # Apply TTL opportunistically on access so stale sessions don't accumulate.
+        self.expire_stale_sessions()
+
         if user_id not in self._sessions:
             self._sessions[user_id] = UserSession(user_id=user_id)
         session = self._sessions[user_id]

@@ -26,7 +26,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import structlog
 
@@ -143,17 +143,49 @@ class EpisodicMemory:
         importance_weight: float = 0.4,
         recency_weight: float = 0.3,
         relevance_weight: float = 0.3,
+        retrieval_mode: str = "keyword",
+        embedding_top_k: int = 20,
+        hybrid_keyword_weight: float = 0.5,
+        hybrid_embedding_weight: float = 0.5,
+        vector_search_fn: Optional[Callable[[str, int], list[tuple[str, float]]]] = None,
     ):
         self._episodes: list[Episode] = []
         self._recency_decay = recency_decay
         self._importance_weight = importance_weight
         self._recency_weight = recency_weight
         self._relevance_weight = relevance_weight
+        self._retrieval_mode = retrieval_mode.strip().lower()
+        self._embedding_top_k = max(1, int(embedding_top_k))
+        self._vector_search_fn = vector_search_fn
+
+        total_hybrid_weight = max(0.0, hybrid_keyword_weight) + max(0.0, hybrid_embedding_weight)
+        if total_hybrid_weight <= 0:
+            self._hybrid_keyword_weight = 0.5
+            self._hybrid_embedding_weight = 0.5
+        else:
+            self._hybrid_keyword_weight = max(0.0, hybrid_keyword_weight) / total_hybrid_weight
+            self._hybrid_embedding_weight = max(0.0, hybrid_embedding_weight) / total_hybrid_weight
+
+        if self._retrieval_mode not in {"keyword", "embedding", "hybrid"}:
+            logger.warning(
+                "episodic_memory.invalid_retrieval_mode",
+                retrieval_mode=self._retrieval_mode,
+                fallback="keyword",
+            )
+            self._retrieval_mode = "keyword"
 
         logger.info(
             "episodic_memory.initialized",
             weights=f"imp={importance_weight}, rec={recency_weight}, rel={relevance_weight}",
+            retrieval_mode=self._retrieval_mode,
         )
+
+    def set_vector_search(
+        self,
+        vector_search_fn: Optional[Callable[[str, int], list[tuple[str, float]]]],
+    ) -> None:
+        """Attach (or clear) the embedding search callback."""
+        self._vector_search_fn = vector_search_fn
 
     def encode(self, episode: Episode) -> str:
         """
@@ -224,6 +256,16 @@ class EpisodicMemory:
         # Score each candidate
         scored = []
         recency_w = recency_bias if recency_bias is not None else self._recency_weight
+        vector_scores: dict[str, float] = {}
+        if (
+            query
+            and self._retrieval_mode in {"embedding", "hybrid"}
+            and self._vector_search_fn is not None
+        ):
+            for episode_id, score in self._vector_search_fn(
+                query, max(top_k, self._embedding_top_k)
+            ):
+                vector_scores[episode_id] = score
 
         for episode in candidates:
             # Recency score: exponential decay based on minutes elapsed
@@ -233,8 +275,11 @@ class EpisodicMemory:
             # Importance score: already normalized to 0-1
             importance_score = episode.importance
 
-            # Relevance score: keyword overlap (simplified; real system uses embeddings)
-            relevance_score = self._compute_keyword_relevance(query, episode)
+            relevance_score = self._compute_relevance(
+                query=query,
+                episode=episode,
+                vector_scores=vector_scores,
+            )
 
             # Composite score
             score = (
@@ -265,12 +310,12 @@ class EpisodicMemory:
         matches.sort(key=lambda e: e.timestamp, reverse=True)
         return matches[:top_k]
 
-    def get_unconsolidated(self, max_age_hours: float = 24.0) -> list[Episode]:
+    def get_unconsolidated(self, max_age_hours: Optional[float] = 24.0) -> list[Episode]:
         """Get episodes that haven't been consolidated into semantic memory yet."""
-        cutoff = time.time() - (max_age_hours * 3600)
+        cutoff = None if max_age_hours is None else (time.time() - (max_age_hours * 3600))
         return [
             e for e in self._episodes
-            if not e.consolidated and e.timestamp > cutoff
+            if not e.consolidated and (cutoff is None or e.timestamp > cutoff)
         ]
 
     def mark_consolidated(self, episode_ids: list[str]) -> None:
@@ -302,6 +347,43 @@ class EpisodicMemory:
         overlap = query_words & episode_words
         # Jaccard-like similarity
         return len(overlap) / max(len(query_words), 1)
+
+    def _compute_relevance(
+        self,
+        query: str,
+        episode: Episode,
+        vector_scores: dict[str, float],
+    ) -> float:
+        """Compute relevance using keyword, embedding, or hybrid mode."""
+        if self._retrieval_mode == "keyword":
+            return self._compute_keyword_relevance(query, episode)
+
+        if self._retrieval_mode == "embedding":
+            if not query:
+                return 0.5
+            if not vector_scores:
+                # Graceful degradation when vector search is unavailable/empty.
+                return self._compute_keyword_relevance(query, episode)
+            return vector_scores.get(episode.episode_id, 0.0)
+
+        # hybrid mode
+        keyword_score = self._compute_keyword_relevance(query, episode)
+        if not query:
+            return keyword_score
+        if not vector_scores:
+            return keyword_score
+        vector_score = vector_scores.get(episode.episode_id, 0.0)
+        return (
+            self._hybrid_keyword_weight * keyword_score
+            + self._hybrid_embedding_weight * vector_score
+        )
+
+    def get_episode(self, episode_id: str) -> Optional[Episode]:
+        """Return an episode by id if present in memory."""
+        for episode in self._episodes:
+            if episode.episode_id == episode_id:
+                return episode
+        return None
 
     @property
     def count(self) -> int:

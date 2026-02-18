@@ -71,6 +71,8 @@ class ToolDefinition:
     requires_approval: bool = False       # Whether human must approve
     category: str = "general"             # For organizing in UI/logs
     enabled: bool = True                  # Can be disabled without removal
+    is_builtin: bool = False              # True for builtins and user-created skills.
+                                          # Bypasses the deny-by-default safety policy.
 
     def to_api_format(self) -> dict[str, Any]:
         """

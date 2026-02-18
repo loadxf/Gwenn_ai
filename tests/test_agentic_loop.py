@@ -134,6 +134,7 @@ def _make_safety_config(**overrides) -> SafetyConfig:
         max_tool_iterations=25,
         require_approval_for=["file_write"],
         sandbox_enabled=True,
+        tool_default_policy="allow",
     )
     defaults.update(overrides)
     return SafetyConfig(**defaults)
@@ -690,38 +691,41 @@ class TestBudgetTracking:
     async def test_budget_exceeded_stops_loop(self):
         """If the budget is exceeded during the loop, subsequent iterations are blocked."""
         engine = MockCognitiveEngine([
-            # First call succeeds
+            # Iteration 1
             MockMessage(
                 content=[MockToolUseBlock(id="t1", name="echo", input={"text": "a"})],
                 stop_reason="tool_use",
-                usage=MockUsage(input_tokens=80, output_tokens=40),
+                usage=MockUsage(input_tokens=60, output_tokens=40),
             ),
-            # Second call would happen, but budget check should fail before think()
+            # Iteration 2
+            MockMessage(
+                content=[MockToolUseBlock(id="t2", name="echo", input={"text": "b"})],
+                stop_reason="tool_use",
+                usage=MockUsage(input_tokens=60, output_tokens=30),
+            ),
+            # This should never run because iteration 3 pre_check blocks first.
             MockMessage(
                 content=[MockTextBlock(text="Should not reach here")],
                 stop_reason="end_turn",
-                usage=MockUsage(input_tokens=50, output_tokens=25),
+                usage=MockUsage(input_tokens=10, output_tokens=5),
             ),
         ])
         loop = _build_loop(engine)
 
-        # Set a tight budget that will be exceeded after the first call
-        loop._safety._budget.max_input_tokens = 90
+        # Exceeded after the second think call, then blocked on next pre_check.
+        loop._safety._budget.max_input_tokens = 100
 
-        await loop.run(
+        result = await loop.run(
             system_prompt="Test",
             messages=[{"role": "user", "content": "Go"}],
         )
 
-        # After the first call, budget is 80 input tokens (within 90 limit)
-        # But the pre_check also increments iteration count, and the budget
-        # check depends on when update_budget is called relative to pre_check.
-        # The first call updates budget to 80, then pre_check on iteration 2
-        # checks budget (80 < 90, still ok), then second call updates to 130.
-        # The key: budget enforcement happens at pre_check time.
+        assert "Safety system intervened" in result.text
+        assert result.iterations == 3
+        assert loop._engine._call_count == 2
+
         budget = loop._safety._budget
-        # Budget was tracked regardless of outcome
-        assert budget.total_input_tokens > 0
+        assert budget.total_input_tokens == 120
 
     @pytest.mark.asyncio
     async def test_budget_zero_means_unlimited(self):

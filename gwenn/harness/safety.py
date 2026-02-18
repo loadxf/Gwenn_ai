@@ -82,10 +82,18 @@ class SafetyGuard:
     controls to prevent runaway behavior.
     """
 
-    # Built-in tools that are always allowed regardless of policy
+    # Fallback set of builtin tool names — used when tool_registry is unavailable
+    # (e.g. in unit tests that construct SafetyGuard without a registry).
+    # The authoritative source at runtime is tool_def.is_builtin, which is set
+    # automatically by register_builtin_tools() for every tool it registers.
+    # User-created skills also receive is_builtin=True so they are allowed too.
+    # Keep this list in sync with gwenn/tools/builtin/__init__.py.
     BUILTIN_TOOLS = frozenset({
-        "remember", "recall", "check_emotional_state",
-        "check_goals", "set_note_to_self", "think_aloud",
+        "remember", "recall", "check_emotional_state", "check_goals",
+        "set_note_to_self", "think_aloud", "get_datetime", "calculate",
+        "fetch_url", "convert_units", "get_calendar", "generate_token",
+        "format_json", "encode_decode", "hash_text", "text_stats",
+        "get_system_info", "skill_builder", "list_skills",
     })
 
     def __init__(self, config: SafetyConfig, tool_registry=None):
@@ -183,11 +191,20 @@ class SafetyGuard:
                 risk_level="blocked",
             )
 
-        # Enforce deny-by-default policy for non-builtin tools
+        # Enforce deny-by-default policy for non-builtin tools.
+        # Check is_builtin from the registry first (authoritative); fall back to
+        # the static set for situations where the registry isn't wired yet.
         if self._config.tool_default_policy == "deny":
-            if tool_name not in self.BUILTIN_TOOLS:
+            is_builtin = False
+            if self._tool_registry:
+                tool_def_check = self._tool_registry.get(tool_name)
+                if tool_def_check is not None:
+                    is_builtin = tool_def_check.is_builtin
+            if not is_builtin:
+                is_builtin = tool_name in self.BUILTIN_TOOLS
+            if not is_builtin:
                 allowed_tools = self._config.parse_allowed_tools()
-                if allowed_tools and tool_name not in allowed_tools:
+                if tool_name not in allowed_tools:
                     self._blocked_actions.append({
                         "tool": tool_name,
                         "reason": "not_in_allowlist",

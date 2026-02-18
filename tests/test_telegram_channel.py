@@ -8,7 +8,7 @@ instances so the tests run without a valid TELEGRAM_BOT_TOKEN.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -27,6 +27,7 @@ def make_channel(allowed_user_ids=None):
     """Create a TelegramChannel with mocked agent and sessions."""
     agent = AsyncMock()
     agent.respond = AsyncMock(return_value="Hello from Gwenn")
+    agent.apply_startup_onboarding = MagicMock()
     agent.status = {
         "name": "Gwenn",
         "emotion": "curious",
@@ -45,6 +46,9 @@ def make_channel(allowed_user_ids=None):
         "beats_since_consolidation": 3,
     }
     agent.heartbeat = hb
+    identity = MagicMock()
+    identity.should_run_startup_onboarding.return_value = False
+    agent.identity = identity
     sessions = SessionManager()
     config = make_config(allowed_user_ids)
     return TelegramChannel(agent, sessions, config), agent, sessions
@@ -60,9 +64,10 @@ def make_update(user_id="12345", text="hello"):
     return update
 
 
-def make_context():
+def make_context(args=None):
     ctx = MagicMock()
     ctx.bot.send_chat_action = AsyncMock()
+    ctx.args = args or []
     return ctx
 
 
@@ -152,7 +157,52 @@ class TestOnStatus:
         update.message.reply_text.assert_called_once()
         text = update.message.reply_text.call_args[0][0]
         assert "Gwenn" in text
-        assert "curious" in text
+        assert "Mood:" in text
+        assert "Stress guardrail:" in text
+
+
+class TestOnSetup:
+    @pytest.mark.asyncio
+    async def test_setup_saves_profile(self):
+        ch, agent, _ = make_channel()
+        update = make_update(user_id="12345")
+        ctx = make_context(
+            args=[
+                "Bob", "|", "coding partner", "|", "debugging", "|", "concise", "|",
+                "no destructive changes",
+            ]
+        )
+
+        await ch._on_setup(update, ctx)
+
+        agent.apply_startup_onboarding.assert_called_once()
+        kwargs = agent.apply_startup_onboarding.call_args.kwargs
+        args = agent.apply_startup_onboarding.call_args.args
+        assert kwargs["user_id"] == "telegram_12345"
+        assert args[0]["name"] == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_setup_skip_marks_completed(self):
+        ch, agent, _ = make_channel()
+        update = make_update(user_id="12345")
+        ctx = make_context(args=["skip"])
+
+        await ch._on_setup(update, ctx)
+
+        agent.identity.mark_onboarding_completed.assert_called_once_with({})
+        update.message.reply_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_setup_without_args_shows_usage(self):
+        ch, _, _ = make_channel()
+        update = make_update(user_id="12345")
+        ctx = make_context(args=[])
+
+        await ch._on_setup(update, ctx)
+
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "/setup" in text
 
 
 class TestOnHeartbeat:
@@ -184,6 +234,20 @@ class TestOnHeartbeat:
 
 
 class TestOnMessage:
+    @pytest.mark.asyncio
+    async def test_message_requires_setup_when_onboarding_pending(self):
+        ch, agent, _ = make_channel()
+        agent.identity.should_run_startup_onboarding.return_value = True
+        update = make_update(user_id="55", text="hi")
+        ctx = make_context()
+
+        await ch._on_message(update, ctx)
+
+        agent.respond.assert_not_called()
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "/setup" in text
+
     @pytest.mark.asyncio
     async def test_message_routes_to_agent(self):
         ch, agent, _ = make_channel()
@@ -234,3 +298,15 @@ class TestOnMessage:
 
         # reply_text should be called multiple times for chunked response
         assert update.message.reply_text.call_count > 1
+
+    @pytest.mark.asyncio
+    async def test_chunk_send_error_is_handled(self):
+        ch, agent, _ = make_channel()
+        agent.respond = AsyncMock(return_value="word " * 1500)
+        update = make_update(user_id="99", text="write a lot")
+        update.message.reply_text = AsyncMock(side_effect=[None, RuntimeError("send failed")])
+        ctx = make_context()
+
+        await ch._on_message(update, ctx)
+
+        assert update.message.reply_text.await_count == 2

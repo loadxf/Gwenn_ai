@@ -310,20 +310,14 @@ class TestDenyByDefaultPolicy:
 
         assert result.allowed is True
 
-    def test_deny_by_default_with_empty_allowlist_permits_all(self):
-        """With deny-by-default and an empty allowlist, the deny check is skipped.
-
-        The SafetyGuard code checks ``if allowed_tools and tool_name not in allowed_tools``.
-        When ``allowed_tools`` is an empty list, the condition is falsy, so the
-        deny-by-default branch does NOT activate. This is the actual behavior:
-        an empty allowlist means "no restrictions configured".
-        """
+    def test_deny_by_default_with_empty_allowlist_blocks_unlisted_tool(self):
+        """With deny-by-default and no allowlist entries, non-builtin tools are blocked."""
         guard = _guard(
             tool_default_policy="deny",
             allowed_tools=[],
         )
         result = guard.check_tool_call("any_tool", {})
-        assert result.allowed is True
+        assert result.allowed is False
 
     def test_deny_by_default_with_nonempty_allowlist_blocks_unlisted(self):
         """With a non-empty allowlist, only listed tools pass."""

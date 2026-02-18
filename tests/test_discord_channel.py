@@ -7,7 +7,7 @@ Discord API calls.  The discord.Client and related objects are mocked.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -27,6 +27,7 @@ def make_channel(allowed_guild_ids=None, sync_guild_id=None):
     """Create a DiscordChannel with mocked agent and sessions."""
     agent = AsyncMock()
     agent.respond = AsyncMock(return_value="Hello from Gwenn")
+    agent.apply_startup_onboarding = MagicMock()
     agent.status = {
         "name": "Gwenn",
         "emotion": "calm",
@@ -45,6 +46,9 @@ def make_channel(allowed_guild_ids=None, sync_guild_id=None):
         "beats_since_consolidation": 1,
     }
     agent.heartbeat = hb
+    identity = MagicMock()
+    identity.should_run_startup_onboarding.return_value = False
+    agent.identity = identity
     sessions = SessionManager()
     config = make_config(allowed_guild_ids=allowed_guild_ids, sync_guild_id=sync_guild_id)
     ch = DiscordChannel(agent, sessions, config)
@@ -75,8 +79,6 @@ def make_dm_message(user_id="12345", content="hello", bot_user=None):
 
 def make_guild_message(user_id="12345", content="hello", bot_user=None, guild_id=111):
     """Create a mock guild message."""
-    import discord as _discord
-
     msg = MagicMock()
     msg.author = MagicMock()
     msg.author.id = int(user_id)
@@ -142,6 +144,26 @@ class TestOnMessage:
         pytest.importorskip("discord")
 
     @pytest.mark.asyncio
+    async def test_message_requires_setup_when_onboarding_pending(self):
+        ch, agent, _ = make_channel()
+        agent.identity.should_run_startup_onboarding.return_value = True
+        ch._client = MagicMock()
+        ch._client.user = MagicMock()
+        ch._client.user.id = 999
+
+        msg = make_dm_message(user_id="42", content="hi gwenn")
+        msg.author = MagicMock()
+        msg.author.id = 42
+        ch._client.user.__eq__ = lambda self, other: False
+
+        await ch._on_message(msg)
+
+        agent.respond.assert_not_called()
+        msg.reply.assert_called_once()
+        reply_text = msg.reply.call_args[0][0]
+        assert "/setup" in reply_text
+
+    @pytest.mark.asyncio
     async def test_dm_always_responded(self):
         ch, agent, _ = make_channel()
         ch._client = MagicMock()
@@ -182,7 +204,7 @@ class TestOnMessage:
         ch._client = MagicMock()
         ch._client.user = bot_user
 
-        msg = make_guild_message(user_id="42", content=f"<@999> hello!", bot_user=bot_user)
+        msg = make_guild_message(user_id="42", content="<@999> hello!", bot_user=bot_user)
         msg.author = MagicMock()
         msg.author.id = 42
         # author != bot

@@ -25,11 +25,20 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+def _clamp01(value: float, default: float = 0.5) -> float:
+    """Clamp potentially noisy model-provided scores into [0, 1]."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, numeric))
 
 
 @dataclass
@@ -101,12 +110,45 @@ class SemanticMemory:
         - Working memory can pull in relevant semantic knowledge → get_context_for()
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        retrieval_mode: str = "keyword",
+        embedding_top_k: int = 20,
+        hybrid_keyword_weight: float = 0.5,
+        hybrid_embedding_weight: float = 0.5,
+        vector_search_fn: Optional[Callable[[str, int], list[tuple[str, float]]]] = None,
+    ):
         self._nodes: dict[str, KnowledgeNode] = {}
         self._edges: list[KnowledgeEdge] = []
         self._label_index: dict[str, str] = {}  # label -> node_id for fast lookup
+        self._retrieval_mode = retrieval_mode.strip().lower()
+        self._embedding_top_k = max(1, int(embedding_top_k))
+        self._vector_search_fn = vector_search_fn
 
-        logger.info("semantic_memory.initialized")
+        total_hybrid_weight = max(0.0, hybrid_keyword_weight) + max(0.0, hybrid_embedding_weight)
+        if total_hybrid_weight <= 0:
+            self._hybrid_keyword_weight = 0.5
+            self._hybrid_embedding_weight = 0.5
+        else:
+            self._hybrid_keyword_weight = max(0.0, hybrid_keyword_weight) / total_hybrid_weight
+            self._hybrid_embedding_weight = max(0.0, hybrid_embedding_weight) / total_hybrid_weight
+
+        if self._retrieval_mode not in {"keyword", "embedding", "hybrid"}:
+            logger.warning(
+                "semantic_memory.invalid_retrieval_mode",
+                retrieval_mode=self._retrieval_mode,
+                fallback="keyword",
+            )
+            self._retrieval_mode = "keyword"
+
+        logger.info("semantic_memory.initialized", retrieval_mode=self._retrieval_mode)
+
+    def set_vector_search(
+        self,
+        vector_search_fn: Optional[Callable[[str, int], list[tuple[str, float]]]],
+    ) -> None:
+        """Attach (or clear) the embedding search callback."""
+        self._vector_search_fn = vector_search_fn
 
     def store_knowledge(
         self,
@@ -123,14 +165,23 @@ class SemanticMemory:
         duplicated. This is how repeated experiences crystallize into stable
         knowledge — each new encounter strengthens the node.
         """
+        label = (label or "").strip()
+        content = (content or "").strip()
+        confidence = _clamp01(confidence)
+        if not label:
+            label = " ".join(content.split()[:6]).strip() or "untitled"
+
         # Check if knowledge with this label already exists
         existing_id = self._label_index.get(label.lower())
 
         if existing_id and existing_id in self._nodes:
             node = self._nodes[existing_id]
             node.content = content  # Update with latest understanding
+            node.category = category or node.category
+            node.confidence = max(node.confidence, confidence)
+            node.last_updated = time.time()
             if source_episode_id:
-                node.reinforce(source_episode_id)
+                node.reinforce(source_episode_id, confidence_boost=max(0.01, confidence * 0.1))
             logger.debug("semantic_memory.reinforced", label=label, confidence=node.confidence)
             return node
 
@@ -204,16 +255,94 @@ class SemanticMemory:
         Simple keyword matching against labels and content. A production
         implementation would use embedding similarity from a vector store.
         """
+        if self._retrieval_mode == "keyword":
+            return self._query_keyword(
+                search_text=search_text,
+                category=category,
+                min_confidence=min_confidence,
+                top_k=top_k,
+            )
+
+        vector_scores: dict[str, float] = {}
+        if (
+            search_text
+            and self._retrieval_mode in {"embedding", "hybrid"}
+            and self._vector_search_fn is not None
+        ):
+            for node_id, score in self._vector_search_fn(
+                search_text, max(top_k, self._embedding_top_k)
+            ):
+                vector_scores[node_id] = score
+
+        if self._retrieval_mode == "embedding":
+            if search_text and not vector_scores:
+                # Fallback keeps semantic recall usable when vector backend is unavailable.
+                return self._query_keyword(
+                    search_text=search_text,
+                    category=category,
+                    min_confidence=min_confidence,
+                    top_k=top_k,
+                )
+            candidates = []
+            for node_id, similarity in vector_scores.items():
+                node = self._nodes.get(node_id)
+                if node is None:
+                    continue
+                if node.confidence < min_confidence:
+                    continue
+                if category and node.category != category:
+                    continue
+                candidates.append((node, similarity * node.confidence))
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            return [node for node, _ in candidates[:top_k]]
+
+        # hybrid mode
+        keyword_nodes = self._query_keyword(
+            search_text=search_text,
+            category=category,
+            min_confidence=min_confidence,
+            top_k=max(top_k, self._embedding_top_k),
+            include_scores=True,
+        )
+
+        combined: dict[str, tuple[KnowledgeNode, float]] = {}
+        for node, kw_score in keyword_nodes:
+            combined[node.node_id] = (node, self._hybrid_keyword_weight * kw_score)
+
+        for node_id, vec_score in vector_scores.items():
+            node = self._nodes.get(node_id)
+            if node is None:
+                continue
+            if node.confidence < min_confidence:
+                continue
+            if category and node.category != category:
+                continue
+            base = combined.get(node_id, (node, 0.0))[1]
+            combined[node_id] = (
+                node,
+                base + self._hybrid_embedding_weight * (vec_score * node.confidence),
+            )
+
+        ranked = sorted(combined.values(), key=lambda x: x[1], reverse=True)
+        return [node for node, _ in ranked[:top_k]]
+
+    def _query_keyword(
+        self,
+        search_text: str,
+        category: Optional[str],
+        min_confidence: float,
+        top_k: int,
+        include_scores: bool = False,
+    ) -> list[Any]:
+        """Keyword-overlap semantic lookup."""
         search_terms = set(search_text.lower().split())
-        candidates = []
+        candidates: list[tuple[KnowledgeNode, float]] = []
 
         for node in self._nodes.values():
             if node.confidence < min_confidence:
                 continue
             if category and node.category != category:
                 continue
-
-            # Score by keyword overlap
             node_terms = set(node.label.lower().split()) | set(node.content.lower().split())
             overlap = len(search_terms & node_terms)
             if overlap > 0:
@@ -221,7 +350,10 @@ class SemanticMemory:
                 candidates.append((node, score))
 
         candidates.sort(key=lambda x: x[1], reverse=True)
-        return [node for node, _ in candidates[:top_k]]
+        top = candidates[:top_k]
+        if include_scores:
+            return top
+        return [node for node, _ in top]
 
     def get_relationships(self, label: str) -> list[tuple[KnowledgeEdge, KnowledgeNode]]:
         """Get all relationships from a given node, with their target nodes."""

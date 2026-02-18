@@ -12,7 +12,7 @@ import json
 import time
 from pathlib import Path
 from typing import Optional
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -37,7 +37,10 @@ class ClaudeConfig(BaseSettings):
     """Configuration for the Claude API connection — my cognitive engine."""
 
     api_key: Optional[str] = Field(None, alias="ANTHROPIC_API_KEY")
-    auth_token: Optional[str] = Field(None, alias="ANTHROPIC_AUTH_TOKEN")
+    auth_token: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+    )
     model: str = Field("claude-sonnet-4-5-20250929", alias="GWENN_MODEL")
     max_tokens: int = Field(8192, alias="GWENN_MAX_TOKENS")
     thinking_budget: int = Field(16000, alias="GWENN_THINKING_BUDGET")
@@ -54,7 +57,8 @@ class ClaudeConfig(BaseSettings):
             return self
         raise ValueError(
             "No authentication configured. Set ANTHROPIC_API_KEY, "
-            "ANTHROPIC_AUTH_TOKEN, or log in with Claude Code (`claude` CLI)."
+            "ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN, or log in with "
+            "Claude Code (`claude` CLI)."
         )
 
 
@@ -62,11 +66,31 @@ class MemoryConfig(BaseSettings):
     """Configuration for the three-layer memory architecture."""
 
     data_dir: Path = Field(Path("./gwenn_data"), alias="GWENN_DATA_DIR")
-    episodic_db_path: Path = Field(Path("./gwenn_data/episodic.db"), alias="GWENN_EPISODIC_DB")
+    # Primary SQLite path used by MemoryStore (episodes + affect + semantic graph metadata).
+    episodic_db_path: Path = Field(Path("./gwenn_data/gwenn.db"), alias="GWENN_EPISODIC_DB")
+    # Vector store directory used for embedding retrieval (ChromaDB persistence root).
     semantic_db_path: Path = Field(Path("./gwenn_data/semantic_vectors"), alias="GWENN_SEMANTIC_DB")
 
     # Working memory constraints (Miller's 7±2)
     working_memory_slots: int = Field(7, alias="GWENN_WORKING_MEMORY_SLOTS")
+    working_memory_eviction_to_episodic: bool = Field(
+        False, alias="GWENN_WM_EVICTION_TO_EPISODIC"
+    )
+
+    # Retrieval mode: keyword (default), embedding (vector only), hybrid (blend both)
+    retrieval_mode: str = Field("keyword", alias="GWENN_RETRIEVAL_MODE")
+    embedding_top_k: int = Field(25, alias="GWENN_EMBEDDING_TOP_K")
+    hybrid_keyword_weight: float = Field(0.5, alias="GWENN_HYBRID_KEYWORD_WEIGHT")
+    hybrid_embedding_weight: float = Field(0.5, alias="GWENN_HYBRID_EMBEDDING_WEIGHT")
+
+    # Startup/shutdown memory sync behavior
+    startup_episode_limit: int = Field(5000, alias="GWENN_STARTUP_EPISODE_LIMIT")
+    shutdown_persist_recent_episodes: int = Field(
+        0, alias="GWENN_SHUTDOWN_PERSIST_RECENT_EPISODES"
+    )  # 0 => persist all in-memory episodes
+    persist_semantic_after_consolidation: bool = Field(
+        True, alias="GWENN_PERSIST_SEMANTIC_AFTER_CONSOLIDATION"
+    )
 
     # Consolidation settings
     consolidation_interval: float = 600.0  # seconds between consolidation passes
@@ -76,6 +100,23 @@ class MemoryConfig(BaseSettings):
     consolidation_relevance_weight: float = 0.3
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def normalize_retrieval_mode(self) -> "MemoryConfig":
+        self.retrieval_mode = self.retrieval_mode.strip().lower()
+        if self.retrieval_mode not in {"keyword", "embedding", "hybrid"}:
+            raise ValueError(
+                "GWENN_RETRIEVAL_MODE must be one of: keyword, embedding, hybrid."
+            )
+
+        self.embedding_top_k = max(1, int(self.embedding_top_k))
+        self.hybrid_keyword_weight = max(0.0, min(1.0, float(self.hybrid_keyword_weight)))
+        self.hybrid_embedding_weight = max(0.0, min(1.0, float(self.hybrid_embedding_weight)))
+        self.startup_episode_limit = max(0, int(self.startup_episode_limit))
+        self.shutdown_persist_recent_episodes = max(
+            0, int(self.shutdown_persist_recent_episodes)
+        )
+        return self
 
 
 class HeartbeatConfig(BaseSettings):
@@ -272,6 +313,9 @@ class GwennConfig:
         # Original 10-layer configs
         self.claude = ClaudeConfig()
         self.memory = MemoryConfig()
+        self.skills_dir: Path = Path(
+            __import__("os").environ.get("GWENN_SKILLS_DIR", "./gwenn_skills")
+        )
         self.heartbeat = HeartbeatConfig()
         self.affect = AffectConfig()
         self.context = ContextConfig()

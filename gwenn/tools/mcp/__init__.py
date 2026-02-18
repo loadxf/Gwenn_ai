@@ -70,7 +70,7 @@ class MCPClient:
     def __init__(self, registry: ToolRegistry):
         self._registry = registry
         self._servers: dict[str, MCPServerConfig] = {}
-        self._discovered_tools: dict[str, MCPTool] = {}  # tool_name -> MCPTool
+        self._discovered_tools: list[MCPTool] = []
         self._connected: set[str] = set()
 
         logger.info("mcp_client.initialized")
@@ -133,7 +133,7 @@ class MCPClient:
                     error=str(e),
                 )
 
-        self._discovered_tools = {tool.name: tool for tool in all_tools}
+        self._discovered_tools = list(all_tools)
         logger.info("mcp_client.discovery_complete", tool_count=len(all_tools))
         return all_tools
 
@@ -146,7 +146,7 @@ class MCPClient:
         indistinguishable from built-in tools.
         """
         count = 0
-        for tool in self._discovered_tools.values():
+        for tool in self._discovered_tools:
             # Create a proxy handler that forwards to the MCP server
             server_name = tool.server_name
 
