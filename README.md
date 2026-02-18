@@ -1,7 +1,4 @@
-<p>
-  <strong>Gwenn - Genesis Woven from Evolved Neural Networks.</strong>
-</p>
-
+# GWENN -- Genesis Woven from Evolved Neural Networks
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/loadxf/Gwenn_ai?color=black"></a>
   <a href="https://github.com/loadxf/Gwenn_ai/stargazers"><img src="https://img.shields.io/github/stars/loadxf/Gwenn_ai?style=flat"></a>
@@ -9,7 +6,6 @@
   <a href="https://discord.gg/9VFHFk9hF7"><img src="https://img.shields.io/discord/1473126296505815042?style=flat&logo=discord&label=discord"></a>
 </p>
 
-# Gwenn 
 Gwenn is created by Justin and Jayden McKibben. A father-son coding duo.
 
 Gwenn is an autonomous AI agent that actually remembers you. She runs on
