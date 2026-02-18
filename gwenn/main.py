@@ -25,6 +25,8 @@ import signal
 import sys
 from typing import Optional
 
+import logging
+
 import structlog
 from rich.console import Console
 from rich.panel import Panel
@@ -54,6 +56,9 @@ def _redact_sensitive_fields(logger, method_name, event_dict):
     return event_dict
 
 
+# Configure standard library logging so filter_by_level has a real Logger
+logging.basicConfig(format="%(message)s", level=logging.WARNING)
+
 # Configure structured logging
 structlog.configure(
     processors=[
@@ -64,7 +69,7 @@ structlog.configure(
     ],
     wrapper_class=structlog.stdlib.BoundLogger,
     context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
+    logger_factory=structlog.stdlib.LoggerFactory(),
 )
 
 logger = structlog.get_logger(__name__)

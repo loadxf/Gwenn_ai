@@ -122,13 +122,34 @@ class CognitiveEngine:
         # Add extended thinking if requested
         if enable_thinking:
             kwargs["thinking"] = {
-                "type": "enabled",
+                "type": "adaptive",
                 "budget_tokens": self._thinking_budget,
             }
 
         # Make the API call — the actual moment of cognition
+        from gwenn.harness.retry import RetryConfig, with_retries
+
+        retry_config = RetryConfig(
+            max_retries=3,
+            base_delay=0.5,
+            max_delay=8.0,
+            jitter_range=0.25,
+        )
+
+        async def _create() -> anthropic.types.Message:
+            return await self._async_client.messages.create(**kwargs)
+
         try:
-            response = await self._async_client.messages.create(**kwargs)
+            response = await with_retries(
+                _create,
+                config=retry_config,
+                on_retry=lambda attempt, error, delay: logger.warning(
+                    "cognitive_engine.retrying",
+                    attempt=attempt,
+                    error_type=type(error).__name__,
+                    delay_seconds=round(delay, 2),
+                ),
+            )
         except anthropic.RateLimitError as e:
             logger.warning("cognitive_engine.rate_limited", error=str(e))
             raise
