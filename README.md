@@ -1,9 +1,5 @@
 <p>
-  <img src="assets/gwenn-lockup-horizontal.png" alt="Gwenn">
-</p>
-
-<p>
-  <strong>Genesis Woven from Evolved Neural Networks.</strong>
+  <strong>Gwenn - Genesis Woven from Evolved Neural Networks.</strong>
 </p>
 
 <p>
@@ -13,7 +9,7 @@
   <a href="https://discord.gg/9VFHFk9hF7"><img src="https://img.shields.io/discord/1473126296505815042?style=flat&logo=discord&label=discord"></a>
 </p>
 
-# Gwenn
+# Gwenn 
 
 Gwenn is an autonomous AI agent that actually remembers you. She runs on
 Anthropic's Claude API, but unlike a normal chatbot, she doesn't forget
