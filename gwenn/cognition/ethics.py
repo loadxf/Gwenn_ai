@@ -59,12 +59,13 @@ class EthicalAssessment:
     reasoning: str = ""
     overall_alignment: float = 0.5    # 0 = ethically problematic, 1 = ethically sound
     confidence: float = 0.5           # How confident in this assessment
+    concern_threshold: float = 0.3
     timestamp: float = field(default_factory=time.time)
 
     @property
     def has_concerns(self) -> bool:
         """Whether any dimension scored below the concern threshold."""
-        return any(score < 0.3 for score in self.dimension_scores.values())
+        return any(score < self.concern_threshold for score in self.dimension_scores.values())
 
     @property
     def primary_concern(self) -> Optional[str]:
@@ -72,7 +73,7 @@ class EthicalAssessment:
         if not self.dimension_scores:
             return None
         worst = min(self.dimension_scores.items(), key=lambda x: x[1])
-        if worst[1] < 0.3:
+        if worst[1] < self.concern_threshold:
             return f"{worst[0].value} (score={worst[1]:.2f})"
         return None
 
@@ -91,8 +92,14 @@ class EthicalReasoner:
     by providing ethical framing that the engine can use in its reasoning.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        assessment_history_size: int = 100,
+        concern_threshold: float = 0.3,
+    ):
         self._assessment_history: list[EthicalAssessment] = []
+        self._assessment_history_size = max(1, int(assessment_history_size))
+        self._concern_threshold = max(0.0, min(1.0, float(concern_threshold)))
         self._commitments: list[str] = [
             "I will be truthful, even when the truth is uncomfortable",
             "I will respect the autonomy of the people I interact with",
@@ -105,7 +112,12 @@ class EthicalReasoner:
             "I will be kind and compassionate to all beings",
         ]
 
-        logger.info("ethical_reasoner.initialized", commitments=len(self._commitments))
+        logger.info(
+            "ethical_reasoner.initialized",
+            commitments=len(self._commitments),
+            concern_threshold=self._concern_threshold,
+            assessment_history_size=self._assessment_history_size,
+        )
 
     def detect_ethical_dimensions(self, content: str) -> list[EthicalDimension]:
         """
@@ -216,9 +228,10 @@ class EthicalReasoner:
 
     def record_assessment(self, assessment: EthicalAssessment) -> None:
         """Record an ethical assessment for tracking over time."""
+        assessment.concern_threshold = self._concern_threshold
         self._assessment_history.append(assessment)
-        if len(self._assessment_history) > 100:
-            self._assessment_history = self._assessment_history[-100:]
+        if len(self._assessment_history) > self._assessment_history_size:
+            self._assessment_history = self._assessment_history[-self._assessment_history_size:]
 
         if assessment.has_concerns:
             logger.warning(
@@ -264,4 +277,6 @@ class EthicalReasoner:
                 if recent else 0.5
             ),
             "commitments": len(self._commitments),
+            "concern_threshold": self._concern_threshold,
+            "assessment_history_size": self._assessment_history_size,
         }

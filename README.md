@@ -52,6 +52,11 @@ through experience. Every opinion is formed, every bond is earned.
 - Fixed consolidation bookkeeping so only episodes actually included in a consolidation prompt are marked consolidated.
 - Persisted relationship `emotional_patterns` across restarts.
 - Heartbeat now both tracks autonomous-thought counts and can truly slow down toward `max_interval` when idle.
+- `calculate` now uses a strict AST-based evaluator (no `eval`).
+- `fetch_url` now uses bounded streaming reads instead of full-body buffering.
+- Daemon protocol now supports optional auth via `GWENN_DAEMON_AUTH_TOKEN`.
+- Session `/resume` previews are off by default, and daemon session content is redacted by default.
+- CLI input now explicitly enables readline support so arrow keys work as expected in chat.
 
 ## Getting started
 
@@ -114,8 +119,56 @@ gwenn
 # or: python -m gwenn.main
 ```
 
-Once running in CLI mode, you can use `status` for current state, `heartbeat`
-for loop telemetry, and `quit` to shut down gracefully.
+By default, `gwenn` will connect to a running daemon if available. Use:
+
+```bash
+gwenn --no-daemon
+```
+
+to force in-process mode.
+
+Once running in CLI mode, you can use:
+- `status` for current state
+- `heartbeat` for loop telemetry
+- `/resume` to restore prior conversation context
+- `quit` to shut down gracefully
+
+Note: session previews in `/resume` are hidden by default unless
+`GWENN_DAEMON_SESSION_INCLUDE_PREVIEW=True`.
+If arrow keys print raw sequences like `^[[A`, ensure your Python has
+`readline` support and run `stty sane` in that terminal.
+
+### 3b) Daemon mode (persistent background runtime)
+
+Run Gwenn as a foreground daemon:
+
+```bash
+gwenn daemon
+```
+
+Useful daemon commands:
+
+```bash
+gwenn status
+gwenn stop
+```
+
+Daemon security/privacy settings in `.env`:
+- `GWENN_DAEMON_AUTH_TOKEN` (optional shared token for protocol auth)
+- `GWENN_DAEMON_SESSION_INCLUDE_PREVIEW` (default `False`)
+- `GWENN_DAEMON_REDACT_SESSION_CONTENT` (default `True`)
+
+If `GWENN_DAEMON_AUTH_TOKEN` is set, CLI subcommands and daemon chat connections
+automatically include it.
+
+### 3c) Optional: install as a Linux user service
+
+```bash
+bash scripts/install_service.sh
+```
+
+This installs and enables `gwenn-daemon.service` under `systemd --user`, writes
+absolute daemon socket/PID/session paths into `.env`, and hardens `.env` perms.
 
 ### 4) First launch onboarding
 
@@ -152,6 +205,16 @@ GWENN_RETRIEVAL_MODE=hybrid
 ```
 
 On first run in embedding/hybrid mode, the embedding model may download and warm up.
+
+Additional memory controls:
+
+```bash
+# 0 disables recent preload (unconsolidated episodes still load for consolidation safety)
+GWENN_STARTUP_EPISODE_LIMIT=5000
+
+# Set false to skip semantic graph flush on every consolidation pass
+GWENN_PERSIST_SEMANTIC_AFTER_CONSOLIDATION=True
+```
 
 ### Optional: run on Telegram / Discord channels
 
@@ -192,7 +255,7 @@ pytest -q
 ruff check gwenn tests
 ```
 
-Current baseline after the latest hardening pass: `628 passed, 8 skipped`, and Ruff clean.
+Current baseline: `720 passed, 8 skipped`, and Ruff clean.
 
 ## Tech stack
 
@@ -304,7 +367,10 @@ tracking, and a kill switch. Tools go through a risk tier system
 allowlisting for non-builtin tools.
 
 **Privacy** supports scrubbing PII from logs -- emails, phone numbers, SSNs,
-credit cards, IPs. Full PII redaction is disabled by default and can be enabled via the `GWENN_REDACTION_ENABLED` environment variable; basic log field truncation is always on.
+credit cards, IPs. Full PII redaction is disabled by default and can be enabled
+via `GWENN_REDACTION_ENABLED`, with scope controlled by
+`GWENN_REDACT_BEFORE_API` and `GWENN_REDACT_BEFORE_PERSIST`; basic log field
+truncation is always on.
 
 ## Roadmap
 
@@ -331,7 +397,7 @@ credit cards, IPs. Full PII redaction is disabled by default and can be enabled 
 - [ ] Obsidian, Dropbox, Notion support
 
 **Phase 4: Infrastructure & Service Features**
-- [ ] Background heartbeat as a system service (daemon)
+- [X] Background heartbeat as a system service (daemon)
 - [ ] Automated PII privacy redaction system in logs, etc
 - [ ] Budget tracking, rate limits, kill switch
 

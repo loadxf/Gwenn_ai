@@ -30,7 +30,9 @@ This is the closest thing to a soul that code can build.
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -540,7 +542,22 @@ class Identity:
         }
 
         try:
-            self._identity_file.write_text(json.dumps(data, indent=2))
+            # Write to a temp file then atomically rename to prevent corruption
+            # if the process crashes mid-write.
+            self._identity_file.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self._identity_file.parent), suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(tmp_path, str(self._identity_file))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.error("identity.save_failed", error=str(e))
 

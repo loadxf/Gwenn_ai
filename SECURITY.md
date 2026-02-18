@@ -48,13 +48,19 @@ details. Key components:
   processing.
 - **Tool risk tiers** — every tool is classified as low / medium / high /
   critical. MCP-sourced tools are deny-by-default.
+- **Sandbox policy enforcement** — with `GWENN_SANDBOX_ENABLED=True`, non-builtin
+  tools are blocked unless explicitly allowlisted.
 - **Rate limits & budget tracking** — API call budgets are enforced with a
   hard kill switch.
 - **PII redaction** — configurable redaction of emails, phone numbers, SSNs,
   credit card numbers, and IP addresses in logs (disabled by default, enable
   via `GWENN_REDACTION_ENABLED`).
-- **Sandboxed tool execution** — tools run through a controlled executor with
-  provenance tracking.
+- **Daemon auth + local ACLs** — Unix socket permissions are owner-only, and
+  optional protocol auth is available via `GWENN_DAEMON_AUTH_TOKEN`.
+- **Session privacy defaults** — daemon session previews are disabled by default
+  and session content redaction defaults to enabled.
+- **Data-at-rest hardening** — memory and session persistence applies restrictive
+  file permissions on supported filesystems.
 
 ## Scope
 

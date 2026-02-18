@@ -212,9 +212,12 @@ class MCPConfig(BaseSettings):
     def get_server_list(self) -> list[dict]:
         """Parse MCP server configurations from JSON string."""
         try:
-            return json.loads(self.servers)
+            parsed = json.loads(self.servers)
         except json.JSONDecodeError:
             return []
+        if not isinstance(parsed, list):
+            return []
+        return [item for item in parsed if isinstance(item, dict)]
 
 
 class SensoryConfig(BaseSettings):
@@ -297,6 +300,37 @@ class ChannelConfig(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class DaemonConfig(BaseSettings):
+    """Configuration for the persistent background daemon process."""
+
+    socket_path: Path = Field(Path("./gwenn_data/gwenn.sock"), alias="GWENN_DAEMON_SOCKET")
+    pid_file: Path = Field(Path("./gwenn_data/gwenn.pid"), alias="GWENN_DAEMON_PID_FILE")
+    auth_token: str | None = Field(None, alias="GWENN_DAEMON_AUTH_TOKEN")
+    channels: str = Field("cli", alias="GWENN_DAEMON_CHANNELS")
+    max_connections: int = Field(10, alias="GWENN_DAEMON_MAX_CONNECTIONS")
+    connection_timeout: float = Field(300.0, alias="GWENN_DAEMON_CONNECTION_TIMEOUT")
+    sessions_dir: Path = Field(Path("./gwenn_data/sessions"), alias="GWENN_DAEMON_SESSIONS_DIR")
+    session_max_count: int = Field(20, alias="GWENN_DAEMON_SESSION_MAX_COUNT")
+    session_max_messages: int = Field(200, alias="GWENN_DAEMON_SESSION_MAX_MESSAGES")
+    session_include_preview: bool = Field(False, alias="GWENN_DAEMON_SESSION_INCLUDE_PREVIEW")
+    redact_session_content: bool = Field(True, alias="GWENN_DAEMON_REDACT_SESSION_CONTENT")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def normalize_limits(self) -> "DaemonConfig":
+        self.max_connections = max(1, int(self.max_connections))
+        self.connection_timeout = max(1.0, float(self.connection_timeout))
+        self.session_max_count = max(1, int(self.session_max_count))
+        self.session_max_messages = max(1, int(self.session_max_messages))
+        if isinstance(self.auth_token, str):
+            self.auth_token = self.auth_token.strip() or None
+        return self
+
+    def get_channel_list(self) -> list[str]:
+        return [c.strip() for c in self.channels.split(",") if c.strip()]
+
+
 class GwennConfig:
     """
     Master configuration that composes all subsystem configs.
@@ -332,6 +366,9 @@ class GwennConfig:
 
         # Channel config (channel mode; Telegram/Discord configs loaded lazily)
         self.channel = ChannelConfig()
+
+        # Daemon config (persistent background process)
+        self.daemon = DaemonConfig()
 
         # Ensure data directory exists
         self.memory.data_dir.mkdir(parents=True, exist_ok=True)

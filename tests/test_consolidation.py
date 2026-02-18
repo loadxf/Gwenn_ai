@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from gwenn.memory.consolidation import ConsolidationEngine
@@ -180,6 +182,8 @@ class TestMalformedLines:
         engine, em, sm = _fresh_engine_with_episodes()
         counts = engine.process_consolidation_response("")
         assert counts == {"facts": 0, "relationships": 0, "self_knowledge": 0, "patterns": 0}
+        # Empty parse should not silently discard unconsolidated episodes.
+        assert len(em.get_unconsolidated()) == 1
 
     def test_unrecognized_lines_are_skipped(self):
         engine, em, sm = _fresh_engine_with_episodes()
@@ -213,6 +217,43 @@ class TestMalformedLines:
         nodes = sm.query("some fact", top_k=1)
         assert len(nodes) >= 1
         assert nodes[0].confidence == pytest.approx(0.5)
+
+    def test_empty_fact_content_is_rejected(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        counts = engine.process_consolidation_response(
+            "FACT:   | confidence: 0.9 | category: fact"
+        )
+        assert counts["facts"] == 0
+        assert sm.node_count == 0
+
+    def test_out_of_range_confidence_is_clamped(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        counts = engine.process_consolidation_response(
+            "FACT: confidence clamp test | confidence: 7.5 | category: fact"
+        )
+        assert counts["facts"] == 1
+        node = sm.query("confidence clamp test", top_k=1)[0]
+        assert node.confidence == pytest.approx(1.0)
+
+    def test_out_of_range_relationship_strength_is_clamped(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        counts = engine.process_consolidation_response(
+            "RELATIONSHIP: Alice -> likes -> Python | strength: 42"
+        )
+        assert counts["relationships"] == 1
+        rels = sm.get_relationships("Alice")
+        assert rels
+        edge, _target = rels[0]
+        assert edge.strength == pytest.approx(1.0)
+
+    def test_pipe_in_content_is_preserved(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        counts = engine.process_consolidation_response(
+            "FACT: use x | y separator in examples | confidence: 0.7 | category: fact"
+        )
+        assert counts["facts"] == 1
+        node = sm.query("separator examples", top_k=1)[0]
+        assert "x | y" in node.content
 
     def test_mixed_valid_and_invalid(self):
         engine, em, sm = _fresh_engine_with_episodes()
@@ -249,6 +290,11 @@ class TestMarkConsolidated:
 
         # After consolidation, it should be marked
         assert len(em.get_unconsolidated()) == 0
+
+    def test_episodes_not_marked_when_no_items_extracted(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        engine.process_consolidation_response("nonsense")
+        assert len(em.get_unconsolidated()) == 1
 
     def test_consolidated_episodes_not_reconsolidated(self):
         engine, em, sm = _fresh_engine_with_episodes()
@@ -311,6 +357,20 @@ class TestConsolidationPrompt:
         prompt = engine.get_consolidation_prompt()
         assert prompt is None
 
+    def test_prompt_includes_older_unconsolidated_episodes(self):
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        old_episode = Episode(
+            episode_id="old-1",
+            content="older but still unconsolidated",
+            timestamp=time.time() - (48 * 3600),
+        )
+        em.encode(old_episode)
+        engine = ConsolidationEngine(episodic=em, semantic=sm)
+        prompt = engine.get_consolidation_prompt()
+        assert prompt is not None
+        assert "older but still unconsolidated" in prompt
+
     def test_should_consolidate_timing(self):
         em = EpisodicMemory()
         sm = SemanticMemory()
@@ -318,3 +378,10 @@ class TestConsolidationPrompt:
         # Just initialized, _last_consolidation is 0.0, so time.time() - 0.0 > 9999
         # Actually, 0.0 means it's been "infinite" time, so should_consolidate is True
         assert engine.should_consolidate() is True
+
+    def test_mark_checked_no_work_defers_next_due_time(self):
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine = ConsolidationEngine(episodic=em, semantic=sm, consolidation_interval=60.0)
+        engine.mark_checked_no_work()
+        assert engine.should_consolidate() is False

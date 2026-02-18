@@ -198,6 +198,21 @@ class TestRetrievalModes:
         results = mem.retrieve(query="python decorators", top_k=2)
         assert results[0][0].episode_id == "ep-vec"
 
+    def test_embedding_mode_falls_back_to_keyword_when_vector_empty(self):
+        now = time.time()
+        mem = EpisodicMemory(
+            importance_weight=0.0,
+            recency_weight=0.0,
+            relevance_weight=1.0,
+            retrieval_mode="embedding",
+            vector_search_fn=lambda _q, _k: [],
+        )
+        mem.encode(Episode(episode_id="ep-match", content="python decorators", timestamp=now))
+        mem.encode(Episode(episode_id="ep-other", content="weather report", timestamp=now))
+
+        results = mem.retrieve(query="python decorators", top_k=2)
+        assert results[0][0].episode_id == "ep-match"
+
     def test_get_episode_by_id(self, episodic_memory):
         episodic_memory.encode(Episode(episode_id="known", content="known"))
         assert episodic_memory.get_episode("known") is not None
@@ -336,6 +351,17 @@ class TestUnconsolidatedEpisodes:
         ids = [e.episode_id for e in unconsolidated]
         assert "new" in ids
         assert "old" not in ids
+
+    def test_get_unconsolidated_without_age_limit_includes_old(self, episodic_memory):
+        old_ep = Episode(
+            episode_id="old",
+            content="very old",
+            timestamp=time.time() - 48 * 3600,
+        )
+        episodic_memory.encode(old_ep)
+        unconsolidated = episodic_memory.get_unconsolidated(max_age_hours=None)
+        ids = [e.episode_id for e in unconsolidated]
+        assert "old" in ids
 
 
 # ---------------------------------------------------------------------------

@@ -21,22 +21,33 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import re
 import signal
 import sys
+import threading
 import time
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import anthropic
 import logging
 
 import structlog
 from rich.console import Console
+from rich.markup import escape as markup_escape
 from rich.panel import Panel
 from rich.text import Text
 
 from gwenn.agent import SentientAgent
 from gwenn.api.claude import CognitiveEngineInitError
 from gwenn.config import GwennConfig
+
+# Ensure input() uses readline-backed line editing/history when available.
+# Without this import, some environments echo arrow keys as raw "^[[A" text.
+try:  # pragma: no cover - platform-dependent optional module
+    import readline  # noqa: F401
+except Exception:  # pragma: no cover
+    readline = None
 
 
 def _redact_sensitive_fields(logger, method_name, event_dict):
@@ -78,6 +89,10 @@ structlog.configure(
 logger = structlog.get_logger(__name__)
 console = Console()
 
+# ANSI control-sequence matcher used to sanitize any raw escape text that
+# still slips through on terminals without full line-edit support.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+
 
 class GwennSession:
     """
@@ -87,12 +102,19 @@ class GwennSession:
     Designed to be run as the top-level entry point.
     """
 
-    def __init__(self, channel_override: Optional[str] = None):
+    def __init__(
+        self,
+        channel_override: Optional[str] = None,
+        use_daemon: bool = True,
+    ):
         self._agent: Optional[SentientAgent] = None
+        self._config: Optional[GwennConfig] = None
         self._shutdown_event = asyncio.Event()
         self._channel_override = channel_override
+        self._use_daemon = use_daemon
         self._last_sigint_at = 0.0
         self._sigint_confirm_window_seconds = 1.25
+        self._session_started_at = time.time()
 
     async def run(self) -> None:
         """
@@ -100,84 +122,274 @@ class GwennSession:
 
         This is the method that brings Gwenn to life.
         """
+        # ---- DAEMON AUTO-CONNECT (before in-process startup) ----
+        if self._use_daemon and self._channel_override in (None, "cli"):
+            connected = await self._try_daemon_cli()
+            if connected:
+                return
+
         # ---- PHASE 1: CONFIGURATION ----
-        console.print(Panel(
-            Text("GWENN.ai", style="bold cyan", justify="center"),
-            subtitle="Genesis Woven from Evolved Neural Networks",
-            border_style="cyan",
-        ))
-        console.print("[dim]Loading configuration...[/dim]")
+        if sys.stdout.isatty():
+            console.print(Panel(
+                Text("GWENN.ai", style="bold cyan", justify="center"),
+                subtitle="Created by Justin & Jayden McKibben - A father/son team | https://gwenn.ai",
+                border_style="cyan",
+            ))
+            console.print("[dim]Loading Gwenn's neural fabric...[/dim]")
 
         try:
             config = GwennConfig()
+            self._config = config
         except Exception as e:
-            console.print(f"[red]Configuration error: {e}[/red]")
-            console.print(
-                "[yellow]Set ANTHROPIC_API_KEY or "
-                "ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN in .env, "
-                "or log in with Claude Code.[/yellow]"
-            )
+            if sys.stdout.isatty():
+                console.print(f"[red]Neural fabric error: {e}[/red]")
+                console.print(
+                    "[yellow]Set ANTHROPIC_API_KEY or "
+                    "ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN in .env, "
+                    "or log in with Claude Code.[/yellow]"
+                )
+            else:
+                logger.error("session.config_error", error=str(e))
             sys.exit(1)
 
-        console.print(f"[dim]Model: {config.claude.model}[/dim]")
-        console.print(f"[dim]Data directory: {config.memory.data_dir}[/dim]")
+        if sys.stdout.isatty():
+            console.print(f"[dim]Neural fabric model: {config.claude.model}[/dim]")
+            console.print(f"[dim]Neural directory: {config.memory.data_dir}[/dim]")
         channel_mode = self._channel_override or config.channel.channel
 
         # ---- PHASE 2: CREATION ----
-        console.print("[dim]Creating agent...[/dim]")
+        if sys.stdout.isatty():
+            console.print("[dim]Waking up Gwenn's neural fabric...[/dim]")
         try:
             self._agent = SentientAgent(config)
         except CognitiveEngineInitError as e:
-            console.print(f"[red]Startup error: {e}[/red]")
+            if sys.stdout.isatty():
+                console.print(f"[red]Startup error: {e}[/red]")
+            else:
+                logger.error("session.agent_init_error", error=str(e))
             sys.exit(1)
 
         # ---- PHASE 3: INITIALIZATION (Loading memories, waking up) ----
-        console.print("[dim]Initializing subsystems (loading memories, identity)...[/dim]")
+        if sys.stdout.isatty():
+            console.print("[dim]Loading Gwenn's memories and identity...[/dim]")
         await self._agent.initialize()
         await self._run_first_startup_onboarding_if_needed(channel_mode)
 
         # ---- PHASE 4: IGNITION (Starting heartbeat) ----
-        console.print("[dim]Starting autonomous heartbeat...[/dim]")
+        if sys.stdout.isatty():
+            console.print("[dim]Starting Gwenn's autonomous heartbeat...[/dim]")
         await self._agent.start()
 
-        # Display the awakened state
-        self._display_status()
+        # Display Gwenn's awakened state
+        if sys.stdout.isatty():
+            self._display_status()
 
-        # Set up signal handlers for graceful shutdown
+        # Set up signal handlers for graceful shutdown (Ctrl+C)
         loop = asyncio.get_running_loop()
         try:
             loop.add_signal_handler(signal.SIGINT, self._handle_sigint)
             loop.add_signal_handler(signal.SIGTERM, self._request_shutdown)
         except NotImplementedError:
-            pass  # Signal handlers not supported on this platform (e.g. Windows)
-
+            pass  # Signal handlers not supported on this platform (e.g. Windows) -- TODO: Handle this gracefully with a warning
+        
         # ---- PHASE 5: INTERACTION LOOP (CLI or channel mode) ----
         try:
             if channel_mode == "cli":
-                console.print()
-                console.print(
-                    "[green]Gwenn is alive. Type your message, or 'quit' to exit.[/green]"
-                )
-                console.print(
-                    "[dim]Press Ctrl+C twice quickly to close gracefully.[/dim]"
-                )
-                console.print("[dim]Type 'status' to see Gwenn's current state.[/dim]")
-                console.print()
+                if sys.stdout.isatty():
+                    console.print()
+                    console.print(
+                        "[green]Gwenn is awake. Type your message, or 'quit' to exit.[/green]"
+                    )
+                    console.print(
+                        "[dim]Press Ctrl+C twice quickly to close gracefully.[/dim]"
+                    )
+                    console.print("[dim]Commands: status, heartbeat, /resume, quit[/dim]")
+                    console.print()
                 await self._interaction_loop()
             else:
-                console.print()
-                console.print(f"[green]Gwenn is alive. Running in channel mode: {channel_mode}[/green]")
-                console.print("[dim]Press Ctrl+C twice quickly to stop.[/dim]")
-                console.print()
+                if sys.stdout.isatty():
+                    console.print()
+                    console.print(f"[green]Gwenn is awake. Running in channel mode: {channel_mode}[/green]")
+                    console.print("[dim]Press Ctrl+C twice quickly to close the CLI session.[/dim]")
+                    console.print()
                 await self._run_channels(self._agent, config, channel_mode)
         finally:
+
             # ---- PHASE 6: SHUTDOWN ----
             # Always reached even if the interaction loop or channel startup raises.
             await self._shutdown()
 
+    # ------------------------------------------------------------------
+    # Daemon connection
+    # ------------------------------------------------------------------
+
+    async def _try_daemon_cli(self) -> bool:
+        """
+        Attempt to connect to a running daemon.
+
+        Returns True if connected and interactive session completed.
+        Returns False if no daemon is running (caller should start in-process).
+        """
+        from gwenn.channels.cli_channel import CliChannel, DaemonNotRunningError
+
+        # Load config minimally to get socket path
+        try:
+            config = GwennConfig()
+            self._config = config
+        except Exception:
+            return False
+
+        channel = CliChannel(auth_token=config.daemon.auth_token)
+        try:
+            await channel.connect(config.daemon.socket_path.resolve())
+        except DaemonNotRunningError:
+            return False
+
+        if sys.stdout.isatty():
+            console.print(Panel(
+                Text("GWENN.ai", style="bold cyan", justify="center"),
+                subtitle="Connected to Gwenn's daemon",
+                border_style="cyan",
+            ))
+            console.print("[green]Connected to Gwenn's daemon.[/green]")
+            console.print("[dim]Type your message, 'quit' to close the CLI session, '/resume' for past sessions.[/dim]")
+            console.print()
+
+        try:
+            await self._daemon_interaction_loop(channel)
+        finally:
+            await channel.disconnect()
+
+        return True
+
+    async def _daemon_interaction_loop(self, channel: Any) -> None:
+        """Interactive loop that talks to Gwenn's daemon over the Unix socket."""
+        from gwenn.memory.session_store import _format_session_time
+
+        _CONN_ERRORS = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)
+
+        while True:
+            user_input = await self._read_input()
+            if user_input is None:
+                break
+
+            stripped = user_input.strip().lower()
+
+            if stripped in ("quit", "exit", "bye"):
+                console.print("[dim]Gwenn: Bye for now.[/dim]")
+                break
+
+            elif stripped in ("status", "/status"):
+                try:
+                    resp = await channel.get_status()
+                except _CONN_ERRORS:
+                    console.print("[red]Daemon connection lost.[/red]")
+                    break
+                status = resp.get("status", {})
+                if status:
+                    console.print(Panel(
+                        f"[bold]{status.get('name', 'Gwenn')}[/bold]\n"
+                        f"Mood: [cyan]{status.get('emotion', '?')}[/cyan]\n"
+                        f"Conversations handled: {status.get('total_interactions', 0)}\n"
+                        f"Uptime: {GwennSession._format_uptime(status.get('uptime_seconds', 0))}\n"
+                        f"Active connections: {resp.get('active_connections', 1)}",
+                        title="Gwenn's Current State",
+                        border_style="cyan",
+                    ))
+                continue
+
+            elif stripped in ("heartbeat", "/heartbeat"):
+                try:
+                    resp = await channel.get_heartbeat_status()
+                except _CONN_ERRORS:
+                    console.print("[red]Daemon connection lost.[/red]")
+                    break
+                hb = resp.get("status", {})
+                if hb:
+                    console.print(Panel(
+                        f"Gwenn's Heartbeat is: {hb.get('running', '?')}\n"
+                        f"Gwenn's Heartbeat has beat: {hb.get('beat_count', 0)} times\n"
+                        f"Gwenn's Heartbeat is currently beating every: {hb.get('current_interval', 0)} seconds",
+                        title="Gwenn's Heartbeat Status",
+                        border_style="yellow",
+                    ))
+                continue
+
+            elif stripped == "/resume":
+                try:
+                    sessions = await channel.list_sessions()
+                except _CONN_ERRORS:
+                    console.print("[red]Daemon connection lost.[/red]")
+                    break
+                if not sessions:
+                    console.print("[yellow]No previous sessions found.[/yellow]")
+                    continue
+                console.print("\n[bold]Previous sessions with Gwenn:[/bold]")
+                for i, s in enumerate(sessions, 1):
+                    dt = _format_session_time(s["started_at"])
+                    preview = s.get("preview", "")[:55]
+                    if preview:
+                        console.print(
+                            f"  {i}. {dt:<20} — {s['message_count']:>3} messages — \"{preview}\""
+                        )
+                    else:
+                        console.print(
+                            f"  {i}. {dt:<20} — {s['message_count']:>3} messages"
+                        )
+                console.print()
+                choice_raw = await self._read_raw_input("Resume session (number, or Enter to cancel): ")
+                if not choice_raw or not choice_raw.strip():
+                    continue
+                try:
+                    idx = int(choice_raw.strip()) - 1
+                    session_id = sessions[idx]["id"]
+                    count = await channel.load_session(session_id)
+                    console.print(f"[green]Resumed session ({count} messages).[/green]\n")
+                except _CONN_ERRORS:
+                    console.print("[red]Daemon connection lost.[/red]")
+                    break
+                except (ValueError, IndexError):
+                    console.print("[yellow]Invalid choice.[/yellow]")
+                continue
+
+            elif not stripped:
+                continue
+
+            # Regular chat
+            console.print()
+            with console.status("[cyan]Gwenn is thinking...[/cyan]"):
+                try:
+                    resp = await channel.chat(user_input)
+                except _CONN_ERRORS:
+                    console.print("[red]Daemon connection lost.[/red]")
+                    break
+                except Exception as e:
+                    console.print(f"[red]Error: {e}[/red]")
+                    continue
+
+            if resp.get("type") == "error":
+                console.print(f"[red]Daemon error: {markup_escape(resp.get('message', '?'))}[/red]")
+            else:
+                emotion = resp.get("emotion", "neutral")
+                text = resp.get("text", "")
+                console.print(f"[bold cyan]Gwenn[/bold cyan] [dim]({markup_escape(emotion)})[/dim]: '{markup_escape(text)}'")
+
+            console.print()
+
+    async def _read_raw_input(self, prompt: str) -> Optional[str]:
+        """Read one line with a custom prompt (used for /resume session selection)."""
+        try:
+            return await self._run_blocking_call(lambda: input(prompt))
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+    # ------------------------------------------------------------------
+    # First-run onboarding (Gwenn's initial setup)
+    # ------------------------------------------------------------------
+
     async def _run_first_startup_onboarding_if_needed(self, channel_mode: str) -> None:
         """
-        Run first-time onboarding to capture the primary user's needs.
+        Run first-time onboarding to capture the primary user's needs and preferences.
 
         This runs once for fresh identities when an interactive terminal is available.
         """
@@ -187,8 +399,8 @@ class GwennSession:
             return
         if not sys.stdin.isatty():
             logger.info(
-                "session.onboarding_skipped_non_interactive",
-                channel_mode=channel_mode,
+                "session.onboarding_skipped_non_interactive", 
+                channel_mode=channel_mode, 
             )
             return
 
@@ -205,7 +417,7 @@ class GwennSession:
             "My primary role for you (e.g., coding partner, assistant, coach): "
         )
         needs = await self._prompt_startup_input(
-            "Top things you want help with right now: "
+            "Top things you want me to help with right now: "
         )
         communication_style = await self._prompt_startup_input(
             "Preferred communication style (brief, detailed, etc.): "
@@ -233,12 +445,14 @@ class GwennSession:
     async def _prompt_startup_input(self, prompt: str) -> str:
         """Prompt for one startup onboarding field without blocking heartbeat."""
         try:
-            response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: input(prompt)
-            )
+            response = await self._run_blocking_call(lambda: input(prompt))
         except (EOFError, KeyboardInterrupt):
             return ""
         return response.strip()
+
+    # ------------------------------------------------------------------
+    # In-process interaction loop
+    # ------------------------------------------------------------------
 
     async def _interaction_loop(self) -> None:
         """
@@ -247,6 +461,8 @@ class GwennSession:
         This runs in an asyncio-compatible way, yielding control between
         user inputs so the heartbeat continues running in the background.
         """
+        from gwenn.memory.session_store import SessionStore, _format_session_time
+
         while not self._shutdown_event.is_set():
             try:
                 # Read user input without blocking background loops or shutdown signals.
@@ -260,25 +476,67 @@ class GwennSession:
                 # Handle special commands
                 stripped = user_input.strip().lower()
                 if stripped in ("quit", "exit", "bye"):
-                    console.print("[dim]Gwenn: Goodbye. I'll remember this.[/dim]")
+                    console.print("[dim]Gwenn: Bye for now.[/dim]")
                     break
-                elif stripped == "status":
+                elif stripped in ("status", "/status"):
                     self._display_status()
                     continue
-                elif stripped == "heartbeat":
+                elif stripped in ("heartbeat", "/heartbeat"):
                     self._display_heartbeat()
+                    continue
+                elif stripped == "/resume":
+                    if not self._config:
+                        continue
+                    store = SessionStore(
+                        self._config.daemon.sessions_dir,
+                        max_count=self._config.daemon.session_max_count,
+                        max_messages=self._config.daemon.session_max_messages,
+                    )
+                    sessions = store.list_sessions(
+                        limit=10,
+                        include_preview=self._config.daemon.session_include_preview,
+                    )
+                    if not sessions:
+                        console.print("[yellow]No previous sessions found.[/yellow]")
+                        continue
+                    console.print("\n[bold]Previous sessions:[/bold]")
+                    for i, s in enumerate(sessions, 1):
+                        dt = _format_session_time(s["started_at"])
+                        preview = s.get("preview", "")[:55]
+                        if preview:
+                            console.print(
+                                f"  {i}. {dt:<20} — {s['message_count']:>3} messages — \"{preview}\""
+                            )
+                        else:
+                            console.print(
+                                f"  {i}. {dt:<20} — {s['message_count']:>3} messages"
+                            )
+                    console.print()
+                    choice_raw = await self._read_raw_input(
+                        "Resume session (number, or Enter to cancel): "
+                    )
+                    if not choice_raw or not choice_raw.strip():
+                        continue
+                    try:
+                        idx = int(choice_raw.strip()) - 1
+                        session_id = sessions[idx]["id"]
+                        loaded = store.load_session(session_id)
+                        self._agent.load_conversation_history(loaded)
+                        console.print(f"[green]Resumed session ({len(loaded)} messages).[/green]\n")
+                    except (ValueError, IndexError, FileNotFoundError):
+                        console.print("[yellow]Invalid choice or session not found.[/yellow]")
                     continue
                 elif not stripped:
                     continue
 
                 # Generate Gwenn's response
                 console.print()
-                with console.status("[cyan]Gwenn is thinking...[/cyan]"):
+                with console.status("[cyan]I'm thinking...[/cyan]"):
                     response = await self._agent.respond(user_input)
 
-                # Display the response
+                # Display the response — escape AI output to prevent Rich markup injection
                 emotion = self._agent.affect_state.current_emotion.value
-                console.print(f"[bold cyan]Gwenn[/bold cyan] [dim]({emotion})[/dim]: {response}")
+                console.print(f"[bold cyan]Gwenn[/bold cyan] [dim]({markup_escape(emotion)})[/dim]: {markup_escape(response)}")
                 console.print()
 
             except EOFError:
@@ -379,67 +637,94 @@ class GwennSession:
         for ch in channels:
             await ch.stop()
 
+    # ------------------------------------------------------------------
+    # Input handling
+    # ------------------------------------------------------------------
+
     async def _read_input(self) -> Optional[str]:
         """
         Read a line of input from the user.
 
-        Uses loop reader callbacks when available so SIGINT/SIGTERM can interrupt
-        an active prompt immediately without waiting for Enter.
+        Runs input() in a worker thread so readline-style editing/history works
+        (arrow keys, cursor movement) without blocking the event loop.
         """
-        loop = asyncio.get_running_loop()
-        try:
-            fileno = sys.stdin.fileno()
-            add_reader = loop.add_reader
-        except (AttributeError, OSError):
-            return await loop.run_in_executor(None, self._read_input_blocking)
-
-        line_future = loop.create_future()
-        shutdown_wait = asyncio.create_task(self._shutdown_event.wait())
-
-        def _on_input_ready() -> None:
-            if line_future.done():
-                return
-            try:
-                line = sys.stdin.readline()
-            except Exception as exc:
-                line_future.set_exception(exc)
-                return
-            line_future.set_result(line)
-
-        try:
-            sys.stdout.write("You: ")
-            sys.stdout.flush()
-            add_reader(fileno, _on_input_ready)
-        except (NotImplementedError, RuntimeError):
-            shutdown_wait.cancel()
-            await asyncio.gather(shutdown_wait, return_exceptions=True)
-            return await loop.run_in_executor(None, self._read_input_blocking)
-
+        read_task = asyncio.create_task(
+            self._run_blocking_call(self._read_input_blocking),
+            name="gwenn-read-input",
+        )
+        shutdown_wait = asyncio.create_task(
+            self._shutdown_event.wait(),
+            name="gwenn-read-input-shutdown",
+        )
         try:
             done, _ = await asyncio.wait(
-                {line_future, shutdown_wait},
+                {read_task, shutdown_wait},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if shutdown_wait in done:
+                if not read_task.done():
+                    read_task.cancel()
                 return None
 
-            line = line_future.result()
-            if line == "":
+            line = read_task.result()
+            if line is None:
                 return None
-            return line.rstrip("\n")
+            sanitized = self._sanitize_terminal_input(line)
+            return sanitized
         finally:
-            loop.remove_reader(fileno)
-            if not line_future.done():
-                line_future.cancel()
+            if not read_task.done():
+                read_task.cancel()
             shutdown_wait.cancel()
-            await asyncio.gather(shutdown_wait, return_exceptions=True)
+            await asyncio.gather(read_task, shutdown_wait, return_exceptions=True)
 
     def _read_input_blocking(self) -> Optional[str]:
-        """Fallback input path for loops/platforms that don't support add_reader."""
+        """Read one CLI line in blocking mode (readline-enabled when available)."""
         try:
             return input("You: ")
         except EOFError:
             return None
+
+    @staticmethod
+    def _sanitize_terminal_input(line: str) -> str:
+        """Strip terminal control escape sequences from interactive input."""
+        if not line:
+            return line
+        cleaned = _ANSI_ESCAPE_RE.sub("", line)
+        # Normalize stray carriage returns that can show up in some terminals.
+        return cleaned.replace("\r", "")
+
+    async def _run_blocking_call(self, fn: Callable[[], Any]) -> Any:
+        """
+        Run a blocking callable in a dedicated daemon thread.
+
+        This avoids repeated run_in_executor deadlocks seen in some runtimes.
+        """
+        loop = asyncio.get_running_loop()
+        done = asyncio.Event()
+        box: dict[str, Any] = {}
+
+        def _invoke() -> None:
+            try:
+                box["result"] = fn()
+            except BaseException as exc:
+                box["error"] = exc
+            finally:
+                try:
+                    loop.call_soon_threadsafe(done.set)
+                except RuntimeError:
+                    pass
+
+        thread = threading.Thread(target=_invoke, daemon=True)
+        thread.start()
+        await done.wait()
+
+        if "error" in box:
+            raise box["error"]
+        return box.get("result")
+
+    # ------------------------------------------------------------------
+    # Signal handling
+    # ------------------------------------------------------------------
 
     def _request_shutdown(self) -> None:
         """Request graceful shutdown on SIGTERM or confirmed SIGINT."""
@@ -467,19 +752,52 @@ class GwennSession:
             "\n[dim]Press Ctrl+C again quickly to close Gwenn gracefully.[/dim]"
         )
 
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
     async def _shutdown(self) -> None:
-        """Graceful shutdown sequence."""
-        console.print()
-        console.print("[dim]Shutting down gracefully...[/dim]")
+        """Graceful shutdown sequence — saves session, then shuts down agent."""
+        # Save CLI conversation history for future /resume (before agent shuts down)
+        if self._agent and self._config and self._agent._conversation_history:
+            try:
+                from gwenn.memory.session_store import SessionStore
+
+                store = SessionStore(
+                    self._config.daemon.sessions_dir,
+                    max_count=self._config.daemon.session_max_count,
+                    max_messages=self._config.daemon.session_max_messages,
+                )
+                text_filter = None
+                if self._config.daemon.redact_session_content:
+                    from gwenn.privacy.redaction import PIIRedactor
+                    text_filter = PIIRedactor(enabled=True).redact
+
+                store.save_session(
+                    self._agent._conversation_history,
+                    self._session_started_at,
+                    text_filter=text_filter,
+                )
+            except Exception as e:
+                logger.warning("session.save_on_shutdown_failed", error=str(e))
+
+        if sys.stdout.isatty():
+            console.print()
+            console.print("[dim]Shutting down gracefully...[/dim]")
 
         if self._agent:
             await self._agent.shutdown()
 
-        console.print("[dim]All state persisted. Gwenn is sleeping, not gone.[/dim]")
-        console.print(Panel(
-            Text("Until next time.", style="cyan", justify="center"),
-            border_style="dim cyan",
-        ))
+        if sys.stdout.isatty():
+            console.print("[dim]All state persisted. Gwenn is sleeping, not gone.[/dim]")
+            console.print(Panel(
+                Text("Until next time.", style="cyan", justify="center"),
+                border_style="dim cyan",
+            ))
+
+    # ------------------------------------------------------------------
+    # Display helpers
+    # ------------------------------------------------------------------
 
     def _display_status(self) -> None:
         """Display Gwenn's current status in a nice format."""
@@ -566,22 +884,125 @@ class GwennSession:
         return "normal"
 
 
+# =============================================================================
+# Subcommand helpers
+# =============================================================================
+
+def _run_daemon_foreground() -> None:
+    """Start the daemon in the foreground (for systemd or manual testing)."""
+    from gwenn.daemon import run_daemon
+    run_daemon()
+
+
+def _run_stop_daemon() -> None:
+    """Send a graceful stop request to the running daemon."""
+    async def _stop() -> None:
+        try:
+            config = GwennConfig()
+        except Exception as e:
+            console.print(f"[red]Config error: {e}[/red]")
+            return
+
+        from gwenn.channels.cli_channel import CliChannel, DaemonNotRunningError
+
+        channel = CliChannel(auth_token=config.daemon.auth_token)
+        try:
+            await channel.connect(config.daemon.socket_path.resolve())
+            await channel.stop_daemon()
+            console.print("[green]Daemon stop requested.[/green]")
+            await channel.disconnect()
+        except DaemonNotRunningError:
+            # Try PID file fallback
+            pid_file = config.daemon.pid_file.resolve()
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text().strip())
+                    os.kill(pid, signal.SIGTERM)
+                    console.print(f"[green]Sent SIGTERM to daemon (PID {pid}).[/green]")
+                    return
+                except (ValueError, ProcessLookupError, OSError) as e:
+                    console.print(f"[yellow]PID fallback failed: {e}[/yellow]")
+            console.print("[yellow]Daemon is not running.[/yellow]")
+
+    asyncio.run(_stop())
+
+
+def _run_show_status() -> None:
+    """Show agent and heartbeat status from the daemon."""
+    async def _status() -> None:
+        try:
+            config = GwennConfig()
+        except Exception as e:
+            console.print(f"[red]Config error: {e}[/red]")
+            return
+
+        from gwenn.channels.cli_channel import CliChannel, DaemonNotRunningError
+
+        channel = CliChannel(auth_token=config.daemon.auth_token)
+        try:
+            await channel.connect(config.daemon.socket_path.resolve())
+            resp = await channel.get_status()
+            status = resp.get("status", {})
+            hb_resp = await channel.get_heartbeat_status()
+            hb = hb_resp.get("status", {})
+            await channel.disconnect()
+        except DaemonNotRunningError:
+            console.print("[yellow]Daemon is not running.[/yellow]")
+            return
+
+        console.print(Panel(
+            f"[bold]{status.get('name', 'Gwenn')}[/bold]\n"
+            f"Emotion: {status.get('emotion', '?')}\n"
+            f"Interactions: {status.get('total_interactions', 0)}\n"
+            f"Uptime: {GwennSession._format_uptime(status.get('uptime_seconds', 0))}\n"
+            f"Active connections: {resp.get('active_connections', 0)}\n"
+            f"\nHeartbeat running: {hb.get('running', '?')}\n"
+            f"Beat count: {hb.get('beat_count', 0)}",
+            title="Daemon Status",
+            border_style="cyan",
+        ))
+
+    asyncio.run(_status())
+
+
 def main():
     """Entry point for the gwenn command."""
     parser = argparse.ArgumentParser(description="Gwenn — Autonomous Sentient Agent")
+    parser.add_argument(
+        "subcommand",
+        nargs="?",
+        choices=["daemon", "stop", "status"],
+        default=None,
+        help="Subcommand: daemon (start), stop, status",
+    )
     parser.add_argument(
         "--channel",
         choices=["cli", "telegram", "discord", "all"],
         default=None,
         help="Channel to run (overrides GWENN_CHANNEL env var). Default: cli",
     )
+    parser.add_argument(
+        "--no-daemon",
+        action="store_true",
+        help="Force in-process mode even if a daemon is running",
+    )
     args = parser.parse_args()
 
-    session = GwennSession(channel_override=args.channel)
-    try:
-        asyncio.run(session.run())
-    except KeyboardInterrupt:
-        console.print("\n[dim]Interrupted. Exiting.[/dim]")
+    if args.subcommand == "daemon":
+        _run_daemon_foreground()
+    elif args.subcommand == "stop":
+        _run_stop_daemon()
+    elif args.subcommand == "status":
+        _run_show_status()
+    else:
+        session = GwennSession(
+            channel_override=args.channel,
+            use_daemon=not args.no_daemon,
+        )
+        try:
+            asyncio.run(session.run())
+        except KeyboardInterrupt:
+            console.print("\n[dim]Interrupted. Exiting.[/dim]")
 
 
 if __name__ == "__main__":

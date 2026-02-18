@@ -176,14 +176,30 @@ class DiscordChannel(BaseChannel):
 
         channel = self  # capture for closures
 
+        async def _ensure_allowed_interaction(interaction) -> bool:
+            guild = getattr(interaction, "guild", None)
+            if guild is None:
+                return True
+            if channel._is_allowed_guild(getattr(guild, "id", None)):
+                return True
+            await interaction.response.send_message(
+                "This server is not allowed for Gwenn commands.",
+                ephemeral=True,
+            )
+            return False
+
         @tree.command(name="status", description="See Gwenn's current cognitive state")
         async def slash_status(interaction) -> None:
+            if not await _ensure_allowed_interaction(interaction):
+                return
             status = channel._agent.status
             text = render_status_text(status, markdown_heading=True)
             await interaction.response.send_message(text, ephemeral=True)
 
         @tree.command(name="heartbeat", description="See Gwenn's heartbeat status")
         async def slash_heartbeat(interaction) -> None:
+            if not await _ensure_allowed_interaction(interaction):
+                return
             if not channel._agent.heartbeat:
                 await interaction.response.send_message(
                     "Heartbeat is not running.", ephemeral=True
@@ -203,6 +219,8 @@ class DiscordChannel(BaseChannel):
             boundaries: str = "",
             skip: bool = False,
         ) -> None:
+            if not await _ensure_allowed_interaction(interaction):
+                return
             raw_id = str(interaction.user.id)
             user_id = channel.make_user_id(raw_id)
 
@@ -236,6 +254,8 @@ class DiscordChannel(BaseChannel):
 
         @tree.command(name="reset", description="Clear your conversation history with Gwenn")
         async def slash_reset(interaction) -> None:
+            if not await _ensure_allowed_interaction(interaction):
+                return
             raw_id = str(interaction.user.id)
             user_id = channel.make_user_id(raw_id)
             channel._sessions.clear_session(user_id)
@@ -245,6 +265,8 @@ class DiscordChannel(BaseChannel):
 
         @tree.command(name="help", description="List available Gwenn commands")
         async def slash_help(interaction) -> None:
+            if not await _ensure_allowed_interaction(interaction):
+                return
             await interaction.response.send_message(
                 "**Gwenn Commands**\n"
                 "/status — see my current cognitive state\n"

@@ -19,6 +19,7 @@ the executor decides whether that's permitted.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import traceback
 from typing import Any, Callable, Optional
@@ -108,11 +109,17 @@ class ToolExecutor:
         approval_callback: Optional[Callable] = None,
         default_timeout: float = 30.0,
         max_output_length: int = 25000,  # Match Claude Code's limit
+        sandbox_enabled: bool = False,
+        sandbox_allowed_tools: Optional[list[str]] = None,
+        max_concurrent_sync: int = 8,
     ):
         self._registry = registry
         self._approval_callback = approval_callback
         self._default_timeout = default_timeout
         self._max_output_length = max_output_length
+        self._sandbox_enabled = sandbox_enabled
+        self._sandbox_allowed_tools = set(sandbox_allowed_tools or [])
+        self._sync_slot = asyncio.Semaphore(max(1, int(max_concurrent_sync)))
 
         # Execution statistics
         self._total_executions = 0
@@ -124,6 +131,9 @@ class ToolExecutor:
             "tool_executor.initialized",
             timeout=default_timeout,
             max_output=max_output_length,
+            sandbox_enabled=sandbox_enabled,
+            sandbox_allowlist_count=len(self._sandbox_allowed_tools),
+            max_concurrent_sync=max(1, int(max_concurrent_sync)),
         )
 
     async def execute(
@@ -177,6 +187,18 @@ class ToolExecutor:
                 error=f"Tool '{tool_name}' is currently disabled.",
             )
 
+        if self._sandbox_enabled and not self._is_sandbox_allowed(tool_def):
+            self._total_failures += 1
+            return ToolExecutionResult(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                success=False,
+                error=(
+                    f"Tool '{tool_name}' is blocked by sandbox policy. "
+                    "Only built-in tools and explicitly allowed tools are permitted."
+                ),
+            )
+
         # Step 2: Check approval requirements
         if tool_def.requires_approval:
             approved = await self._request_approval(tool_def, tool_input)
@@ -208,12 +230,7 @@ class ToolExecutor:
                     timeout=self._default_timeout,
                 )
             else:
-                # Run sync handlers in executor to avoid blocking
-                loop = asyncio.get_event_loop()
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: handler(**tool_input)),
-                    timeout=self._default_timeout,
-                )
+                result = await self._execute_sync_handler(handler, tool_input)
 
             # Truncate overly long results
             result_str = str(result)
@@ -276,6 +293,63 @@ class ToolExecutor:
                 error=error_detail,
                 execution_time=elapsed,
             )
+
+    async def _execute_sync_handler(
+        self,
+        handler: Callable[..., Any],
+        tool_input: dict[str, Any],
+    ) -> Any:
+        """
+        Execute a synchronous handler in a dedicated daemon thread.
+
+        Using a per-call thread avoids deadlocks we have seen with repeated
+        run_in_executor/to_thread usage in this runtime.
+        """
+        try:
+            await asyncio.wait_for(
+                self._sync_slot.acquire(),
+                timeout=self._default_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                "Sync tool executor is saturated with long-running tasks."
+            ) from exc
+
+        loop = asyncio.get_running_loop()
+        done = asyncio.Event()
+        result_box: dict[str, Any] = {}
+
+        def _invoke() -> None:
+            try:
+                result_box["result"] = handler(**tool_input)
+            except Exception as exc:  # pragma: no cover - surfaced to caller
+                result_box["error"] = exc
+            finally:
+                try:
+                    loop.call_soon_threadsafe(done.set)
+                    loop.call_soon_threadsafe(self._sync_slot.release)
+                except RuntimeError:
+                    # Loop may already be closed if shutdown races tool completion.
+                    pass
+
+        try:
+            thread = threading.Thread(target=_invoke, daemon=True)
+            thread.start()
+        except Exception:
+            self._sync_slot.release()
+            raise
+
+        await asyncio.wait_for(done.wait(), timeout=self._default_timeout)
+
+        if "error" in result_box:
+            raise result_box["error"]
+        return result_box.get("result")
+
+    def _is_sandbox_allowed(self, tool_def: ToolDefinition) -> bool:
+        """Enforce the sandbox boundary for externally sourced tools."""
+        if tool_def.is_builtin:
+            return True
+        return tool_def.name in self._sandbox_allowed_tools
 
     async def _request_approval(
         self,

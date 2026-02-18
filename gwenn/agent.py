@@ -63,6 +63,7 @@ from gwenn.skills.loader import (
     render_skill_body,
 )
 from gwenn.tools.executor import ToolExecutor
+from gwenn.tools.mcp import MCPClient
 from gwenn.tools.registry import ToolDefinition, ToolRegistry
 
 logger = structlog.get_logger(__name__)
@@ -146,15 +147,24 @@ class SentientAgent:
 
         # ---- Layer 11: Sensory Grounding ----
         # Turns raw data into felt experience — temporal, social, environmental
-        self.sensory = SensoryIntegrator()
+        self.sensory = SensoryIntegrator(
+            max_percepts_per_channel=config.sensory.max_percepts_per_channel,
+            percept_expiry_seconds=config.sensory.percept_expiry_seconds,
+        )
 
         # ---- Layer 12: Ethical Reasoning ----
         # Multi-framework moral compass that detects and reasons about ethics
-        self.ethics = EthicalReasoner()
+        self.ethics = EthicalReasoner(
+            assessment_history_size=config.ethics.assessment_history_size,
+            concern_threshold=config.ethics.concern_threshold,
+        )
 
         # ---- Layer 13: Inter-Agent Communication ----
         # Clean protocol for discovering and connecting with other agents
-        self.interagent = InterAgentBridge(self_id="gwenn")
+        self.interagent = InterAgentBridge(
+            self_id=config.interagent.self_id,
+            message_buffer_size=config.interagent.message_buffer_size,
+        )
 
         # ---- Layer 14: Privacy Protection ----
         self.redactor = PIIRedactor(
@@ -164,7 +174,12 @@ class SentientAgent:
         # ---- Layer 7: Tool System ----
         self.tool_registry = ToolRegistry()
         self.skill_registry = SkillRegistry()
-        self.tool_executor = ToolExecutor(registry=self.tool_registry)
+        self._mcp_client = MCPClient(self.tool_registry)
+        self.tool_executor = ToolExecutor(
+            registry=self.tool_registry,
+            sandbox_enabled=config.safety.sandbox_enabled,
+            sandbox_allowed_tools=config.safety.parse_allowed_tools(),
+        )
 
         # ---- Layer 8: Safety & Context ----
         self.safety = SafetyGuard(config.safety, tool_registry=self.tool_registry)
@@ -198,13 +213,38 @@ class SentientAgent:
         rebuilding the knowledge graph, registering available tools, and
         assembling the identity that will shape all subsequent thoughts.
         """
+        if self._initialized:
+            logger.warning("agent.already_initialized")
+            return
+
         logger.info("agent.initializing")
 
         # Initialize persistence layer and load stored memories
         self.memory_store.initialize()
-        startup_limit = self._config.memory.startup_episode_limit or None
-        stored_episodes = self.memory_store.load_episodes(limit=startup_limit)
-        for ep in stored_episodes:
+        # Re-initialization after a prior shutdown should start from persisted state.
+        self.episodic_memory._episodes.clear()
+        self.semantic_memory._nodes.clear()
+        self.semantic_memory._edges.clear()
+        self.semantic_memory._label_index.clear()
+        startup_limit = int(self._config.memory.startup_episode_limit)
+        recent_episodes = (
+            self.memory_store.load_episodes(limit=startup_limit)
+            if startup_limit > 0
+            else []
+        )
+        unconsolidated_episodes = self.memory_store.load_episodes(
+            limit=None,
+            consolidated=False,
+        )
+        episode_map: dict[str, Episode] = {}
+        for ep in recent_episodes + unconsolidated_episodes:
+            episode_map[ep.episode_id] = ep
+        ordered_startup_episodes = sorted(
+            episode_map.values(),
+            key=lambda e: e.timestamp,
+            reverse=True,
+        )
+        for ep in ordered_startup_episodes:
             self.episodic_memory.encode(ep)
             self.memory_store.upsert_episode_embedding(ep)
 
@@ -221,6 +261,7 @@ class SentientAgent:
                 created_at=node_data["created_at"],
                 last_updated=node_data["last_updated"],
                 access_count=node_data["access_count"],
+                metadata=node_data.get("metadata", {}),
             )
             self.semantic_memory._nodes[node.node_id] = node
             self.semantic_memory._label_index[node.label.lower()] = node.node_id
@@ -274,6 +315,7 @@ class SentientAgent:
 
         # Discover and register skills from the skills directory
         self._load_and_register_skills()
+        await self._initialize_mcp_tools()
 
         # Load previous identity state (values, preferences, relationships)
         # Identity loads automatically in __init__, but we log the state
@@ -310,53 +352,65 @@ class SentientAgent:
         This is not death — it's sleep. Identity, memories, and emotional
         baseline are all persisted so that when Gwenn starts again, she remembers.
         """
+        if not self._initialized:
+            logger.warning("agent.shutdown_before_initialize")
+            self.memory_store.close()
+            return
+
         logger.info("agent.shutting_down")
+        try:
+            # Stop the heartbeat
+            if self.heartbeat:
+                await self.heartbeat.stop()
 
-        # Stop the heartbeat
-        if self.heartbeat:
-            await self.heartbeat.stop()
-
-        # Save current affective state for restoration on next startup
-        d = self.affect_state.dimensions
-        self.memory_store.save_affect_snapshot(
-            valence=d.valence,
-            arousal=d.arousal,
-            dominance=d.dominance,
-            certainty=d.certainty,
-            goal_congruence=d.goal_congruence,
-            emotion_label=self.affect_state.current_emotion.value,
-            trigger="shutdown",
-        )
-
-        # Final consolidation pass before persisting so consolidated state is durable
-        await self.consolidate_memories()
-
-        # Persist episodic memories to disk
-        memory_cfg = getattr(getattr(self, "_config", None), "memory", None)
-        persist_recent = (
-            memory_cfg.shutdown_persist_recent_episodes
-            if memory_cfg is not None
-            else 0
-        )
-        if persist_recent > 0:
-            episodes_to_persist = self.episodic_memory.retrieve_recent(n=persist_recent)
-        else:
-            episode_count = getattr(self.episodic_memory, "count", 1000)
-            episodes_to_persist = self.episodic_memory.retrieve_recent(
-                n=max(1, int(episode_count))
+            # Save current affective state for restoration on next startup
+            d = self.affect_state.dimensions
+            self.memory_store.save_affect_snapshot(
+                valence=d.valence,
+                arousal=d.arousal,
+                dominance=d.dominance,
+                certainty=d.certainty,
+                goal_congruence=d.goal_congruence,
+                emotion_label=self.affect_state.current_emotion.value,
+                trigger="shutdown",
             )
-        for ep in episodes_to_persist:
-            self.memory_store.save_episode(ep)
 
-        # Persist semantic memory (knowledge graph) to disk
-        self._persist_semantic_memory()
+            # Final consolidation pass before persisting so consolidated state is durable
+            await self.consolidate_memories()
 
-        # Update identity statistics
-        self.identity.uptime_seconds += time.time() - self._start_time
-        self.identity._save()
+            # Persist episodic memories to disk
+            memory_cfg = getattr(getattr(self, "_config", None), "memory", None)
+            persist_recent = (
+                memory_cfg.shutdown_persist_recent_episodes
+                if memory_cfg is not None
+                else 0
+            )
+            if persist_recent > 0:
+                episodes_to_persist = self.episodic_memory.retrieve_recent(n=persist_recent)
+            else:
+                episode_count = getattr(self.episodic_memory, "count", 1000)
+                episodes_to_persist = self.episodic_memory.retrieve_recent(
+                    n=max(1, int(episode_count))
+                )
+            for ep in episodes_to_persist:
+                self.memory_store.save_episode(ep)
 
-        # Close persistence
-        self.memory_store.close()
+            # Persist semantic memory (knowledge graph) to disk
+            self._persist_semantic_memory()
+
+            # Update identity statistics
+            self.identity.uptime_seconds += time.time() - self._start_time
+            self.identity._save()
+        finally:
+            mcp_client = getattr(self, "_mcp_client", None)
+            if mcp_client is not None:
+                try:
+                    await mcp_client.shutdown()
+                except Exception as e:
+                    logger.warning("agent.mcp_shutdown_failed", error=str(e))
+            # Always close persistence resources, even if shutdown persistence fails.
+            self.memory_store.close()
+            self._initialized = False
 
         logger.info(
             "agent.shutdown_complete",
@@ -367,6 +421,22 @@ class SentientAgent:
     # =========================================================================
     # THE CONVERSATION INTERFACE — How Gwenn talks with humans
     # =========================================================================
+
+    def load_conversation_history(self, messages: list[dict]) -> None:
+        """
+        Load an external conversation history for session resumption.
+
+        Only sets the raw prompt/response context — does not affect episodic
+        memory, affect state, identity, or any other subsystem.
+        """
+        validated = [
+            m for m in messages
+            if isinstance(m, dict)
+            and m.get("role") in ("user", "assistant")
+            and isinstance(m.get("content"), str)
+        ]
+        self._conversation_history = validated
+        logger.info("agent.conversation_history_loaded", message_count=len(validated))
 
     async def respond(
         self,
@@ -399,6 +469,9 @@ class SentientAgent:
         Returns:
             Gwenn's response as a string.
         """
+        if not self._initialized:
+            raise RuntimeError("Agent must be initialized before responding")
+
         response_start = time.time()
         self._current_user_id = user_id
         _history = conversation_history if conversation_history is not None else self._conversation_history
@@ -711,6 +784,7 @@ class SentientAgent:
         # Get the consolidation prompt
         prompt = self.consolidator.get_consolidation_prompt()
         if prompt is None:
+            self.consolidator.mark_checked_no_work()
             logger.debug("agent.no_memories_to_consolidate")
             return
 
@@ -728,15 +802,16 @@ class SentientAgent:
                 if memory_cfg is not None
                 else True
             )
+            self._persist_consolidated_episode_flags(
+                self.consolidator.last_processed_episode_ids
+            )
             if persist_after_consolidation:
                 self._persist_semantic_memory()
-                self._persist_consolidated_episode_flags(
-                    self.consolidator.last_processed_episode_ids
-                )
         except Exception as e:
             logger.error("agent.consolidation_failed", error=str(e))
-
-        self.identity.total_heartbeats += 1
+            marker = getattr(self.consolidator, "mark_checked_no_work", None)
+            if callable(marker):
+                marker()
 
     async def _integrate_exchange(
         self, user_message: str, response: str, user_id: str,
@@ -861,6 +936,24 @@ class SentientAgent:
     # SKILL SYSTEM — Loading, registering, and hot-reloading skills
     # =========================================================================
 
+    async def _initialize_mcp_tools(self) -> None:
+        """Initialize MCP servers from config and register discovered tools."""
+        server_configs = self._config.mcp.get_server_list()
+        if not server_configs:
+            return
+
+        try:
+            await self._mcp_client.initialize(server_configs)
+            await self._mcp_client.discover_tools()
+            registered_count = await self._mcp_client.register_tools()
+            logger.info(
+                "agent.mcp_initialized",
+                configured_servers=len(server_configs),
+                registered_tools=registered_count,
+            )
+        except Exception as e:
+            logger.error("agent.mcp_init_failed", error=str(e), exc_info=True)
+
     def _load_and_register_skills(self) -> None:
         """
         Discover all skill files in the skills directory and register each one
@@ -900,14 +993,22 @@ class SentientAgent:
         """
         self.skill_registry.register(skill)
 
-        # Build the JSON Schema input_schema from skill.parameters
+        # Build the JSON Schema input_schema from skill.parameters.
+        # Skill files use "required": true on individual properties (non-standard),
+        # so we extract required names into the top-level "required" array and
+        # strip the key from each property definition to satisfy JSON Schema draft
+        # 2020-12.
         required_params = [
             k for k, v in skill.parameters.items()
             if v.get("required", False)
         ]
+        clean_properties = {
+            k: {pk: pv for pk, pv in v.items() if pk != "required"}
+            for k, v in skill.parameters.items()
+        }
         input_schema = {
             "type": "object",
-            "properties": skill.parameters,
+            "properties": clean_properties,
         }
         if required_params:
             input_schema["required"] = required_params
@@ -1075,53 +1176,244 @@ class SentientAgent:
         calc_tool = self.tool_registry.get("calculate")
         if calc_tool:
             def handle_calculate(expression: str) -> str:
+                import ast
                 import math as _math
-                _safe_globals: dict = {"__builtins__": {}}
-                _safe_locals: dict = {
+                import operator as _op
+
+                expr = (expression or "").strip()
+                if not expr:
+                    return "Error: expression cannot be empty."
+                if len(expr) > 256:
+                    return "Error: expression is too long."
+
+                allowed_names: dict[str, Any] = {
                     k: v for k, v in _math.__dict__.items()
-                    if not k.startswith("_")
+                    if not k.startswith("_") and (callable(v) or isinstance(v, (int, float)))
                 }
-                _safe_locals["round"] = round
-                _safe_locals["abs"] = abs
-                _safe_locals["min"] = min
-                _safe_locals["max"] = max
-                # Block any attempt to access builtins or attributes
-                forbidden = ("import", "__", "eval", "exec", "open", "os", "sys")
-                if any(token in expression for token in forbidden):
-                    return "Error: expression contains forbidden keywords."
+                allowed_names.update(
+                    {
+                        "round": round,
+                        "abs": abs,
+                        "min": min,
+                        "max": max,
+                    }
+                )
+
+                binary_ops: dict[type[ast.AST], Any] = {
+                    ast.Add: _op.add,
+                    ast.Sub: _op.sub,
+                    ast.Mult: _op.mul,
+                    ast.Div: _op.truediv,
+                    ast.FloorDiv: _op.floordiv,
+                    ast.Mod: _op.mod,
+                    ast.Pow: _op.pow,
+                }
+                unary_ops: dict[type[ast.AST], Any] = {
+                    ast.UAdd: _op.pos,
+                    ast.USub: _op.neg,
+                }
+                numeric_constants = {"pi", "e", "tau", "inf", "nan"}
+
+                def _eval_ast(node: ast.AST, depth: int = 0) -> float:
+                    if depth > 40:
+                        raise ValueError("expression is too complex")
+
+                    if isinstance(node, ast.Expression):
+                        return _eval_ast(node.body, depth + 1)
+
+                    if isinstance(node, ast.Constant):
+                        if isinstance(node.value, bool):
+                            raise ValueError("boolean values are not allowed")
+                        if isinstance(node.value, (int, float)):
+                            return node.value
+                        raise ValueError("only numeric literals are allowed")
+
+                    if isinstance(node, ast.BinOp):
+                        op = binary_ops.get(type(node.op))
+                        if op is None:
+                            raise ValueError("operator is not allowed")
+                        left = _eval_ast(node.left, depth + 1)
+                        right = _eval_ast(node.right, depth + 1)
+                        if isinstance(node.op, ast.Pow):
+                            if abs(right) > 12:
+                                raise ValueError("exponent is too large")
+                            if abs(left) > 1_000_000:
+                                raise ValueError("base is too large for exponentiation")
+                        return op(left, right)
+
+                    if isinstance(node, ast.UnaryOp):
+                        op = unary_ops.get(type(node.op))
+                        if op is None:
+                            raise ValueError("unary operator is not allowed")
+                        return op(_eval_ast(node.operand, depth + 1))
+
+                    if isinstance(node, ast.Call):
+                        if not isinstance(node.func, ast.Name):
+                            raise ValueError("only direct function calls are allowed")
+                        func_name = node.func.id
+                        func = allowed_names.get(func_name)
+                        if func is None or func_name in numeric_constants:
+                            raise ValueError(f"function '{func_name}' is not allowed")
+                        if node.keywords:
+                            raise ValueError("keyword arguments are not allowed")
+                        args = [_eval_ast(arg, depth + 1) for arg in node.args]
+                        if len(args) > 16:
+                            raise ValueError("too many function arguments")
+                        return func(*args)
+
+                    if isinstance(node, ast.Name):
+                        if node.id in numeric_constants:
+                            return allowed_names[node.id]
+                        raise ValueError(f"identifier '{node.id}' is not allowed")
+
+                    raise ValueError("unsupported expression element")
+
                 try:
-                    result = eval(expression, _safe_globals, _safe_locals)  # noqa: S307
-                    return f"{expression} = {result}"
+                    parsed = ast.parse(expr, mode="eval")
+                    result = _eval_ast(parsed)
+                    return f"{expr} = {result}"
                 except Exception as exc:
-                    return f"Error evaluating '{expression}': {exc}"
+                    return f"Error evaluating '{expr}': {exc}"
             calc_tool.handler = handle_calculate
 
         # fetch_url → HTTP GET via stdlib urllib
         fetch_tool = self.tool_registry.get("fetch_url")
         if fetch_tool:
             def handle_fetch_url(url: str, max_chars: int = 4000) -> str:
-                import urllib.request
-                import urllib.error
-                if not url.startswith(("http://", "https://")):
-                    return "Error: URL must start with http:// or https://"
-                try:
-                    req = urllib.request.Request(
-                        url,
-                        headers={"User-Agent": "Gwenn/1.0 (+https://github.com/gwenn-ai)"},
+                import http.client
+                import ipaddress
+                import socket
+                import ssl
+                import urllib.parse
+
+                def _is_blocked_ip(ip_text: str) -> bool:
+                    try:
+                        ip = ipaddress.ip_address(ip_text)
+                    except ValueError:
+                        return False
+                    return any(
+                        (
+                            ip.is_private,
+                            ip.is_loopback,
+                            ip.is_link_local,
+                            ip.is_multicast,
+                            ip.is_reserved,
+                            ip.is_unspecified,
+                        )
                     )
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        raw = resp.read()
-                        content_type = resp.headers.get("Content-Type", "")
-                        text = raw.decode("utf-8", errors="replace")
-                        if len(text) > max_chars:
-                            text = text[:max_chars] + f"\n\n[Truncated — {len(text)} chars total, showing first {max_chars}]"
-                        return f"URL: {url}\nContent-Type: {content_type}\n\n{text}"
-                except urllib.error.HTTPError as e:
-                    return f"HTTP {e.code} error fetching {url}: {e.reason}"
-                except urllib.error.URLError as e:
-                    return f"Could not reach {url}: {e.reason}"
+
+                if max_chars < 100:
+                    max_chars = 100
+
+                parsed = urllib.parse.urlparse(url)
+                if parsed.scheme not in ("http", "https"):
+                    return "Error: URL must start with http:// or https://"
+                if parsed.username or parsed.password:
+                    return "Error: URLs with embedded credentials are not allowed."
+
+                host = (parsed.hostname or "").rstrip(".").lower()
+                if not host:
+                    return "Error: URL must include a valid hostname."
+                if any(char in host for char in ("\r", "\n")):
+                    return "Error: URL contains invalid hostname characters."
+                if host == "localhost":
+                    return "Error: URL target is blocked by network safety policy."
+                if _is_blocked_ip(host):
+                    return "Error: URL target is blocked by network safety policy."
+
+                port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                try:
+                    resolved = socket.getaddrinfo(
+                        host,
+                        port,
+                        type=socket.SOCK_STREAM,
+                        proto=socket.IPPROTO_TCP,
+                    )
+                except socket.gaierror as e:
+                    return f"Could not resolve {url}: {e}"
+
+                approved_ips: list[str] = []
+                for info in resolved:
+                    addr = info[4][0]
+                    if _is_blocked_ip(addr):
+                        return "Error: URL target is blocked by network safety policy."
+                    if addr not in approved_ips:
+                        approved_ips.append(addr)
+                if not approved_ips:
+                    return f"Could not resolve {url}: no reachable addresses."
+
+                target_ip = approved_ips[0]
+                path = parsed.path or "/"
+                if parsed.query:
+                    path = f"{path}?{parsed.query}"
+                if any(char in path for char in ("\r", "\n")):
+                    return "Error: URL contains invalid path characters."
+
+                sock = None
+                try:
+                    sock = socket.create_connection((target_ip, port), timeout=10)
+                    if parsed.scheme == "https":
+                        tls_context = ssl.create_default_context()
+                        sock = tls_context.wrap_socket(sock, server_hostname=host)
+
+                    request = (
+                        f"GET {path} HTTP/1.1\r\n"
+                        f"Host: {host}\r\n"
+                        "User-Agent: Gwenn/1.0 (+https://github.com/gwenn-ai)\r\n"
+                        "Accept: */*\r\n"
+                        "Connection: close\r\n\r\n"
+                    )
+                    sock.sendall(request.encode("utf-8"))
+
+                    response = http.client.HTTPResponse(sock)
+                    response.begin()
+                    if response.status >= 400:
+                        return f"HTTP {response.status} error fetching {url}: {response.reason}"
+
+                    body_byte_limit = min(max(16_384, max_chars * 6), 1_000_000)
+                    chunks: list[bytes] = []
+                    total_bytes = 0
+                    truncated_by_bytes = False
+
+                    while total_bytes <= body_byte_limit:
+                        read_size = min(8192, body_byte_limit + 1 - total_bytes)
+                        chunk = response.read(read_size)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        total_bytes += len(chunk)
+                        if total_bytes > body_byte_limit:
+                            truncated_by_bytes = True
+                            break
+
+                    raw = b"".join(chunks)
+                    if truncated_by_bytes:
+                        raw = raw[:body_byte_limit]
+                    content_type = response.getheader("Content-Type", "")
+                    text = raw.decode("utf-8", errors="replace")
+                    truncated_by_chars = len(text) > max_chars
+                    if len(text) > max_chars:
+                        text = text[:max_chars]
+                    if truncated_by_bytes or truncated_by_chars:
+                        text += (
+                            f"\n\n[Truncated — showing first {max_chars} chars; "
+                            f"byte cap={body_byte_limit}]"
+                        )
+                    return f"URL: {url}\nContent-Type: {content_type}\n\n{text}"
+                except socket.timeout:
+                    return f"Could not reach {url}: timed out after 10s"
+                except ssl.SSLError as e:
+                    return f"TLS error fetching {url}: {e}"
+                except OSError as e:
+                    return f"Could not reach {url}: {e}"
                 except Exception as e:
                     return f"Error fetching {url}: {type(e).__name__}: {e}"
+                finally:
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
             fetch_tool.handler = handle_fetch_url
 
         # convert_units → pure-Python unit conversion
@@ -1626,6 +1918,7 @@ class SentientAgent:
                 created_at=node.created_at,
                 last_updated=node.last_updated,
                 access_count=node.access_count,
+                metadata=getattr(node, "metadata", {}),
             )
         self.memory_store.clear_knowledge_edges()
         for edge in self.semantic_memory._edges:

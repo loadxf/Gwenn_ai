@@ -16,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -137,7 +138,32 @@ class TestInitialisation:
         db_path = tmp_path / "double_init.db"
         ms = MemoryStore(db_path)
         ms.initialize()
+        first_conn = ms._conn
         ms.initialize()  # should be idempotent
+        assert ms._conn is first_conn
+        ms.close()
+
+    def test_permissions_hardened_for_db_files(self, tmp_path: Path):
+        if os.name == "nt":
+            pytest.skip("Permission bits are not POSIX-stable on Windows")
+
+        db_path = tmp_path / "perm_test.db"
+        ms = MemoryStore(db_path)
+        ms.initialize()
+        ms.save_episode(_make_episode(episode_id="perm-ep"))
+
+        db_mode = os.stat(db_path).st_mode & 0o777
+        parent_mode = os.stat(db_path.parent).st_mode & 0o777
+        assert db_mode & 0o077 == 0
+        assert parent_mode & 0o077 == 0
+
+        wal_path = Path(f"{db_path}-wal")
+        shm_path = Path(f"{db_path}-shm")
+        for sidecar in (wal_path, shm_path):
+            if sidecar.exists():
+                mode = os.stat(sidecar).st_mode & 0o777
+                assert mode & 0o077 == 0
+
         ms.close()
 
 
@@ -277,6 +303,16 @@ class TestEpisodeFiltering:
         assert "exact" not in ids
         assert "after" in ids
 
+    def test_filter_by_consolidated_flag(self, store: MemoryStore):
+        store.save_episode(_make_episode(episode_id="c-yes", consolidated=True))
+        store.save_episode(_make_episode(episode_id="c-no", consolidated=False))
+
+        consolidated_rows = store.load_episodes(limit=None, consolidated=True)
+        unconsolidated_rows = store.load_episodes(limit=None, consolidated=False)
+
+        assert {e.episode_id for e in consolidated_rows} == {"c-yes"}
+        assert {e.episode_id for e in unconsolidated_rows} == {"c-no"}
+
 
 # ---------------------------------------------------------------------------
 # 4. Affect snapshot
@@ -402,6 +438,7 @@ class TestKnowledgeNodes:
             created_at=1_700_000_000.0,
             last_updated=1_700_001_000.0,
             access_count=5,
+            metadata={"source": "test"},
         )
 
     def test_save_and_load_single_node(self, store: MemoryStore):
@@ -417,6 +454,7 @@ class TestKnowledgeNodes:
         assert n["created_at"] == pytest.approx(1_700_000_000.0)
         assert n["last_updated"] == pytest.approx(1_700_001_000.0)
         assert n["access_count"] == 5
+        assert n["metadata"] == {"source": "test"}
 
     def test_source_episodes_json_round_trip(self, store: MemoryStore):
         episodes = ["ep-alpha", "ep-beta", "ep-gamma"]
@@ -566,6 +604,12 @@ class TestPersistentContext:
         store.save_persistent_context("")
         loaded = store.load_persistent_context()
         assert loaded == ""
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions only")
+    def test_persistent_context_file_is_owner_only(self, store: MemoryStore):
+        path = store.save_persistent_context("private")
+        mode = path.stat().st_mode & 0o777
+        assert mode == 0o600
 
 
 # ---------------------------------------------------------------------------

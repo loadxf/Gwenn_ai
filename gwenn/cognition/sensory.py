@@ -84,11 +84,16 @@ class SensoryIntegrator:
     knows, but what she's experiencing right now.
     """
 
-    def __init__(self, max_percepts_per_channel: int = 10):
+    def __init__(
+        self,
+        max_percepts_per_channel: int = 10,
+        percept_expiry_seconds: float = 300.0,
+    ):
         self._percepts: dict[SensoryChannel, list[GroundedPercept]] = {
             channel: [] for channel in SensoryChannel
         }
-        self._max_per_channel = max_percepts_per_channel
+        self._max_per_channel = max(1, int(max_percepts_per_channel))
+        self._percept_expiry_seconds = max(1.0, float(percept_expiry_seconds))
 
         # Temporal rhythm tracking
         self._last_user_message_time: Optional[float] = None
@@ -217,6 +222,7 @@ class SensoryIntegrator:
         experiential awareness.
         """
         now = time.time()
+        expiry_seconds = self._percept_expiry_seconds
         parts = []
 
         # Collect the most recent, most intense percept from each channel
@@ -225,13 +231,16 @@ class SensoryIntegrator:
             if not percepts:
                 continue
 
-            # Get the most recent relevant percept (within last 5 minutes)
-            recent = [p for p in percepts if now - p.timestamp < 300]
+            # Get the most recent relevant percepts within configured expiry.
+            recent = [p for p in percepts if now - p.timestamp < expiry_seconds]
             if not recent:
                 continue
 
             # Pick the most intense recent percept
-            best = max(recent, key=lambda p: p.intensity * (1 - (now - p.timestamp) / 300))
+            best = max(
+                recent,
+                key=lambda p: p.intensity * max(0.0, 1 - (now - p.timestamp) / expiry_seconds),
+            )
             parts.append(f"[{channel.value}] {best.felt_quality}")
 
         if not parts:

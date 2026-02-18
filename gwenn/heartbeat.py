@@ -178,6 +178,7 @@ class Heartbeat:
         # ---- PHASE 5: SCHEDULE ----
         # Adapt the interval for the next beat
         self._schedule(state_snapshot)
+        self._agent.identity.total_heartbeats += 1
 
         elapsed = time.time() - beat_start
         logger.debug(

@@ -16,6 +16,7 @@ class _InnerLifeStub:
 
 class _IdentityStub:
     def __init__(self):
+        self.total_heartbeats = 0
         self.total_autonomous_thoughts = 0
         self.milestone_checks: list[str] = []
 
@@ -30,6 +31,28 @@ def _make_agent():
         engine=object(),
         affect_state=SimpleNamespace(),
         identity=_IdentityStub(),
+    )
+
+
+def _make_agent_for_full_beat():
+    affect = SimpleNamespace(
+        dimensions=SimpleNamespace(arousal=0.2, valence=0.0),
+        current_emotion=SimpleNamespace(value="neutral"),
+        to_dict=lambda: {},
+    )
+    return SimpleNamespace(
+        inner_life=_InnerLifeStub(),
+        engine=object(),
+        affect_state=affect,
+        identity=_IdentityStub(),
+        working_memory=SimpleNamespace(load_factor=0.0),
+        goal_system=SimpleNamespace(get_goals_summary=lambda: ""),
+        resilience=SimpleNamespace(status="ok"),
+        consolidator=SimpleNamespace(should_consolidate=lambda: False),
+        decay_working_memory=lambda: None,
+        process_appraisal=lambda event: None,
+        episodic_memory=SimpleNamespace(encode=lambda ep: None),
+        memory_store=SimpleNamespace(save_episode=lambda ep: None),
     )
 
 
@@ -87,3 +110,61 @@ async def test_integrate_persists_autonomous_thought_episode():
     assert len(encoded) == 1
     assert len(saved) == 1
     assert saved[0] is encoded[0]
+
+
+@pytest.mark.asyncio
+async def test_beat_increments_total_heartbeats():
+    agent = _make_agent_for_full_beat()
+    heartbeat = Heartbeat(HeartbeatConfig(), agent)
+
+    before = agent.identity.total_heartbeats
+    await heartbeat._beat()
+    after = agent.identity.total_heartbeats
+
+    assert after == before + 1
+
+
+@pytest.mark.asyncio
+async def test_consolidation_mode_does_not_stick_when_no_work():
+    class _Consolidator:
+        def __init__(self):
+            self._due = True
+
+        def should_consolidate(self) -> bool:
+            return self._due
+
+        def mark_checked_no_work(self) -> None:
+            self._due = False
+
+    consolidator = _Consolidator()
+    affect = SimpleNamespace(
+        dimensions=SimpleNamespace(arousal=0.2, valence=0.0),
+        current_emotion=SimpleNamespace(value="neutral"),
+        to_dict=lambda: {},
+    )
+    agent = SimpleNamespace(
+        inner_life=_InnerLifeStub(),
+        engine=object(),
+        affect_state=affect,
+        identity=_IdentityStub(),
+        working_memory=SimpleNamespace(load_factor=0.0),
+        goal_system=SimpleNamespace(get_goals_summary=lambda: ""),
+        resilience=SimpleNamespace(status="ok"),
+        consolidator=consolidator,
+        decay_working_memory=lambda: None,
+        process_appraisal=lambda event: None,
+        episodic_memory=SimpleNamespace(encode=lambda ep: None),
+        memory_store=SimpleNamespace(save_episode=lambda ep: None),
+    )
+
+    async def _consolidate_memories():
+        consolidator.mark_checked_no_work()
+
+    agent.consolidate_memories = _consolidate_memories
+    heartbeat = Heartbeat(HeartbeatConfig(), agent)
+
+    first_mode = heartbeat._orient(heartbeat._sense())
+    assert first_mode == ThinkingMode.CONSOLIDATE
+    await heartbeat._think(first_mode, heartbeat._sense())
+    second_mode = heartbeat._orient(heartbeat._sense())
+    assert second_mode != ThinkingMode.CONSOLIDATE

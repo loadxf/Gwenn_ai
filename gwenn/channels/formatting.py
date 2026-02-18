@@ -40,56 +40,42 @@ def split_message(text: str, max_len: int) -> list[str]:
         return [text]
 
     chunks: list[str] = []
-    _recursive_split(text, max_len, chunks)
+    _iterative_split(text, max_len, chunks)
     return chunks
 
 
-def _recursive_split(text: str, max_len: int, out: list[str]) -> None:
-    """Recursively split text, appending results to *out*."""
-    if len(text) <= max_len:
-        if text:
+def _iterative_split(text: str, max_len: int, out: list[str]) -> None:
+    """Iteratively split text, appending results to *out*.
+
+    Uses a loop instead of recursion to avoid hitting Python's recursion
+    limit for very long inputs with no natural break points.
+    """
+    _PATTERNS = [
+        r"\n\n",           # Paragraph break
+        r"\n",             # Single newline
+        r"(?<=[.!?])\s+",  # Sentence boundary
+        r"\s+",            # Word boundary
+    ]
+    while text:
+        if len(text) <= max_len:
             out.append(text)
-        return
+            return
 
-    # Try paragraph break
-    split_pos = _find_split(text, max_len, r"\n\n")
-    if split_pos is not None:
-        head = text[:split_pos]
-        if head:
-            out.append(head)
-        _recursive_split(text[split_pos:], max_len, out)
-        return
+        split_pos = None
+        for pattern in _PATTERNS:
+            split_pos = _find_split(text, max_len, pattern)
+            if split_pos is not None:
+                break
 
-    # Try single newline
-    split_pos = _find_split(text, max_len, r"\n")
-    if split_pos is not None:
-        head = text[:split_pos]
-        if head:
-            out.append(head)
-        _recursive_split(text[split_pos:], max_len, out)
-        return
-
-    # Try sentence boundary (. ! ?)
-    split_pos = _find_split(text, max_len, r"(?<=[.!?])\s+")
-    if split_pos is not None:
-        head = text[:split_pos]
-        if head:
-            out.append(head)
-        _recursive_split(text[split_pos:], max_len, out)
-        return
-
-    # Try word boundary
-    split_pos = _find_split(text, max_len, r"\s+")
-    if split_pos is not None:
-        head = text[:split_pos]
-        if head:
-            out.append(head)
-        _recursive_split(text[split_pos:], max_len, out)
-        return
-
-    # Hard truncation
-    out.append(text[:max_len])
-    _recursive_split(text[max_len:], max_len, out)
+        if split_pos is not None:
+            head = text[:split_pos]
+            if head:
+                out.append(head)
+            text = text[split_pos:]
+        else:
+            # Hard truncation — no suitable break point found
+            out.append(text[:max_len])
+            text = text[max_len:]
 
 
 def _find_split(text: str, max_len: int, pattern: str) -> int | None:

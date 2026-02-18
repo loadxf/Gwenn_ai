@@ -8,11 +8,14 @@ agent runtime without making network calls.
 from __future__ import annotations
 
 import time
+import socket
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gwenn.agent import SentientAgent
+from gwenn.config import GwennConfig
 from gwenn.memory.working import WorkingMemoryItem
 from gwenn.privacy.redaction import PIIRedactor
 
@@ -113,6 +116,7 @@ class _MemoryStoreOnboardingStub:
 @pytest.mark.asyncio
 async def test_respond_passes_tools_and_redacts_api_payload():
     agent = object.__new__(SentientAgent)
+    agent._initialized = True
 
     dims = SimpleNamespace(
         valence=0.1,
@@ -196,6 +200,7 @@ async def test_shutdown_consolidates_before_persisting_memory():
     events: list[str] = []
 
     agent = object.__new__(SentientAgent)
+    agent._initialized = True
     agent.heartbeat = _HeartbeatStub()
 
     dims = SimpleNamespace(
@@ -342,6 +347,195 @@ async def test_recall_tool_forwards_category_filter():
     assert captured["top_k"] == 3
 
 
+def test_fetch_url_tool_blocks_localhost_targets():
+    class _Registry:
+        def __init__(self):
+            self._tools = {"fetch_url": SimpleNamespace(handler=None)}
+
+        def get(self, name: str):
+            return self._tools.get(name)
+
+    agent = object.__new__(SentientAgent)
+    agent.tool_registry = _Registry()
+    SentientAgent._wire_builtin_tool_handlers(agent)
+    fetch = agent.tool_registry.get("fetch_url")
+
+    result = fetch.handler(url="http://127.0.0.1:8000")
+    assert "blocked by network safety policy" in result
+
+
+def test_calculate_tool_evaluates_safe_expression():
+    class _Registry:
+        def __init__(self):
+            self._tools = {"calculate": SimpleNamespace(handler=None)}
+
+        def get(self, name: str):
+            return self._tools.get(name)
+
+    agent = object.__new__(SentientAgent)
+    agent.tool_registry = _Registry()
+    SentientAgent._wire_builtin_tool_handlers(agent)
+    calc = agent.tool_registry.get("calculate")
+
+    result = calc.handler(expression="round(pi * 2, 3)")
+    assert "6.283" in result
+
+
+def test_calculate_tool_rejects_code_execution_payloads():
+    class _Registry:
+        def __init__(self):
+            self._tools = {"calculate": SimpleNamespace(handler=None)}
+
+        def get(self, name: str):
+            return self._tools.get(name)
+
+    agent = object.__new__(SentientAgent)
+    agent.tool_registry = _Registry()
+    SentientAgent._wire_builtin_tool_handlers(agent)
+    calc = agent.tool_registry.get("calculate")
+
+    result = calc.handler(expression="__import__('os').system('id')")
+    assert "Error evaluating" in result
+
+
+def test_fetch_url_tool_blocks_private_dns_resolution(monkeypatch):
+    class _Registry:
+        def __init__(self):
+            self._tools = {"fetch_url": SimpleNamespace(handler=None)}
+
+        def get(self, name: str):
+            return self._tools.get(name)
+
+    def _fake_getaddrinfo(_host: str, port: int, **_kwargs):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.0.0.5", port)),
+        ]
+
+    monkeypatch.setattr("socket.getaddrinfo", _fake_getaddrinfo)
+
+    agent = object.__new__(SentientAgent)
+    agent.tool_registry = _Registry()
+    SentientAgent._wire_builtin_tool_handlers(agent)
+    fetch = agent.tool_registry.get("fetch_url")
+
+    result = fetch.handler(url="https://example.com")
+    assert "blocked by network safety policy" in result
+
+
+def test_fetch_url_tool_allows_public_targets(monkeypatch):
+    class _Registry:
+        def __init__(self):
+            self._tools = {"fetch_url": SimpleNamespace(handler=None)}
+
+        def get(self, name: str):
+            return self._tools.get(name)
+
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self.sent = b""
+
+        def sendall(self, payload: bytes) -> None:
+            self.sent += payload
+
+        def close(self) -> None:
+            return None
+
+    class _FakeHTTPResponse:
+        status = 200
+        reason = "OK"
+
+        def __init__(self, _sock) -> None:
+            pass
+
+        def begin(self) -> None:
+            return None
+
+        def getheader(self, name: str, default: str = "") -> str:
+            return "text/plain" if name == "Content-Type" else default
+
+        def read(self, _size: int = -1) -> bytes:
+            return b"public payload"
+
+    def _fake_getaddrinfo(_host: str, port: int, **_kwargs):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port)),
+        ]
+
+    captured: dict[str, tuple[str, int]] = {}
+
+    def _fake_create_connection(address: tuple[str, int], timeout: int = 10):
+        captured["address"] = address
+        return _FakeSocket()
+
+    monkeypatch.setattr("socket.getaddrinfo", _fake_getaddrinfo)
+    monkeypatch.setattr("socket.create_connection", _fake_create_connection)
+    monkeypatch.setattr("http.client.HTTPResponse", _FakeHTTPResponse)
+
+    agent = object.__new__(SentientAgent)
+    agent.tool_registry = _Registry()
+    SentientAgent._wire_builtin_tool_handlers(agent)
+    fetch = agent.tool_registry.get("fetch_url")
+
+    result = fetch.handler(url="http://example.com/data", max_chars=200)
+    assert "URL: http://example.com/data" in result
+    assert "public payload" in result
+    assert captured["address"] == ("93.184.216.34", 80)
+
+
+def test_fetch_url_tool_truncates_large_responses(monkeypatch):
+    class _Registry:
+        def __init__(self):
+            self._tools = {"fetch_url": SimpleNamespace(handler=None)}
+
+        def get(self, name: str):
+            return self._tools.get(name)
+
+    class _FakeSocket:
+        def sendall(self, _payload: bytes) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class _ChunkedHTTPResponse:
+        status = 200
+        reason = "OK"
+
+        def __init__(self, _sock) -> None:
+            self._chunks = [
+                b"A" * 9000,
+                b"B" * 9000,
+                b"C" * 9000,
+                b"",
+            ]
+
+        def begin(self) -> None:
+            return None
+
+        def getheader(self, name: str, default: str = "") -> str:
+            return "text/plain" if name == "Content-Type" else default
+
+        def read(self, _size: int = -1) -> bytes:
+            return self._chunks.pop(0)
+
+    def _fake_getaddrinfo(_host: str, port: int, **_kwargs):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port)),
+        ]
+
+    monkeypatch.setattr("socket.getaddrinfo", _fake_getaddrinfo)
+    monkeypatch.setattr("socket.create_connection", lambda *_args, **_kwargs: _FakeSocket())
+    monkeypatch.setattr("http.client.HTTPResponse", _ChunkedHTTPResponse)
+
+    agent = object.__new__(SentientAgent)
+    agent.tool_registry = _Registry()
+    SentientAgent._wire_builtin_tool_handlers(agent)
+    fetch = agent.tool_registry.get("fetch_url")
+
+    result = fetch.handler(url="http://example.com/huge", max_chars=200)
+    assert "Truncated" in result
+
+
 @pytest.mark.asyncio
 async def test_consolidate_memories_persists_semantic_and_episode_flags():
     events: list[str] = []
@@ -372,6 +566,7 @@ async def test_consolidate_memories_persists_semantic_and_episode_flags():
         return {"content": "FACT: remembered detail | confidence: 0.9"}
 
     agent = object.__new__(SentientAgent)
+    agent._initialized = True
     agent._config = SimpleNamespace(
         memory=SimpleNamespace(persist_semantic_after_consolidation=True),
     )
@@ -412,6 +607,184 @@ async def test_consolidate_memories_persists_semantic_and_episode_flags():
     assert "clear_knowledge_edges" in events
     assert "save_knowledge_edge" in events
     assert "save_episode" in events
+
+
+@pytest.mark.asyncio
+async def test_respond_requires_initialize():
+    agent = object.__new__(SentientAgent)
+    agent._initialized = False
+
+    with pytest.raises(RuntimeError, match="initialized"):
+        await SentientAgent.respond(agent, "hello")
+
+
+@pytest.mark.asyncio
+async def test_shutdown_before_initialize_is_safe():
+    events: list[str] = []
+    agent = object.__new__(SentientAgent)
+    agent._initialized = False
+    agent.memory_store = SimpleNamespace(close=lambda: events.append("close"))
+
+    await SentientAgent.shutdown(agent)
+    assert events == ["close"]
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memories_no_prompt_marks_checked():
+    marker = {"called": False}
+
+    class _Consolidator:
+        def get_consolidation_prompt(self):
+            return None
+
+        def mark_checked_no_work(self):
+            marker["called"] = True
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent.consolidator = _Consolidator()
+
+    await SentientAgent.consolidate_memories(agent)
+    assert marker["called"] is True
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memories_persists_episode_flags_when_semantic_flush_disabled():
+    events: list[str] = []
+
+    class _Consolidator:
+        last_processed_episode_ids = ["ep-1"]
+
+        def get_consolidation_prompt(self):
+            return "prompt"
+
+        def process_consolidation_response(self, _response_text: str):
+            return {"facts": 1, "relationships": 0, "self_knowledge": 0, "patterns": 0}
+
+    class _Store:
+        def save_episode(self, _episode):
+            events.append("save_episode")
+
+        def save_knowledge_node(self, **kwargs):
+            events.append("save_knowledge_node")
+
+        def clear_knowledge_edges(self):
+            events.append("clear_knowledge_edges")
+
+        def save_knowledge_edge(self, **kwargs):
+            events.append("save_knowledge_edge")
+
+    async def _reflect(**kwargs):
+        return {"content": "FACT: remembered detail | confidence: 0.9"}
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent._config = SimpleNamespace(
+        memory=SimpleNamespace(persist_semantic_after_consolidation=False),
+    )
+    agent.consolidator = _Consolidator()
+    agent.memory_store = _Store()
+    agent.engine = SimpleNamespace(
+        reflect=_reflect,
+        extract_text=lambda _resp: "FACT: remembered detail | confidence: 0.9",
+    )
+    agent.semantic_memory = SimpleNamespace(_nodes={}, _edges=[])
+    agent.episodic_memory = SimpleNamespace(
+        get_episode=lambda episode_id: SimpleNamespace(episode_id=episode_id),
+    )
+
+    await SentientAgent.consolidate_memories(agent)
+
+    assert "save_episode" in events
+    assert "save_knowledge_node" not in events
+
+
+def test_agent_init_wires_sensory_ethics_interagent_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("GWENN_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("GWENN_EPISODIC_DB", str(tmp_path / "gwenn.db"))
+    monkeypatch.setenv("GWENN_SEMANTIC_DB", str(tmp_path / "semantic_vectors"))
+    monkeypatch.setenv("GWENN_MAX_PERCEPTS_PER_CHANNEL", "3")
+    monkeypatch.setenv("GWENN_PERCEPT_EXPIRY", "12")
+    monkeypatch.setenv("GWENN_ETHICS_HISTORY_SIZE", "7")
+    monkeypatch.setenv("GWENN_ETHICS_CONCERN_THRESHOLD", "0.65")
+    monkeypatch.setenv("GWENN_AGENT_ID", "gwenn-test")
+    monkeypatch.setenv("GWENN_INTERAGENT_BUFFER_SIZE", "9")
+    monkeypatch.setenv("GWENN_MCP_SERVERS", "[]")
+
+    captured: dict[str, object] = {}
+
+    class _SensoryStub:
+        def __init__(self, max_percepts_per_channel: int, percept_expiry_seconds: float):
+            captured["sensory_max"] = max_percepts_per_channel
+            captured["sensory_expiry"] = percept_expiry_seconds
+
+    class _EthicsStub:
+        def __init__(self, assessment_history_size: int, concern_threshold: float):
+            captured["ethics_history_size"] = assessment_history_size
+            captured["ethics_threshold"] = concern_threshold
+
+    class _InterAgentStub:
+        def __init__(self, self_id: str, message_buffer_size: int):
+            captured["interagent_self_id"] = self_id
+            captured["interagent_buffer_size"] = message_buffer_size
+
+    monkeypatch.setattr("gwenn.agent.CognitiveEngine", lambda _cfg: SimpleNamespace())
+    monkeypatch.setattr("gwenn.agent.SensoryIntegrator", _SensoryStub)
+    monkeypatch.setattr("gwenn.agent.EthicalReasoner", _EthicsStub)
+    monkeypatch.setattr("gwenn.agent.InterAgentBridge", _InterAgentStub)
+
+    config = GwennConfig()
+    SentientAgent(config)
+
+    assert captured["sensory_max"] == 3
+    assert captured["sensory_expiry"] == 12.0
+    assert captured["ethics_history_size"] == 7
+    assert captured["ethics_threshold"] == 0.65
+    assert captured["interagent_self_id"] == "gwenn-test"
+    assert captured["interagent_buffer_size"] == 9
+
+
+@pytest.mark.asyncio
+async def test_initialize_mcp_tools_uses_configured_servers():
+    agent = object.__new__(SentientAgent)
+    servers = [{"name": "demo", "transport": "stdio", "command": "echo"}]
+    agent._config = SimpleNamespace(
+        mcp=SimpleNamespace(get_server_list=lambda: servers),
+    )
+    agent._mcp_client = SimpleNamespace(
+        initialize=AsyncMock(),
+        discover_tools=AsyncMock(return_value=[]),
+        register_tools=AsyncMock(return_value=0),
+    )
+
+    await SentientAgent._initialize_mcp_tools(agent)
+
+    agent._mcp_client.initialize.assert_awaited_once_with(servers)
+    agent._mcp_client.discover_tools.assert_awaited_once()
+    agent._mcp_client.register_tools.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_initialize_mcp_tools_skips_when_no_servers():
+    agent = object.__new__(SentientAgent)
+    agent._config = SimpleNamespace(
+        mcp=SimpleNamespace(get_server_list=lambda: []),
+    )
+    agent._mcp_client = SimpleNamespace(
+        initialize=AsyncMock(),
+        discover_tools=AsyncMock(),
+        register_tools=AsyncMock(),
+    )
+
+    await SentientAgent._initialize_mcp_tools(agent)
+
+    agent._mcp_client.initialize.assert_not_awaited()
+    agent._mcp_client.discover_tools.assert_not_awaited()
+    agent._mcp_client.register_tools.assert_not_awaited()
 
 
 def test_capture_evicted_working_memory_records_episode():

@@ -130,8 +130,13 @@ class InterAgentBridge:
     or direct API), the bridge will route messages to live agents.
     """
 
-    def __init__(self, self_id: str = "gwenn"):
+    def __init__(
+        self,
+        self_id: str = "gwenn",
+        message_buffer_size: int = 100,
+    ):
         self._self_id = self_id
+        self._message_buffer_size = max(1, int(message_buffer_size))
         self._known_agents: dict[str, AgentProfile] = {}
         self._outbox: list[InterAgentMessage] = []
         self._inbox: list[InterAgentMessage] = []
@@ -141,7 +146,19 @@ class InterAgentBridge:
             "interagent_bridge.initialized",
             self_id=self_id,
             known_agents=0,
+            message_buffer_size=self._message_buffer_size,
         )
+
+    def _append_bounded(
+        self,
+        message_list: list[InterAgentMessage],
+        message: InterAgentMessage,
+    ) -> None:
+        """Append and trim a message list to the configured buffer size."""
+        message_list.append(message)
+        overflow = len(message_list) - self._message_buffer_size
+        if overflow > 0:
+            del message_list[:overflow]
 
     def discover_agent(self, agent_id: str, name: str) -> AgentProfile:
         """
@@ -194,7 +211,7 @@ class InterAgentBridge:
             emotional_context=emotional_context or {},
             importance=importance,
         )
-        self._outbox.append(msg)
+        self._append_bounded(self._outbox, msg)
 
         # Update the agent profile
         profile = self._known_agents[receiver_id]
@@ -211,13 +228,13 @@ class InterAgentBridge:
 
     def receive_message(self, message: InterAgentMessage) -> None:
         """Process an incoming message from another agent."""
-        self._inbox.append(message)
+        self._append_bounded(self._inbox, message)
 
         # Thread the conversation
         if message.conversation_id:
             if message.conversation_id not in self._conversation_threads:
                 self._conversation_threads[message.conversation_id] = []
-            self._conversation_threads[message.conversation_id].append(message)
+            self._append_bounded(self._conversation_threads[message.conversation_id], message)
 
         # Auto-discover sender if unknown
         if message.sender_id not in self._known_agents:
@@ -329,4 +346,5 @@ class InterAgentBridge:
             "outbox_size": len(self._outbox),
             "inbox_size": len(self._inbox),
             "conversation_threads": len(self._conversation_threads),
+            "message_buffer_size": self._message_buffer_size,
         }

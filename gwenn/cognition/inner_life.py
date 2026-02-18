@@ -182,8 +182,6 @@ class InnerLife:
 
         # Update tracking
         self._mode_last_used[selected] = now
-        self._mode_counts[selected] += 1
-        self._total_thoughts += 1
 
         logger.debug(
             "inner_life.mode_selected",

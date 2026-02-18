@@ -293,3 +293,56 @@ class TestGuildAllowlistInMessage:
 
         await ch._on_message(msg)
         agent.respond.assert_not_called()
+
+
+class _FakeCommandTree:
+    def __init__(self) -> None:
+        self.commands = {}
+
+    def command(self, name: str, description: str):
+        def _decorator(func):
+            self.commands[name] = func
+            return func
+
+        return _decorator
+
+
+class TestSlashAllowlist:
+    @pytest.mark.asyncio
+    async def test_status_slash_command_blocks_disallowed_guild(self):
+        ch, _, _ = make_channel(allowed_guild_ids=["999"])
+        tree = _FakeCommandTree()
+        ch._register_slash_commands(tree)
+
+        interaction = MagicMock()
+        interaction.guild = MagicMock()
+        interaction.guild.id = 123
+        interaction.response = MagicMock()
+        interaction.response.send_message = AsyncMock()
+
+        await tree.commands["status"](interaction)
+
+        interaction.response.send_message.assert_called_once()
+        args, kwargs = interaction.response.send_message.call_args
+        assert "not allowed" in args[0]
+        assert kwargs["ephemeral"] is True
+
+    @pytest.mark.asyncio
+    async def test_status_slash_command_allows_approved_guild(self):
+        ch, _, _ = make_channel(allowed_guild_ids=["123"])
+        tree = _FakeCommandTree()
+        ch._register_slash_commands(tree)
+
+        interaction = MagicMock()
+        interaction.guild = MagicMock()
+        interaction.guild.id = 123
+        interaction.response = MagicMock()
+        interaction.response.send_message = AsyncMock()
+
+        await tree.commands["status"](interaction)
+
+        interaction.response.send_message.assert_called_once()
+        args, kwargs = interaction.response.send_message.call_args
+        assert "Gwenn" in args[0]
+        assert "Mood:" in args[0]
+        assert kwargs["ephemeral"] is True

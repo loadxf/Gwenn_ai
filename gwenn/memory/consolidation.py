@@ -201,117 +201,179 @@ class ConsolidationEngine:
         logger.info("consolidation.complete", **counts, total_passes=self._total_consolidations)
         return counts
 
-    def _process_fact(self, line: str, source_episode_ids: list[str] = None) -> None:
+    @staticmethod
+    def _clamp01(value: float, default: float = 0.5) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, min(1.0, numeric))
+
+    @staticmethod
+    def _stable_label(prefix: str, content: str) -> str:
+        """Create a stable, human-readable label that avoids prefix-collision merges."""
+        clean = " ".join(content.split()).strip()
+        base = " ".join(clean.split()[:8]).strip()
+        digest = hashlib.sha1(clean.lower().encode("utf-8")).hexdigest()[:8]
+        if base:
+            return f"{prefix}: {base} [{digest}]"
+        return f"{prefix}: {digest}"
+
+    def _attach_provenance(
+        self,
+        node,
+        source_episode_ids: Optional[list[str]],
+        primary_episode_id: Optional[str],
+    ) -> None:
+        if not source_episode_ids:
+            return
+        for ep_id in source_episode_ids:
+            if ep_id == primary_episode_id:
+                continue
+            if ep_id not in node.source_episodes:
+                node.source_episodes.append(ep_id)
+        node.last_updated = time.time()
+
+    def _process_fact(self, line: str, source_episode_ids: Optional[list[str]] = None) -> bool:
         """Parse and store a FACT line with provenance tracking."""
-        # Format: FACT: [content] | confidence: [0.0-1.0] | category: [cat]
-        parts = line[5:].split("|")
-        content = parts[0].strip()
+        raw = line[5:].strip()
+        if not raw:
+            return False
+
+        parts = [part.strip() for part in raw.split("|")]
         confidence = 0.5
         category = "fact"
+        content_parts: list[str] = []
+        for part in parts:
+            lowered = part.lower()
+            if lowered.startswith("confidence:"):
+                confidence = self._clamp01(part.split(":", 1)[1].strip(), default=0.5)
+            elif lowered.startswith("category:"):
+                category = part.split(":", 1)[1].strip() or "fact"
+            elif part:
+                content_parts.append(part)
 
-        for part in parts[1:]:
-            part = part.strip()
-            if part.startswith("confidence:"):
-                try:
-                    confidence = float(part.split(":")[1].strip())
-                except ValueError:
-                    pass
-            elif part.startswith("category:"):
-                category = part.split(":")[1].strip()
+        content = " | ".join(content_parts).strip()
+        if not content:
+            logger.warning("consolidation.fact_empty_content", line=line[:80])
+            return False
 
-        # Use first few words as label
-        label = " ".join(content.split()[:5])
+        label = self._stable_label("fact", content)
+        primary_episode_id = source_episode_ids[0] if source_episode_ids else None
         node = self._semantic.store_knowledge(
             label=label,
             content=content,
             category=category,
             confidence=confidence,
+            source_episode_id=primary_episode_id,
         )
-        # Attach provenance: link the node back to its source episodes
-        if source_episode_ids:
-            for ep_id in source_episode_ids:
-                if ep_id not in node.source_episodes:
-                    node.source_episodes.append(ep_id)
+        self._attach_provenance(node, source_episode_ids, primary_episode_id)
+        return True
 
     def _process_relationship(self, line: str) -> bool:
         """Parse and store a RELATIONSHIP line. Returns True if successfully parsed."""
         # Format: RELATIONSHIP: [source] -> [rel_type] -> [target] | strength: [0-1]
-        parts = line[14:].split("|")
-        rel_parts = parts[0].split("->")
+        raw = line[14:].strip()
+        if not raw:
+            return False
+
+        parts = [part.strip() for part in raw.split("|")]
+        rel_parts = [part.strip() for part in parts[0].split("->")]
         if len(rel_parts) < 3:
             logger.warning("consolidation.relationship_malformed", line=line[:80])
             return False
 
         source = rel_parts[0].strip()
         relationship = rel_parts[1].strip()
-        target = rel_parts[2].strip()
-        strength = 0.5
+        target = "->".join(rel_parts[2:]).strip()
+        if not source or not relationship or not target:
+            logger.warning("consolidation.relationship_empty_part", line=line[:80])
+            return False
 
+        strength = 0.5
         for part in parts[1:]:
-            part = part.strip()
-            if part.startswith("strength:"):
-                try:
-                    strength = float(part.split(":")[1].strip())
-                except ValueError:
-                    pass
+            if part.lower().startswith("strength:"):
+                strength = self._clamp01(part.split(":", 1)[1].strip(), default=0.5)
 
         # Ensure both nodes exist
         self._semantic.store_knowledge(label=source, content=source, category="concept")
         self._semantic.store_knowledge(label=target, content=target, category="concept")
-        self._semantic.add_relationship(source, target, relationship, strength)
-        return True
+        edge = self._semantic.add_relationship(source, target, relationship, strength)
+        return edge is not None
 
-    def _process_self_knowledge(self, line: str, source_episode_ids: list[str] = None) -> None:
+    def _process_self_knowledge(
+        self,
+        line: str,
+        source_episode_ids: Optional[list[str]] = None,
+    ) -> bool:
         """Parse and store a SELF-knowledge line with provenance tracking."""
-        parts = line[5:].split("|")
-        content = parts[0].strip()
+        raw = line[5:].strip()
+        if not raw:
+            return False
+
+        parts = [part.strip() for part in raw.split("|")]
         confidence = 0.5
+        content_parts: list[str] = []
 
-        for part in parts[1:]:
-            part = part.strip()
-            if part.startswith("confidence:"):
-                try:
-                    confidence = float(part.split(":")[1].strip())
-                except ValueError:
-                    pass
+        for part in parts:
+            if part.lower().startswith("confidence:"):
+                confidence = self._clamp01(part.split(":", 1)[1].strip(), default=0.5)
+            elif part:
+                content_parts.append(part)
 
-        label = "self: " + " ".join(content.split()[:4])
+        content = " | ".join(content_parts).strip()
+        if not content:
+            logger.warning("consolidation.self_empty_content", line=line[:80])
+            return False
+
+        label = self._stable_label("self", content)
+        primary_episode_id = source_episode_ids[0] if source_episode_ids else None
         node = self._semantic.store_knowledge(
             label=label,
             content=content,
             category="self",
             confidence=confidence,
+            source_episode_id=primary_episode_id,
         )
-        if source_episode_ids:
-            for ep_id in source_episode_ids:
-                if ep_id not in node.source_episodes:
-                    node.source_episodes.append(ep_id)
+        self._attach_provenance(node, source_episode_ids, primary_episode_id)
+        return True
 
-    def _process_pattern(self, line: str, source_episode_ids: list[str] = None) -> None:
+    def _process_pattern(
+        self,
+        line: str,
+        source_episode_ids: Optional[list[str]] = None,
+    ) -> bool:
         """Parse and store a PATTERN line with provenance tracking."""
-        parts = line[8:].split("|")
-        content = parts[0].strip()
+        raw = line[8:].strip()
+        if not raw:
+            return False
+
+        parts = [part.strip() for part in raw.split("|")]
         confidence = 0.5
+        content_parts: list[str] = []
 
-        for part in parts[1:]:
-            part = part.strip()
-            if part.startswith("confidence:"):
-                try:
-                    confidence = float(part.split(":")[1].strip())
-                except ValueError:
-                    pass
+        for part in parts:
+            if part.lower().startswith("confidence:"):
+                confidence = self._clamp01(part.split(":", 1)[1].strip(), default=0.5)
+            elif part:
+                content_parts.append(part)
 
-        label = "pattern: " + " ".join(content.split()[:4])
+        content = " | ".join(content_parts).strip()
+        if not content:
+            logger.warning("consolidation.pattern_empty_content", line=line[:80])
+            return False
+
+        label = self._stable_label("pattern", content)
+        primary_episode_id = source_episode_ids[0] if source_episode_ids else None
         node = self._semantic.store_knowledge(
             label=label,
             content=content,
             category="pattern",
             confidence=confidence,
+            source_episode_id=primary_episode_id,
         )
-        if source_episode_ids:
-            for ep_id in source_episode_ids:
-                if ep_id not in node.source_episodes:
-                    node.source_episodes.append(ep_id)
+        self._attach_provenance(node, source_episode_ids, primary_episode_id)
+        return True
 
     @property
     def stats(self) -> dict[str, Any]:

@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
     source_episodes TEXT DEFAULT '[]',
     created_at REAL NOT NULL,
     last_updated REAL NOT NULL,
-    access_count INTEGER DEFAULT 0
+    access_count INTEGER DEFAULT 0,
+    metadata TEXT DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_edges (
@@ -135,6 +136,7 @@ class MemoryStore:
     ):
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._best_effort_chmod(self._db_path.parent, 0o700)
         self._conn: Optional[sqlite3.Connection] = None
         self._vector_db_path = vector_db_path or (self._db_path.parent / "semantic_vectors")
         self._enable_vector_search = enable_vector_search
@@ -146,21 +148,39 @@ class MemoryStore:
 
     def initialize(self) -> None:
         """Create database connection and ensure schema exists."""
+        if self._conn is not None:
+            logger.debug("memory_store.already_initialized", path=str(self._db_path))
+            return
+
         self._conn = sqlite3.connect(str(self._db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")  # Better concurrent read performance
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._harden_storage_permissions()
 
         # Create all tables
         self._conn.executescript(EPISODIC_SCHEMA)
         self._conn.executescript(AFFECT_SCHEMA)
         self._conn.executescript(IDENTITY_SCHEMA)
         self._conn.executescript(SEMANTIC_SCHEMA)
+        self._ensure_semantic_metadata_column()
         self._conn.commit()
+        self._harden_storage_permissions()
 
         self._initialize_vector_store()
 
         logger.info("memory_store.initialized", path=str(self._db_path))
+
+    def _ensure_semantic_metadata_column(self) -> None:
+        """
+        Backfill the knowledge_nodes.metadata column for pre-existing databases.
+        """
+        cursor = self._conn.execute("PRAGMA table_info(knowledge_nodes)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "metadata" not in columns:
+            self._conn.execute(
+                "ALTER TABLE knowledge_nodes ADD COLUMN metadata TEXT DEFAULT '{}'"
+            )
 
     def close(self) -> None:
         """Close the database connection."""
@@ -192,6 +212,7 @@ class MemoryStore:
 
         try:
             self._vector_db_path.mkdir(parents=True, exist_ok=True)
+            self._best_effort_chmod(self._vector_db_path, 0o700)
             self._vector_client = chromadb.PersistentClient(path=str(self._vector_db_path))
             self._episodes_collection = self._vector_client.get_or_create_collection(
                 name="gwenn_episodes"
@@ -363,6 +384,7 @@ class MemoryStore:
             ),
         )
         self._conn.commit()
+        self._harden_storage_permissions()
         self.upsert_episode_embedding(episode)
 
     def load_episodes(
@@ -370,6 +392,7 @@ class MemoryStore:
         limit: Optional[int] = 1000,
         since: Optional[float] = None,
         category: Optional[str] = None,
+        consolidated: Optional[bool] = None,
     ) -> list[Episode]:
         """Load episodes from the database."""
         query = "SELECT * FROM episodes WHERE 1=1"
@@ -381,6 +404,9 @@ class MemoryStore:
         if category:
             query += " AND category = ?"
             params.append(category)
+        if consolidated is not None:
+            query += " AND consolidated = ?"
+            params.append(int(bool(consolidated)))
 
         query += " ORDER BY timestamp DESC"
         if limit is not None and limit > 0:
@@ -422,6 +448,7 @@ class MemoryStore:
              goal_congruence, emotion_label, trigger),
         )
         self._conn.commit()
+        self._harden_storage_permissions()
 
     def load_affect_history(self, limit: int = 100) -> list[dict]:
         """Load recent affective state history."""
@@ -450,6 +477,7 @@ class MemoryStore:
             (time.time(), self_model, values_snapshot, growth_notes, trigger),
         )
         self._conn.commit()
+        self._harden_storage_permissions()
 
     # -------------------------------------------------------------------------
     # Semantic Memory Persistence
@@ -459,17 +487,19 @@ class MemoryStore:
                             content: str, confidence: float,
                             source_episodes: list[str],
                             created_at: float, last_updated: float,
-                            access_count: int) -> None:
+                            access_count: int, metadata: Optional[dict[str, Any]] = None) -> None:
         """Persist a single knowledge node to the database."""
         self._conn.execute(
             """INSERT OR REPLACE INTO knowledge_nodes
                (node_id, label, category, content, confidence,
-                source_episodes, created_at, last_updated, access_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                source_episodes, created_at, last_updated, access_count, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node_id, label, category, content, confidence,
-             json.dumps(source_episodes), created_at, last_updated, access_count),
+             json.dumps(source_episodes), created_at, last_updated, access_count,
+             json.dumps(metadata or {})),
         )
         self._conn.commit()
+        self._harden_storage_permissions()
         self.upsert_knowledge_embedding(
             node_id=node_id,
             label=label,
@@ -487,6 +517,10 @@ class MemoryStore:
         for row in rows:
             d = dict(row)
             d["source_episodes"] = json.loads(d["source_episodes"])
+            try:
+                d["metadata"] = json.loads(d.get("metadata") or "{}")
+            except json.JSONDecodeError:
+                d["metadata"] = {}
             results.append(d)
         return results
 
@@ -499,6 +533,7 @@ class MemoryStore:
         """
         self._conn.execute("DELETE FROM knowledge_edges")
         self._conn.commit()
+        self._harden_storage_permissions()
 
     def save_knowledge_edge(self, source_id: str, target_id: str,
                             relationship: str, strength: float,
@@ -511,6 +546,7 @@ class MemoryStore:
             (source_id, target_id, relationship, strength, context, created_at),
         )
         self._conn.commit()
+        self._harden_storage_permissions()
 
     def load_knowledge_edges(self) -> list[dict]:
         """Load all knowledge edges from the database."""
@@ -530,7 +566,12 @@ class MemoryStore:
         restarts. It's loaded into the system prompt on startup.
         """
         filepath = path or (self._db_path.parent / "GWENN_CONTEXT.md")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
         filepath.write_text(content, encoding="utf-8")
+        try:
+            filepath.chmod(0o600)
+        except OSError:
+            logger.debug("memory_store.context_chmod_skipped", path=str(filepath))
         logger.info("memory_store.context_saved", path=str(filepath))
         return filepath
 
@@ -565,3 +606,26 @@ class MemoryStore:
             "vector_enabled": bool(self._episodes_collection and self._knowledge_collection),
             "vector_db_path": str(self._vector_db_path),
         }
+
+    def _harden_storage_permissions(self) -> None:
+        """Best-effort permission hardening for persisted memory artifacts."""
+        self._best_effort_chmod(self._db_path.parent, 0o700)
+        self._best_effort_chmod(self._vector_db_path, 0o700)
+        self._best_effort_chmod(self._db_path, 0o600)
+
+        wal_path = Path(f"{self._db_path}-wal")
+        shm_path = Path(f"{self._db_path}-shm")
+        if wal_path.exists():
+            self._best_effort_chmod(wal_path, 0o600)
+        if shm_path.exists():
+            self._best_effort_chmod(shm_path, 0o600)
+
+    @staticmethod
+    def _best_effort_chmod(path: Path, mode: int) -> None:
+        """Attempt chmod without failing on unsupported filesystems."""
+        if not path.exists():
+            return
+        try:
+            path.chmod(mode)
+        except OSError:
+            logger.debug("memory_store.chmod_skipped", path=str(path), mode=oct(mode))

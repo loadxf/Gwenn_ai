@@ -428,6 +428,15 @@ class TestSemanticMemoryQuality:
         results = semantic.query("anything", top_k=2)
         assert results[0].label == "beta"
 
+    def test_embedding_mode_falls_back_to_keyword_when_vector_empty(self):
+        semantic = SemanticMemory(retrieval_mode="embedding")
+        semantic.store_knowledge("python", "python decorators", confidence=0.8)
+        semantic.store_knowledge("weather", "forecast details", confidence=0.8)
+        semantic.set_vector_search(lambda _q, _k: [])
+
+        results = semantic.query("python decorators", top_k=2)
+        assert results[0].label == "python"
+
     def test_hybrid_mode_blends_keyword_and_vector(self):
         semantic = SemanticMemory(
             retrieval_mode="hybrid",

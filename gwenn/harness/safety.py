@@ -21,6 +21,7 @@ even under adversarial conditions.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -104,20 +105,19 @@ class SafetyGuard:
         self._blocked_actions: list[dict[str, Any]] = []
         self._tool_registry = tool_registry  # Optional reference for risk tier checks
 
-        # Dangerous patterns in tool inputs (checked as substrings)
+        # Dangerous patterns in tool inputs (checked as substrings, lowercased)
         self._dangerous_patterns = [
             "rm -rf",
             "format c:",
-            "DROP TABLE",
-            "DELETE FROM",
-            "sudo",
+            "drop table",
+            "delete from",
             "chmod 777",
             "eval(",
         ]
 
-        # Regex patterns for more complex matching
-        import re
+        # Regex patterns for more complex matching (compiled once at init)
         self._dangerous_regexes = [
+            (re.compile(r"\bsudo\b", re.IGNORECASE), "sudo command"),
             (re.compile(r"curl\s+.*\|\s*(?:bash|sh)\b", re.IGNORECASE), "curl pipe to bash"),
             (re.compile(r"wget\s+.*\|\s*(?:bash|sh)\b", re.IGNORECASE), "wget pipe to bash"),
         ]

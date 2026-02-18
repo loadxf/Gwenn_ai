@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 gwenn = "gwenn.main:main"
+gwenn-daemon = "gwenn.daemon:run_daemon"
 
 [tool.setuptools.packages.find]
 where = ["."]
