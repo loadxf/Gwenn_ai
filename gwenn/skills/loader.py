@@ -134,9 +134,22 @@ def render_skill_body(body: str, params: dict[str, Any]) -> str:
     Unknown placeholders are left unchanged (not an error — the body may
     reference tool names in backticks which look like {tool} patterns).
     """
+
+    def _safe_value(value: Any) -> str:
+        # Keep parameter values data-like (escape control chars/newlines) so they
+        # cannot inject additional instruction structure into skill prompts.
+        if isinstance(value, str):
+            encoded = json.dumps(value, ensure_ascii=False)
+            return encoded[1:-1]
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            encoded = json.dumps(str(value), ensure_ascii=False)
+            return encoded[1:-1]
+
     result = body
     for key, value in params.items():
-        result = result.replace(f"{{{key}}}", str(value))
+        result = result.replace(f"{{{key}}}", _safe_value(value))
     return result
 
 

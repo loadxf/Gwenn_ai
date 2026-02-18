@@ -171,14 +171,21 @@ class MemoryStore:
 
         logger.info("memory_store.initialized", path=str(self._db_path))
 
+    def _require_connection(self) -> sqlite3.Connection:
+        """Return an initialized SQLite connection or raise a clear error."""
+        if self._conn is None:
+            raise RuntimeError("MemoryStore is not initialized. Call initialize() first.")
+        return self._conn
+
     def _ensure_semantic_metadata_column(self) -> None:
         """
         Backfill the knowledge_nodes.metadata column for pre-existing databases.
         """
-        cursor = self._conn.execute("PRAGMA table_info(knowledge_nodes)")
+        conn = self._require_connection()
+        cursor = conn.execute("PRAGMA table_info(knowledge_nodes)")
         columns = {row[1] for row in cursor.fetchall()}
         if "metadata" not in columns:
-            self._conn.execute(
+            conn.execute(
                 "ALTER TABLE knowledge_nodes ADD COLUMN metadata TEXT DEFAULT '{}'"
             )
 
@@ -363,8 +370,9 @@ class MemoryStore:
 
     def save_episode(self, episode: Episode) -> None:
         """Persist a single episode to the database."""
+        conn = self._require_connection()
         data = episode.to_dict()
-        self._conn.execute(
+        conn.execute(
             """INSERT OR REPLACE INTO episodes
                (episode_id, timestamp, content, category, emotional_valence,
                 emotional_arousal, importance, tags, participants, outcome, consolidated)
@@ -383,7 +391,7 @@ class MemoryStore:
                 int(data["consolidated"]),
             ),
         )
-        self._conn.commit()
+        conn.commit()
         self._harden_storage_permissions()
         self.upsert_episode_embedding(episode)
 
@@ -413,14 +421,16 @@ class MemoryStore:
             query += " LIMIT ?"
             params.append(limit)
 
-        cursor = self._conn.execute(query, params)
+        conn = self._require_connection()
+        cursor = conn.execute(query, params)
         rows = cursor.fetchall()
 
         return [Episode.from_dict(dict(row)) for row in rows]
 
     def get_episode_count(self) -> int:
         """Get total number of stored episodes."""
-        cursor = self._conn.execute("SELECT COUNT(*) FROM episodes")
+        conn = self._require_connection()
+        cursor = conn.execute("SELECT COUNT(*) FROM episodes")
         row = cursor.fetchone()
         return row[0] if row is not None else 0
 
@@ -439,7 +449,8 @@ class MemoryStore:
         trigger: Optional[str] = None,
     ) -> None:
         """Save a snapshot of the current affective state."""
-        self._conn.execute(
+        conn = self._require_connection()
+        conn.execute(
             """INSERT INTO affect_snapshots
                (timestamp, valence, arousal, dominance, certainty,
                 goal_congruence, emotion_label, trigger)
@@ -447,12 +458,13 @@ class MemoryStore:
             (time.time(), valence, arousal, dominance, certainty,
              goal_congruence, emotion_label, trigger),
         )
-        self._conn.commit()
+        conn.commit()
         self._harden_storage_permissions()
 
     def load_affect_history(self, limit: int = 100) -> list[dict]:
         """Load recent affective state history."""
-        cursor = self._conn.execute(
+        conn = self._require_connection()
+        cursor = conn.execute(
             "SELECT * FROM affect_snapshots ORDER BY timestamp DESC LIMIT ?",
             (limit,),
         )
@@ -470,13 +482,14 @@ class MemoryStore:
         trigger: Optional[str] = None,
     ) -> None:
         """Save a snapshot of the identity state for tracking evolution."""
-        self._conn.execute(
+        conn = self._require_connection()
+        conn.execute(
             """INSERT INTO identity_snapshots
                (timestamp, self_model, values_snapshot, growth_notes, trigger)
                VALUES (?, ?, ?, ?, ?)""",
             (time.time(), self_model, values_snapshot, growth_notes, trigger),
         )
-        self._conn.commit()
+        conn.commit()
         self._harden_storage_permissions()
 
     # -------------------------------------------------------------------------
@@ -489,7 +502,8 @@ class MemoryStore:
                             created_at: float, last_updated: float,
                             access_count: int, metadata: Optional[dict[str, Any]] = None) -> None:
         """Persist a single knowledge node to the database."""
-        self._conn.execute(
+        conn = self._require_connection()
+        conn.execute(
             """INSERT OR REPLACE INTO knowledge_nodes
                (node_id, label, category, content, confidence,
                 source_episodes, created_at, last_updated, access_count, metadata)
@@ -498,7 +512,7 @@ class MemoryStore:
              json.dumps(source_episodes), created_at, last_updated, access_count,
              json.dumps(metadata or {})),
         )
-        self._conn.commit()
+        conn.commit()
         self._harden_storage_permissions()
         self.upsert_knowledge_embedding(
             node_id=node_id,
@@ -511,7 +525,8 @@ class MemoryStore:
 
     def load_knowledge_nodes(self) -> list[dict]:
         """Load all knowledge nodes from the database."""
-        cursor = self._conn.execute("SELECT * FROM knowledge_nodes")
+        conn = self._require_connection()
+        cursor = conn.execute("SELECT * FROM knowledge_nodes")
         rows = cursor.fetchall()
         results = []
         for row in rows:
@@ -531,26 +546,29 @@ class MemoryStore:
         INSERT OR REPLACE can never match an existing row.  The correct
         pattern is: clear → bulk-insert on shutdown.
         """
-        self._conn.execute("DELETE FROM knowledge_edges")
-        self._conn.commit()
+        conn = self._require_connection()
+        conn.execute("DELETE FROM knowledge_edges")
+        conn.commit()
         self._harden_storage_permissions()
 
     def save_knowledge_edge(self, source_id: str, target_id: str,
                             relationship: str, strength: float,
                             context: str, created_at: float) -> None:
         """Persist a single knowledge edge to the database."""
-        self._conn.execute(
+        conn = self._require_connection()
+        conn.execute(
             """INSERT INTO knowledge_edges
                (source_id, target_id, relationship, strength, context, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (source_id, target_id, relationship, strength, context, created_at),
         )
-        self._conn.commit()
+        conn.commit()
         self._harden_storage_permissions()
 
     def load_knowledge_edges(self) -> list[dict]:
         """Load all knowledge edges from the database."""
-        cursor = self._conn.execute("SELECT * FROM knowledge_edges")
+        conn = self._require_connection()
+        cursor = conn.execute("SELECT * FROM knowledge_edges")
         return [dict(row) for row in cursor.fetchall()]
 
     # -------------------------------------------------------------------------
@@ -583,18 +601,127 @@ class MemoryStore:
         return ""
 
     # -------------------------------------------------------------------------
+    # Working Memory Sidecar (JSON file)
+    # -------------------------------------------------------------------------
+
+    def save_working_memory(self, items: list[dict], path: Optional[Path] = None) -> None:
+        """
+        Persist working memory items to a JSON sidecar file.
+
+        Only items that can survive a restart meaningfully are saved — items
+        with near-zero salience are filtered out before writing.
+        """
+        filepath = path or (self._db_path.parent / "working_memory.json")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": time.time(),
+            "items": [i for i in items if i.get("salience", 0.0) > 0.05],
+        }
+        try:
+            filepath.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            self._best_effort_chmod(filepath, 0o600)
+            logger.info("memory_store.working_memory_saved", count=len(payload["items"]))
+        except OSError as e:
+            logger.warning("memory_store.working_memory_save_failed", error=str(e))
+
+    def load_working_memory(self, path: Optional[Path] = None) -> list[dict]:
+        """
+        Load persisted working memory items, applying time-based salience decay
+        for the time elapsed since they were saved.
+
+        Items that decay to zero or below are dropped.
+        Returns the surviving items sorted by salience descending.
+        """
+        filepath = path or (self._db_path.parent / "working_memory.json")
+        if not filepath.exists():
+            return []
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("memory_store.working_memory_load_failed", error=str(e))
+            return []
+
+        if not isinstance(payload, dict):
+            logger.warning("memory_store.working_memory_corrupt")
+            return []
+
+        try:
+            saved_at = float(payload.get("saved_at", time.time()))
+        except (TypeError, ValueError):
+            saved_at = time.time()
+        # Guard against clock drift making elapsed time negative
+        elapsed_minutes = max(0.0, (time.time() - saved_at) / 60.0)
+        # Apply same per-minute decay rate used by WorkingMemoryItem.decay()
+        decay_rate = 0.02
+        decay_amount = decay_rate * elapsed_minutes
+
+        surviving: list[dict] = []
+        for item in payload.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            adjusted = float(item.get("salience", 0.0)) - decay_amount
+            if adjusted > 0.05:
+                item = dict(item)
+                item["salience"] = min(1.0, max(0.0, adjusted))
+                surviving.append(item)
+
+        surviving.sort(key=lambda x: x.get("salience", 0.0), reverse=True)
+        logger.info("memory_store.working_memory_loaded", count=len(surviving))
+        return surviving
+
+    # -------------------------------------------------------------------------
+    # Episodic Memory Pruning
+    # -------------------------------------------------------------------------
+
+    def prune_old_episodes(
+        self,
+        older_than_days: float = 90.0,
+        max_importance: float = 0.3,
+    ) -> int:
+        """
+        Delete old, consolidated, low-importance episodes from the database.
+
+        Only removes episodes that meet ALL three criteria:
+          - Older than `older_than_days` days
+          - Already consolidated into semantic memory
+          - Importance below `max_importance`
+
+        Returns the number of rows deleted.
+        """
+        conn = self._require_connection()
+        cutoff = time.time() - (older_than_days * 86400.0)
+        cursor = conn.execute(
+            "DELETE FROM episodes WHERE timestamp < ? AND consolidated = 1 AND importance < ?",
+            (cutoff, max_importance),
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        if deleted > 0:
+            self._harden_storage_permissions()
+            logger.info(
+                "memory_store.episodes_pruned",
+                deleted=deleted,
+                older_than_days=older_than_days,
+                max_importance=max_importance,
+            )
+        return deleted
+
+    # -------------------------------------------------------------------------
     # Statistics
     # -------------------------------------------------------------------------
 
     @property
     def stats(self) -> dict[str, Any]:
         """Get database statistics."""
+        conn = self._require_connection()
         episode_count = self.get_episode_count()
-        affect_row = self._conn.execute("SELECT COUNT(*) FROM affect_snapshots").fetchone()
+        affect_row = conn.execute("SELECT COUNT(*) FROM affect_snapshots").fetchone()
         affect_count = affect_row[0] if affect_row is not None else 0
-        identity_row = self._conn.execute("SELECT COUNT(*) FROM identity_snapshots").fetchone()
+        identity_row = conn.execute("SELECT COUNT(*) FROM identity_snapshots").fetchone()
         identity_count = identity_row[0] if identity_row is not None else 0
-        knowledge_row = self._conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()
+        knowledge_row = conn.execute("SELECT COUNT(*) FROM knowledge_nodes").fetchone()
         knowledge_count = knowledge_row[0] if knowledge_row is not None else 0
 
         return {

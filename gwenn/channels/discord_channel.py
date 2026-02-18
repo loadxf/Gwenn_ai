@@ -94,10 +94,13 @@ class DiscordChannel(BaseChannel):
         if self._client is None:
             return
         try:
+            import discord
+
             user = await self._client.fetch_user(int(platform_user_id))
             dm = await user.create_dm()
+            no_mentions = discord.AllowedMentions.none()
             for chunk in format_for_discord(text):
-                await dm.send(chunk)
+                await dm.send(chunk, allowed_mentions=no_mentions)
                 await asyncio.sleep(0.05)
         except Exception:
             logger.exception("discord_channel.send_error", user_id=platform_user_id)
@@ -142,16 +145,19 @@ class DiscordChannel(BaseChannel):
         raw_id = str(message.author.id)
 
         if self._agent.identity.should_run_startup_onboarding():
+            no_mentions = discord.AllowedMentions.none()
             await message.reply(
                 "Before we begin, run `/setup` so I can tailor how I help you.\n"
                 "You can also run `/setup skip`.",
                 mention_author=False,
+                allowed_mentions=no_mentions,
             )
             return
 
         lock = self._user_locks.setdefault(raw_id, asyncio.Lock())
         async with lock:
             async with message.channel.typing():
+                no_mentions = discord.AllowedMentions.none()
                 try:
                     response = await self.handle_message(raw_id, text)
                 except Exception as exc:
@@ -159,6 +165,7 @@ class DiscordChannel(BaseChannel):
                     await message.reply(
                         "I encountered an error processing your message. Please try again.",
                         mention_author=False,
+                        allowed_mentions=no_mentions,
                     )
                     return
 
@@ -167,7 +174,11 @@ class DiscordChannel(BaseChannel):
                 chunks = format_for_discord(response)
                 try:
                     for chunk in chunks:
-                        await message.reply(chunk, mention_author=False)
+                        await message.reply(
+                            chunk,
+                            mention_author=False,
+                            allowed_mentions=no_mentions,
+                        )
                 except Exception as exc:
                     logger.error("discord_channel.send_error", error=str(exc), exc_info=True)
 

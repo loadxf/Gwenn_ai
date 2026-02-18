@@ -170,6 +170,16 @@ class TestParsePatterns:
 
         assert counts["patterns"] == 1
 
+    def test_emotional_insight_is_parsed_and_stored(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        response = "EMOTIONAL_INSIGHT: Creative coding tasks increase engagement | confidence: 0.8"
+        counts = engine.process_consolidation_response(response)
+
+        assert counts["emotional_insights"] == 1
+        nodes = sm.query("creative coding engagement", category="emotional_insight", top_k=1)
+        assert len(nodes) >= 1
+        assert nodes[0].confidence == pytest.approx(0.8)
+
 
 # ---------------------------------------------------------------------------
 # Robustness to malformed lines
@@ -181,7 +191,13 @@ class TestMalformedLines:
     def test_empty_response(self):
         engine, em, sm = _fresh_engine_with_episodes()
         counts = engine.process_consolidation_response("")
-        assert counts == {"facts": 0, "relationships": 0, "self_knowledge": 0, "patterns": 0}
+        assert counts == {
+            "facts": 0,
+            "relationships": 0,
+            "self_knowledge": 0,
+            "patterns": 0,
+            "emotional_insights": 0,
+        }
         # Empty parse should not silently discard unconsolidated episodes.
         assert len(em.get_unconsolidated()) == 1
 
@@ -198,6 +214,7 @@ class TestMalformedLines:
         assert counts["relationships"] == 0
         assert counts["self_knowledge"] == 0
         assert counts["patterns"] == 0
+        assert counts["emotional_insights"] == 0
 
     def test_relationship_with_too_few_arrows_does_not_create_edge(self):
         engine, em, sm = _fresh_engine_with_episodes()
@@ -272,6 +289,7 @@ class TestMalformedLines:
         assert sm.edge_count == 0
         assert counts["self_knowledge"] == 1
         assert counts["patterns"] == 1
+        assert counts["emotional_insights"] == 0
 
 
 # ---------------------------------------------------------------------------

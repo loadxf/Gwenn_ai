@@ -22,7 +22,7 @@ feel → think → remember → feel differently → think differently.
 
 from __future__ import annotations
 
-import random
+import secrets
 import time
 from enum import Enum
 from typing import Any, Optional
@@ -175,10 +175,21 @@ class InnerLife:
             total_weight = 1.0
         probs = {mode: w / total_weight for mode, w in weights.items()}
 
-        # Weighted random selection
+        # Weighted selection
         modes = list(probs.keys())
-        mode_weights = [probs[m] for m in modes]
-        selected = random.choices(modes, weights=mode_weights, k=1)[0]
+        mode_weights = [max(0.0, probs[m]) for m in modes]
+        total = sum(mode_weights)
+        if total <= 0:
+            selected = ThinkingMode.REFLECT
+        else:
+            threshold = (secrets.randbelow(1_000_000) / 1_000_000) * total
+            running = 0.0
+            selected = modes[-1]
+            for mode, weight in zip(modes, mode_weights):
+                running += weight
+                if threshold <= running:
+                    selected = mode
+                    break
 
         # Update tracking
         self._mode_last_used[selected] = now

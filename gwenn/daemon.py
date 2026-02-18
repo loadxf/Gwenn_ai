@@ -62,6 +62,8 @@ class GwennDaemon:
             max_count=config.daemon.session_max_count,
             max_messages=config.daemon.session_max_messages,
         )
+        # SentientAgent mutates shared state during respond(); serialize daemon chat calls.
+        self._agent_respond_lock = asyncio.Lock()
 
     async def run(self) -> None:
         """Full daemon lifecycle: init → serve → shutdown."""
@@ -252,8 +254,8 @@ class GwennDaemon:
             try:
                 writer.close()
                 await writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("daemon.client_close_failed", conn_id=conn_id, error=str(e))
             logger.info("daemon.client_closed", conn_id=conn_id)
 
     async def _dispatch_loop(
@@ -314,15 +316,20 @@ class GwennDaemon:
                 text = msg.get("text", "")
                 if not text:
                     return {"type": "error", "req_id": req_id, "message": "empty text"}
-                response_text = await self._agent.respond(
-                    text,
-                    conversation_history=history,
-                )
-                emotion = "neutral"
-                try:
-                    emotion = self._agent.affect_state.current_emotion.value
-                except Exception:
-                    pass
+                lock = getattr(self, "_agent_respond_lock", None)
+                if lock is None:
+                    lock = asyncio.Lock()
+                    self._agent_respond_lock = lock
+                async with lock:
+                    response_text = await self._agent.respond(
+                        text,
+                        conversation_history=history,
+                    )
+                    emotion = "neutral"
+                    try:
+                        emotion = self._agent.affect_state.current_emotion.value
+                    except Exception as e:
+                        logger.debug("daemon.emotion_snapshot_failed", error=str(e))
                 return {
                     "type": "response",
                     "req_id": req_id,

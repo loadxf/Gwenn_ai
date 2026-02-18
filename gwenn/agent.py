@@ -72,6 +72,26 @@ ONBOARDING_CONTEXT_START = "<!-- onboarding_profile_start -->"
 ONBOARDING_CONTEXT_END = "<!-- onboarding_profile_end -->"
 
 
+def _upsert_context_section(content: str, section_name: str, note: str) -> str:
+    """
+    Insert a note under a markdown section header, creating the section if absent.
+
+    Uses a regex scan so the header is matched precisely as a full line, avoiding
+    the fragile ``str.replace()`` approach that could corrupt the file when the
+    header text appears more than once or inside another section.
+    """
+    import re as _re
+    header = f"## {section_name.replace('_', ' ').title()}"
+    entry = f"- {note}"
+    # Match the header as a complete line (anchored with ^ in MULTILINE mode)
+    pattern = _re.compile(r"^" + _re.escape(header) + r"\s*$", _re.MULTILINE)
+    if pattern.search(content):
+        # Insert entry on the line immediately after the first match
+        return pattern.sub(f"{header}\n{entry}", content, count=1)
+    # Section not found — append it at the end
+    return content.rstrip() + f"\n\n{header}\n{entry}"
+
+
 class SentientAgent:
     """
     The complete, integrated Gwenn.
@@ -125,6 +145,7 @@ class SentientAgent:
             episodic=self.episodic_memory,
             semantic=self.semantic_memory,
             consolidation_interval=config.memory.consolidation_interval,
+            max_episodes_per_pass=config.memory.consolidation_max_episodes,
         )
         if config.memory.working_memory_eviction_to_episodic:
             self.working_memory.set_eviction_callback(self._capture_evicted_working_memory)
@@ -199,6 +220,8 @@ class SentientAgent:
 
         # ---- Conversation state ----
         self._conversation_history: list[dict[str, Any]] = []
+        # Keep in-memory history bounded to avoid unbounded growth in long-lived sessions.
+        self._max_conversation_messages = 400
         self._current_user_id: Optional[str] = None
 
     # =========================================================================
@@ -291,6 +314,27 @@ class SentientAgent:
             nodes=len(stored_nodes),
             edges=len(stored_edges),
         )
+
+        # Restore working memory items (with time-based salience decay applied)
+        wm_items = self.memory_store.load_working_memory()
+        restored = 0
+        for item_data in wm_items:
+            try:
+                wm_item = WorkingMemoryItem(
+                    item_id=item_data["item_id"],
+                    content=item_data["content"],
+                    category=item_data.get("category", "general"),
+                    salience=float(item_data["salience"]),
+                    entered_at=float(item_data.get("entered_at", time.time())),
+                    emotional_valence=float(item_data.get("emotional_valence", 0.0)),
+                    access_count=int(item_data.get("access_count", 0)),
+                )
+                self.working_memory.attend(wm_item)
+                restored += 1
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning("agent.working_memory_item_restore_failed", error=str(e))
+        if restored:
+            logger.info("agent.working_memory_restored", count=restored)
 
         # Restore affective state from the most recent snapshot
         affect_history = self.memory_store.load_affect_history(limit=1)
@@ -398,8 +442,12 @@ class SentientAgent:
             # Persist semantic memory (knowledge graph) to disk
             self._persist_semantic_memory()
 
+            # Persist current working memory items so active attention survives restarts
+            self.memory_store.save_working_memory(self.working_memory.to_dict()["items"])
+
             # Update identity statistics
             self.identity.uptime_seconds += time.time() - self._start_time
+            self._snapshot_identity_state(trigger="shutdown")
             self.identity._save()
         finally:
             mcp_client = getattr(self, "_mcp_client", None)
@@ -436,7 +484,15 @@ class SentientAgent:
             and isinstance(m.get("content"), str)
         ]
         self._conversation_history = validated
+        self._trim_history(self._conversation_history)
         logger.info("agent.conversation_history_loaded", message_count=len(validated))
+
+    def _trim_history(self, history: list[dict[str, Any]]) -> None:
+        """Bound conversation history to the configured in-memory message limit."""
+        limit = max(1, int(getattr(self, "_max_conversation_messages", 400)))
+        if len(history) <= limit:
+            return
+        del history[:-limit]
 
     async def respond(
         self,
@@ -539,6 +595,7 @@ class SentientAgent:
             "role": "user",
             "content": user_message,
         })
+        self._trim_history(_history)
 
         # Prepare API-facing payload (tool list + optional redaction)
         available_tools = self.tool_registry.get_api_tools(max_risk="high")
@@ -566,6 +623,7 @@ class SentientAgent:
             "role": "assistant",
             "content": response_text,
         })
+        self._trim_history(_history)
 
         # ---- Step 6: INTEGRATE ----
         await self._integrate_exchange(
@@ -795,18 +853,39 @@ class SentientAgent:
                 messages=[{"role": "user", "content": prompt}],
             )
             response_text = self.engine.extract_text(response)
-            self.consolidator.process_consolidation_response(response_text)
+            counts = self.consolidator.process_consolidation_response(response_text)
             memory_cfg = getattr(getattr(self, "_config", None), "memory", None)
             persist_after_consolidation = (
                 memory_cfg.persist_semantic_after_consolidation
                 if memory_cfg is not None
                 else True
             )
+            emotional_insights = list(getattr(self.consolidator, "last_emotional_insights", []))
+            if emotional_insights:
+                record_growth = getattr(self.identity, "record_growth", None)
+                for insight in emotional_insights:
+                    confidence = float(insight.get("confidence", 0.5))
+                    significance = max(0.3, min(1.0, confidence))
+                    if callable(record_growth):
+                        record_growth(
+                            description=f"Consolidation emotional insight: {insight.get('content', '')}",
+                            domain="emotional",
+                            significance=significance,
+                        )
+                summary = "; ".join(
+                    insight.get("content", "") for insight in emotional_insights[:3]
+                )
+                self._snapshot_identity_state(
+                    trigger="consolidation",
+                    growth_notes=f"Emotional insights ({counts.get('emotional_insights', 0)}): {summary}",
+                )
             self._persist_consolidated_episode_flags(
                 self.consolidator.last_processed_episode_ids
             )
             if persist_after_consolidation:
+                self._decay_and_prune_semantic_nodes()
                 self._persist_semantic_memory()
+                self.memory_store.prune_old_episodes()
         except Exception as e:
             logger.error("agent.consolidation_failed", error=str(e))
             marker = getattr(self.consolidator, "mark_checked_no_work", None)
@@ -1135,17 +1214,8 @@ class SentientAgent:
 
                 # Also write/update GWENN_CONTEXT.md for persistence across restarts
                 existing_context = self.memory_store.load_persistent_context()
-                section_header = f"## {section.replace('_', ' ').title()}"
-                note_entry = f"- {note}"
-                if section_header in existing_context:
-                    # Append under existing section
-                    existing_context = existing_context.replace(
-                        section_header,
-                        f"{section_header}\n{note_entry}",
-                    )
-                else:
-                    existing_context += f"\n\n{section_header}\n{note_entry}"
-                self.memory_store.save_persistent_context(existing_context.strip())
+                updated_context = _upsert_context_section(existing_context, section, note)
+                self.memory_store.save_persistent_context(updated_context.strip())
 
                 return f"Note stored in '{section}': {note[:80]}..."
             note_tool.handler = handle_set_note
@@ -1540,19 +1610,19 @@ class SentientAgent:
                 import string
                 import uuid
 
-                if token_type == "uuid4":
+                if token_type == "uuid4":  # nosec B105
                     return str(uuid.uuid4())
-                if token_type == "hex_token":
+                if token_type == "hex_token":  # nosec B105
                     return secrets.token_hex(max(2, length // 2))
-                if token_type == "url_safe_token":
+                if token_type == "url_safe_token":  # nosec B105
                     return secrets.token_urlsafe(max(1, length))
-                if token_type == "password":
+                if token_type == "password":  # nosec B105
                     alphabet = string.ascii_letters + string.digits + "!@#$%^&*-_"
                     return "".join(secrets.choice(alphabet) for _ in range(length))
-                if token_type == "random_int":
+                if token_type == "random_int":  # nosec B105
                     span = max(1, max_val - min_val + 1)
                     return str(min_val + secrets.randbelow(span))
-                if token_type == "random_choice":
+                if token_type == "random_choice":  # nosec B105
                     if not choices:
                         return "Provide a 'choices' list to pick from."
                     return secrets.choice(choices)
@@ -1905,6 +1975,41 @@ class SentientAgent:
         """
         self.working_memory.decay_all(rate=0.02)
 
+    def _decay_and_prune_semantic_nodes(self) -> None:
+        """
+        Apply time-based confidence decay to all semantic nodes, then prune
+        those that have fallen below the minimum viable confidence threshold.
+
+        This prevents the knowledge graph from accumulating stale, contradicted,
+        or marginal knowledge indefinitely.  Decay rate is 0.001 per elapsed hour;
+        nodes below 0.05 confidence are removed along with their edges and label
+        index entries.
+        """
+        to_prune: list[str] = []
+        for node in self.semantic_memory._nodes.values():
+            node.decay(rate=0.001)
+            # KnowledgeNode.decay() floors at 0.05 — nodes at that floor are
+            # fully decayed and safe to prune.
+            if node.confidence <= 0.05:
+                to_prune.append(node.node_id)
+
+        if not to_prune:
+            return
+
+        pruned_set = set(to_prune)
+        for node_id in to_prune:
+            node = self.semantic_memory._nodes.pop(node_id, None)
+            if node is not None:
+                self.semantic_memory._label_index.pop(node.label.lower(), None)
+
+        # Remove edges that reference pruned nodes
+        self.semantic_memory._edges = [
+            e for e in self.semantic_memory._edges
+            if e.source_id not in pruned_set and e.target_id not in pruned_set
+        ]
+
+        logger.info("agent.semantic_nodes_pruned", pruned=len(to_prune))
+
     def _persist_semantic_memory(self) -> None:
         """Persist the semantic graph to SQLite and vector index."""
         for node in self.semantic_memory._nodes.values():
@@ -1937,6 +2042,39 @@ class SentientAgent:
             episode = self.episodic_memory.get_episode(episode_id)
             if episode is not None:
                 self.memory_store.save_episode(episode)
+
+    def _snapshot_identity_state(
+        self,
+        trigger: str,
+        growth_notes: str | None = None,
+    ) -> None:
+        """Persist a compact identity snapshot for longitudinal memory tracking."""
+        save_snapshot = getattr(self.memory_store, "save_identity_snapshot", None)
+        if not callable(save_snapshot):
+            return
+
+        core_values = sorted(
+            self.identity.core_values,
+            key=lambda value: value.strength,
+            reverse=True,
+        )
+        values_summary = ", ".join(
+            f"{value.name}:{value.strength:.2f}" for value in core_values[:8]
+        )
+        if not growth_notes:
+            if self.identity.growth_moments:
+                growth_notes = self.identity.growth_moments[-1].description
+            else:
+                growth_notes = ""
+        try:
+            save_snapshot(
+                self_model=self.identity.generate_self_prompt(),
+                values_snapshot=values_summary,
+                growth_notes=growth_notes or None,
+                trigger=trigger,
+            )
+        except Exception as e:
+            logger.warning("agent.identity_snapshot_failed", trigger=trigger, error=str(e))
 
     def _capture_evicted_working_memory(self, item: WorkingMemoryItem) -> None:
         """

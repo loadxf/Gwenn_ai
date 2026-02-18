@@ -92,24 +92,48 @@ class UserModel:
     # What topics have we discussed?
     topics_discussed: list[str] = field(default_factory=list)
 
+    @staticmethod
+    def _clamp_confidence(value: float, default: float = 0.5) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, min(1.0, numeric))
+
     def update_knowledge_belief(self, topic: str, level: str, confidence: float, source: str):
         """Update belief about what the user knows about a topic."""
+        normalized_confidence = self._clamp_confidence(confidence)
         if topic in self.knowledge_beliefs:
-            self.knowledge_beliefs[topic].content = level
-            self.knowledge_beliefs[topic].confirm()
+            belief = self.knowledge_beliefs[topic]
+            belief.content = level
+            belief.confidence = normalized_confidence
+            belief.source = source or belief.source
+            belief.last_confirmed = time.time()
         else:
             self.knowledge_beliefs[topic] = BeliefState(
-                content=level, confidence=confidence, source=source,
+                content=level, confidence=normalized_confidence, source=source,
             )
 
-    def update_preference(self, pref: str, value: str, confidence: float):
+    def update_preference(
+        self,
+        pref: str,
+        value: str,
+        confidence: float,
+        source: str = "observed",
+    ):
         """Update belief about a user preference."""
+        normalized_confidence = self._clamp_confidence(confidence)
         if pref in self.preference_beliefs:
-            self.preference_beliefs[pref].content = value
-            self.preference_beliefs[pref].confirm()
+            belief = self.preference_beliefs[pref]
+            belief.content = value
+            belief.confidence = normalized_confidence
+            belief.source = source or belief.source
+            belief.last_confirmed = time.time()
         else:
             self.preference_beliefs[pref] = BeliefState(
-                content=value, confidence=confidence, source="observed",
+                content=value,
+                confidence=normalized_confidence,
+                source=source or "observed",
             )
 
     def record_interaction(self) -> None:

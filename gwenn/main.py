@@ -132,7 +132,7 @@ class GwennSession:
         if sys.stdout.isatty():
             console.print(Panel(
                 Text("GWENN.ai", style="bold cyan", justify="center"),
-                subtitle="Created by Justin & Jayden McKibben - A father/son team | https://gwenn.ai",
+                subtitle="Created by Justin & Jayden McKibben - A father/son duo | https://gwenn.ai",
                 border_style="cyan",
             ))
             console.print("[dim]Loading Gwenn's neural fabric...[/dim]")
@@ -159,7 +159,7 @@ class GwennSession:
 
         # ---- PHASE 2: CREATION ----
         if sys.stdout.isatty():
-            console.print("[dim]Waking up Gwenn's neural fabric...[/dim]")
+            console.print("[dim]...Waking Gwemn up...[/dim]")
         try:
             self._agent = SentientAgent(config)
         except CognitiveEngineInitError as e:
@@ -171,13 +171,13 @@ class GwennSession:
 
         # ---- PHASE 3: INITIALIZATION (Loading memories, waking up) ----
         if sys.stdout.isatty():
-            console.print("[dim]Loading Gwenn's memories and identity...[/dim]")
+            console.print("[dim]...Loading Gwenn's memories and identity...[/dim]")
         await self._agent.initialize()
         await self._run_first_startup_onboarding_if_needed(channel_mode)
 
         # ---- PHASE 4: IGNITION (Starting heartbeat) ----
         if sys.stdout.isatty():
-            console.print("[dim]Starting Gwenn's autonomous heartbeat...[/dim]")
+            console.print("[dim]...Loading Gwenn's autonomous heartbeat...[/dim]")
         await self._agent.start()
 
         # Display Gwenn's awakened state
@@ -357,7 +357,7 @@ class GwennSession:
 
             # Regular chat
             console.print()
-            with console.status("[cyan]Gwenn is thinking...[/cyan]"):
+            with console.status("[cyan]...thinking...[/cyan]"):
                 try:
                     resp = await channel.chat(user_input)
                 except _CONN_ERRORS:
@@ -531,7 +531,7 @@ class GwennSession:
 
                 # Generate Gwenn's response
                 console.print()
-                with console.status("[cyan]I'm thinking...[/cyan]"):
+                with console.status("[cyan]...thinking...[/cyan]"):
                     response = await self._agent.respond(user_input)
 
                 # Display the response — escape AI output to prevent Rich markup injection
@@ -742,7 +742,7 @@ class GwennSession:
 
         now = time.monotonic()
         if now - self._last_sigint_at <= self._sigint_confirm_window_seconds:
-            console.print("\n[dim]Gwenn: Goodbye. I'll remember this.[/dim]")
+            console.print("\n[dim]Gwenn: Bye for now.[/dim]")
             self._request_shutdown()
             self._last_sigint_at = 0.0
             return
@@ -783,7 +783,7 @@ class GwennSession:
 
         if sys.stdout.isatty():
             console.print()
-            console.print("[dim]Shutting down gracefully...[/dim]")
+            console.print("[dim] Closing CLI session gracefully...[/dim]")
 
         if self._agent:
             await self._agent.shutdown()
@@ -967,7 +967,7 @@ def _run_show_status() -> None:
 
 def main():
     """Entry point for the gwenn command."""
-    parser = argparse.ArgumentParser(description="Gwenn — Autonomous Sentient Agent")
+    parser = argparse.ArgumentParser(description="Gwenn - Genesis Woven from Evolved Neural Networks")
     parser.add_argument(
         "subcommand",
         nargs="?",

@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Optional
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
+import structlog
+
+
+logger = structlog.get_logger(__name__)
 
 
 def _load_claude_code_credentials() -> Optional[str]:
@@ -28,8 +32,8 @@ def _load_claude_code_credentials() -> Optional[str]:
         expires_at_ms = oauth.get("expiresAt", 0)
         if token and time.time() * 1000 < expires_at_ms:
             return token
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("config.oauth_credentials_unreadable", path=str(creds_path), error=str(e))
     return None
 
 
@@ -74,7 +78,7 @@ class MemoryConfig(BaseSettings):
     # Working memory constraints (Miller's 7±2)
     working_memory_slots: int = Field(7, alias="GWENN_WORKING_MEMORY_SLOTS")
     working_memory_eviction_to_episodic: bool = Field(
-        False, alias="GWENN_WM_EVICTION_TO_EPISODIC"
+        True, alias="GWENN_WM_EVICTION_TO_EPISODIC"
     )
 
     # Retrieval mode: keyword (default), embedding (vector only), hybrid (blend both)
@@ -94,6 +98,7 @@ class MemoryConfig(BaseSettings):
 
     # Consolidation settings
     consolidation_interval: float = 600.0  # seconds between consolidation passes
+    consolidation_max_episodes: int = Field(200, alias="GWENN_CONSOLIDATION_MAX_EPISODES")
     consolidation_recency_decay: float = 0.995  # per-minute decay for recency scoring
     consolidation_importance_weight: float = 0.4
     consolidation_recency_weight: float = 0.3
@@ -116,6 +121,7 @@ class MemoryConfig(BaseSettings):
         self.shutdown_persist_recent_episodes = max(
             0, int(self.shutdown_persist_recent_episodes)
         )
+        self.consolidation_max_episodes = max(1, int(self.consolidation_max_episodes))
         return self
 
 

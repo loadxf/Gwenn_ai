@@ -182,6 +182,29 @@ class TestOnMessage:
         assert call_kwargs["user_message"] == "hi gwenn"
 
     @pytest.mark.asyncio
+    async def test_replies_disable_allowed_mentions(self):
+        import discord as _discord
+
+        ch, _, _ = make_channel()
+        ch._client = MagicMock()
+        ch._client.user = MagicMock()
+        ch._client.user.id = 999
+
+        msg = make_dm_message(user_id="42", content="hi @everyone")
+        msg.author = MagicMock()
+        msg.author.id = 42
+        ch._client.user.__eq__ = lambda self, other: False
+
+        await ch._on_message(msg)
+
+        assert msg.reply.call_count >= 1
+        for _args, kwargs in msg.reply.call_args_list:
+            assert isinstance(kwargs.get("allowed_mentions"), _discord.AllowedMentions)
+            assert kwargs["allowed_mentions"].everyone is False
+            assert kwargs["allowed_mentions"].roles is False
+            assert kwargs["allowed_mentions"].users is False
+
+    @pytest.mark.asyncio
     async def test_guild_message_ignored_if_not_mentioned(self):
         ch, agent, _ = make_channel()
         ch._client = MagicMock()

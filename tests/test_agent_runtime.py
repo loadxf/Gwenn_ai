@@ -51,6 +51,9 @@ class _IdentityStub:
         self.onboarding_completed = False
         self.onboarding_profile = {}
         self.last_relationship_kwargs = None
+        self.core_values = []
+        self.growth_moments = []
+        self.growth_events: list[tuple[str, str, float]] = []
 
     def update_relationship(self, user_id: str, **kwargs) -> None:
         self.last_user_id = user_id
@@ -62,6 +65,12 @@ class _IdentityStub:
     def mark_onboarding_completed(self, profile: dict[str, str]) -> None:
         self.onboarding_completed = True
         self.onboarding_profile = profile
+
+    def generate_self_prompt(self) -> str:
+        return "I am Gwenn."
+
+    def record_growth(self, description: str, domain: str, significance: float = 0.5) -> None:
+        self.growth_events.append((description, domain, significance))
 
 
 class _WorkingMemoryStub:
@@ -93,6 +102,13 @@ class _MemoryStoreRecorder:
 
     def save_knowledge_edge(self, **kwargs) -> None:
         self._events.append("save_knowledge_edge")
+
+    def save_working_memory(self, items: list) -> None:
+        self._events.append("save_working_memory")
+
+    def prune_old_episodes(self, **kwargs) -> int:
+        self._events.append("prune_old_episodes")
+        return 0
 
     def close(self) -> None:
         self._events.append("close")
@@ -241,6 +257,9 @@ async def test_shutdown_consolidates_before_persisting_memory():
     agent.semantic_memory = SimpleNamespace(
         _nodes={"node-1": node},
         _edges=[edge],
+    )
+    agent.working_memory = SimpleNamespace(
+        to_dict=lambda: {"items": []},
     )
     agent.identity = _IdentityStub()
     agent.identity.total_interactions = 3
@@ -562,6 +581,9 @@ async def test_consolidate_memories_persists_semantic_and_episode_flags():
         def save_episode(self, _episode):
             events.append("save_episode")
 
+        def prune_old_episodes(self, **kwargs) -> int:
+            return 0
+
     async def _reflect(**kwargs):
         return {"content": "FACT: remembered detail | confidence: 0.9"}
 
@@ -586,6 +608,7 @@ async def test_consolidate_memories_persists_semantic_and_episode_flags():
         created_at=1.0,
         last_updated=2.0,
         access_count=1,
+        decay=lambda rate=0.001: None,
     )
     edge = SimpleNamespace(
         source_id="node-1",
@@ -697,6 +720,167 @@ async def test_consolidate_memories_persists_episode_flags_when_semantic_flush_d
 
     assert "save_episode" in events
     assert "save_knowledge_node" not in events
+
+
+@pytest.mark.asyncio
+async def test_shutdown_persists_identity_snapshot_when_supported():
+    events: list[str] = []
+
+    class _Store:
+        def save_affect_snapshot(self, **kwargs):
+            events.append("save_affect")
+
+        def save_episode(self, _episode):
+            events.append("save_episode")
+
+        def save_knowledge_node(self, **kwargs):
+            events.append("save_knowledge_node")
+
+        def clear_knowledge_edges(self):
+            events.append("clear_knowledge_edges")
+
+        def save_knowledge_edge(self, **kwargs):
+            events.append("save_knowledge_edge")
+
+        def save_identity_snapshot(self, **kwargs):
+            events.append(f"snapshot:{kwargs.get('trigger')}")
+
+        def save_working_memory(self, items: list) -> None:
+            pass
+
+        def close(self):
+            events.append("close")
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent.heartbeat = _HeartbeatStub()
+    dims = SimpleNamespace(
+        valence=0.0,
+        arousal=0.3,
+        dominance=0.0,
+        certainty=0.0,
+        goal_congruence=0.0,
+    )
+    agent.affect_state = SimpleNamespace(
+        dimensions=dims,
+        current_emotion=SimpleNamespace(value="neutral"),
+    )
+    agent.memory_store = _Store()
+    agent.episodic_memory = SimpleNamespace(retrieve_recent=lambda n=100: [])
+    agent.semantic_memory = SimpleNamespace(_nodes={}, _edges=[])
+    agent.working_memory = SimpleNamespace(to_dict=lambda: {"items": []})
+    agent.identity = _IdentityStub()
+    agent._start_time = time.time() - 2.0
+
+    async def _consolidate():
+        events.append("consolidate")
+
+    agent.consolidate_memories = _consolidate
+
+    await SentientAgent.shutdown(agent)
+
+    assert "snapshot:shutdown" in events
+
+
+@pytest.mark.asyncio
+async def test_consolidate_memories_persists_identity_emotional_insights():
+    class _Consolidator:
+        last_processed_episode_ids = ["ep-1"]
+        last_emotional_insights = [
+            {"content": "Creative tasks increase engagement", "confidence": 0.7},
+        ]
+
+        def get_consolidation_prompt(self):
+            return "prompt"
+
+        def process_consolidation_response(self, _response_text: str):
+            return {
+                "facts": 0,
+                "relationships": 0,
+                "self_knowledge": 0,
+                "patterns": 0,
+                "emotional_insights": 1,
+            }
+
+    events: list[str] = []
+
+    class _Store:
+        def save_episode(self, _episode):
+            events.append("save_episode")
+
+        def save_identity_snapshot(self, **kwargs):
+            events.append(f"snapshot:{kwargs.get('trigger')}")
+
+    async def _reflect(**kwargs):
+        return {"content": "EMOTIONAL_INSIGHT: Creative tasks increase engagement | confidence: 0.7"}
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent._config = SimpleNamespace(
+        memory=SimpleNamespace(persist_semantic_after_consolidation=False),
+    )
+    agent.consolidator = _Consolidator()
+    agent.memory_store = _Store()
+    agent.engine = SimpleNamespace(
+        reflect=_reflect,
+        extract_text=lambda _resp: "EMOTIONAL_INSIGHT: Creative tasks increase engagement | confidence: 0.7",
+    )
+    agent.semantic_memory = SimpleNamespace(_nodes={}, _edges=[])
+    agent.episodic_memory = SimpleNamespace(
+        get_episode=lambda episode_id: SimpleNamespace(episode_id=episode_id),
+    )
+    agent.identity = _IdentityStub()
+
+    await SentientAgent.consolidate_memories(agent)
+
+    assert agent.identity.growth_events
+    assert "snapshot:consolidation" in events
+
+
+def test_decay_and_prune_removes_fully_decayed_nodes():
+    """_decay_and_prune_semantic_nodes prunes nodes at floor confidence (<=0.05)."""
+    from gwenn.memory.semantic import KnowledgeNode, KnowledgeEdge
+
+    agent = object.__new__(SentientAgent)
+
+    # Two nodes: one healthy, one at floor confidence
+    healthy = KnowledgeNode(node_id="healthy", label="healthy", confidence=0.8)
+    stale = KnowledgeNode(node_id="stale", label="stale", confidence=0.05)
+    edge_between = KnowledgeEdge(
+        source_id="healthy", target_id="stale", relationship="related_to"
+    )
+    edge_internal = KnowledgeEdge(
+        source_id="healthy", target_id="healthy", relationship="self_ref"
+    )
+
+    from gwenn.memory.semantic import SemanticMemory
+    agent.semantic_memory = SemanticMemory()
+    agent.semantic_memory._nodes = {"healthy": healthy, "stale": stale}
+    agent.semantic_memory._label_index = {"healthy": "healthy", "stale": "stale"}
+    agent.semantic_memory._edges = [edge_between, edge_internal]
+
+    SentientAgent._decay_and_prune_semantic_nodes(agent)
+
+    # 'stale' should be pruned (confidence 0.05 <= 0.05 after decay)
+    assert "stale" not in agent.semantic_memory._nodes
+    assert "stale" not in agent.semantic_memory._label_index
+    # Edge to stale node removed; self-ref edge on healthy kept
+    assert all(
+        e.target_id != "stale" and e.source_id != "stale"
+        for e in agent.semantic_memory._edges
+    )
+    assert "healthy" in agent.semantic_memory._nodes
+
+
+def test_upsert_context_section_second_note_prepended():
+    """A second note to the same section appears directly after the header."""
+    from gwenn.agent import _upsert_context_section
+    after_first = _upsert_context_section("", "reminders", "first note")
+    after_second = _upsert_context_section(after_first, "reminders", "second note")
+    assert "## Reminders" in after_second
+    assert "- first note" in after_second
+    assert "- second note" in after_second
+    assert after_second.count("## Reminders") == 1
 
 
 def test_agent_init_wires_sensory_ethics_interagent_from_config(

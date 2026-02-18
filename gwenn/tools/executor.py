@@ -330,7 +330,11 @@ class ToolExecutor:
                     loop.call_soon_threadsafe(self._sync_slot.release)
                 except RuntimeError:
                     # Loop may already be closed if shutdown races tool completion.
-                    pass
+                    try:
+                        self._sync_slot.release()
+                    except ValueError:
+                        # Already released; ignore.
+                        pass
 
         try:
             thread = threading.Thread(target=_invoke, daemon=True)

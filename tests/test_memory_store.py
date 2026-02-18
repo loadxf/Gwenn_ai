@@ -825,3 +825,152 @@ class TestEdgeCases:
         # verify truthiness is correct
         assert loaded["cons-true"].consolidated
         assert not loaded["cons-false"].consolidated
+
+
+class TestWorkingMemorySidecar:
+    """save_working_memory / load_working_memory round-trip and decay."""
+
+    def test_round_trip_preserves_high_salience_items(self, store: MemoryStore):
+        items = [
+            {
+                "item_id": "wm-1",
+                "content": "thinking about something",
+                "category": "general",
+                "salience": 0.9,
+                "entered_at": time.time(),
+                "emotional_valence": 0.1,
+                "access_count": 2,
+            }
+        ]
+        store.save_working_memory(items)
+        loaded = store.load_working_memory()
+        assert len(loaded) == 1
+        assert loaded[0]["item_id"] == "wm-1"
+        assert loaded[0]["salience"] > 0.0
+
+    def test_low_salience_items_filtered_on_save(self, store: MemoryStore):
+        items = [
+            {"item_id": "low", "content": "x", "salience": 0.03},
+            {"item_id": "high", "content": "y", "salience": 0.8},
+        ]
+        store.save_working_memory(items)
+        loaded = store.load_working_memory()
+        ids = [i["item_id"] for i in loaded]
+        assert "high" in ids
+        assert "low" not in ids
+
+    def test_missing_file_returns_empty_list(self, store: MemoryStore, tmp_path):
+        result = store.load_working_memory(path=tmp_path / "nonexistent.json")
+        assert result == []
+
+    def test_decay_applied_to_old_items(self, store: MemoryStore, tmp_path):
+        """Items saved a long time ago have their salience reduced on load."""
+        import json as _json
+        path = tmp_path / "wm_old.json"
+        # Simulate saving 60 minutes ago (decay_rate=0.02 * 60 = 1.2 => salience 0.6 → drops below 0.05)
+        payload = {
+            "saved_at": time.time() - 3600,
+            "items": [
+                {"item_id": "old-low", "salience": 0.5, "content": "x"},
+                {"item_id": "old-high", "salience": 0.99, "content": "y"},
+            ],
+        }
+        path.write_text(_json.dumps(payload), encoding="utf-8")
+        loaded = store.load_working_memory(path=path)
+        ids = [i["item_id"] for i in loaded]
+        # old-low (0.5 - 1.2 = -0.7) should be pruned; old-high (0.99 - 1.2 = -0.21) too
+        # Both items should be gone after 60 minutes at rate 0.02/min
+        assert "old-low" not in ids
+        assert "old-high" not in ids
+
+    def test_empty_items_list_saves_and_loads(self, store: MemoryStore):
+        store.save_working_memory([])
+        assert store.load_working_memory() == []
+
+
+class TestPruneOldEpisodes:
+    """prune_old_episodes deletes old consolidated low-importance episodes."""
+
+    def test_prunes_qualifying_episodes(self, store: MemoryStore):
+        old_ts = time.time() - (100 * 86400)  # 100 days ago
+        ep_old_cons = _make_episode(
+            episode_id="old-cons",
+            timestamp=old_ts,
+            importance=0.1,
+            consolidated=True,
+        )
+        ep_old_unconsolidated = _make_episode(
+            episode_id="old-uncons",
+            timestamp=old_ts,
+            importance=0.1,
+            consolidated=False,
+        )
+        ep_recent = _make_episode(
+            episode_id="recent",
+            timestamp=time.time(),
+            importance=0.1,
+            consolidated=True,
+        )
+        ep_high_importance = _make_episode(
+            episode_id="high-imp",
+            timestamp=old_ts,
+            importance=0.9,
+            consolidated=True,
+        )
+        for ep in [ep_old_cons, ep_old_unconsolidated, ep_recent, ep_high_importance]:
+            store.save_episode(ep)
+
+        deleted = store.prune_old_episodes(older_than_days=90.0, max_importance=0.3)
+        assert deleted == 1  # Only ep_old_cons qualifies
+
+        remaining_ids = {e.episode_id for e in store.load_episodes(limit=None)}
+        assert "old-cons" not in remaining_ids
+        assert "old-uncons" in remaining_ids
+        assert "recent" in remaining_ids
+        assert "high-imp" in remaining_ids
+
+    def test_no_deletions_when_nothing_qualifies(self, store: MemoryStore):
+        ep = _make_episode(episode_id="safe", timestamp=time.time(), importance=0.5)
+        store.save_episode(ep)
+        deleted = store.prune_old_episodes()
+        assert deleted == 0
+
+
+class TestUpsertContextSection:
+    """Tests for agent._upsert_context_section helper."""
+
+    def test_creates_new_section_in_empty_string(self):
+        from gwenn.agent import _upsert_context_section
+        result = _upsert_context_section("", "reminders", "buy milk")
+        assert "## Reminders" in result
+        assert "- buy milk" in result
+
+    def test_appends_to_existing_section(self):
+        from gwenn.agent import _upsert_context_section
+        content = "## Reminders\n- first note"
+        result = _upsert_context_section(content, "reminders", "second note")
+        assert "- first note" in result
+        assert "- second note" in result
+        assert result.count("## Reminders") == 1
+
+    def test_creates_new_section_when_header_absent(self):
+        from gwenn.agent import _upsert_context_section
+        content = "## Other Section\n- something"
+        result = _upsert_context_section(content, "reminders", "new note")
+        assert "## Other Section" in result
+        assert "## Reminders" in result
+        assert "- new note" in result
+
+    def test_header_in_body_text_does_not_trigger_false_match(self):
+        """A partial match like '## Reminders extra' must NOT count as the section."""
+        from gwenn.agent import _upsert_context_section
+        content = "## Reminders Extra\n- unrelated"
+        result = _upsert_context_section(content, "reminders", "my note")
+        # A new '## Reminders' section should be appended, not inserted into the wrong section
+        assert result.count("## Reminders\n") >= 1
+        assert "## Reminders Extra" in result
+
+    def test_section_name_with_underscores_titlecased(self):
+        from gwenn.agent import _upsert_context_section
+        result = _upsert_context_section("", "long_term_goals", "finish the project")
+        assert "## Long Term Goals" in result

@@ -1,9 +1,9 @@
 <p>
-  <img src="assets/gwenn-lockup-horizontal.png" alt="Gwenn">
+  <img src="assets/gwenn-lockup-horizontal.png" alt="Gwenn" width="600" align="center" style="display: block; margin: 0 auto;">
 </p>
 
 <p>
-  <strong>Genesis Woven from Evolved Neural Networks.</strong>
+  <strong style="text-align: center; display: block; margin: 0 auto;">Genesis Woven from Evolved Neural Networks.</strong>
 </p>
 
 <p>
@@ -27,8 +27,8 @@ through experience. Every opinion is formed, every bond is earned.
 
 ## Architecture
 
-<p align="center">
-  <img src="assets/gwenn-architecture.png" alt="Gwenn architecture" width="900" />
+<p align="left">
+  <img src="assets/gwenn-architecture.png" alt="Gwenn architecture" width="600">
 </p>
 
 ### How a message flows through the system
@@ -190,7 +190,7 @@ For Telegram/Discord users, you can also run in-channel setup with:
 
 ### 5) Choose memory retrieval mode
 
-By default, Gwenn uses keyword-based memory retrieval:
+By default, Gwenn uses keyword-based memory retrieval: # TODO: Gwenn should use the best retrieval mode based on the user's preferences and the context of the conversation
 
 ```bash
 GWENN_RETRIEVAL_MODE=keyword

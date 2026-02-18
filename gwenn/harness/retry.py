@@ -16,7 +16,7 @@ The retry strategy follows industry best practices:
 from __future__ import annotations
 
 import asyncio
-import random
+import secrets
 from typing import Any, Callable, Optional, TypeVar
 
 import anthropic
@@ -99,7 +99,8 @@ def compute_delay(
     delay = min(delay, config.max_delay)
 
     # Add jitter
-    jitter = delay * config.jitter_range * (2 * random.random() - 1)
+    unit = secrets.randbelow(1_000_000) / 1_000_000
+    jitter = delay * config.jitter_range * (2 * unit - 1)
     delay = max(0.1, delay + jitter)
 
     return delay

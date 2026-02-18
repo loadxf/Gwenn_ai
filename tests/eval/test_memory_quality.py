@@ -577,3 +577,50 @@ class TestCrossSystemQuality:
         for point in trajectory:
             assert -1.0 <= point["valence"] <= 1.0
             assert 0.0 <= point["arousal"] <= 1.0
+
+
+# ===========================================================================
+# 8. Long-horizon memory quality
+# ===========================================================================
+
+class TestLongHorizonMemoryQuality:
+    """Long-horizon checks for retrieval quality under larger memory volumes."""
+
+    def test_important_old_memory_remains_retrievable_with_large_backlog(self):
+        em = EpisodicMemory()
+        now = time.time()
+
+        anchor = Episode(
+            episode_id="anchor-contract",
+            content=(
+                "Critical architecture decision: preserve backwards-compatible "
+                "tool contract for daemon memory APIs."
+            ),
+            category="insight",
+            emotional_valence=0.2,
+            importance=1.0,
+            tags=["architecture", "contract", "memory"],
+            timestamp=now - 86400,  # 24 hours old
+        )
+        em.encode(anchor)
+
+        # Add a large, recent backlog of low-importance routine chatter.
+        for idx in range(250):
+            em.encode(
+                Episode(
+                    episode_id=f"routine-{idx}",
+                    content=f"Routine status update number {idx}",
+                    category="conversation",
+                    emotional_valence=0.0,
+                    importance=0.1,
+                    tags=["routine", "status"],
+                    timestamp=now - idx,
+                )
+            )
+
+        results = em.retrieve(
+            query="backwards-compatible tool contract memory APIs",
+            top_k=5,
+        )
+        ids = _episode_ids(results)
+        assert "anchor-contract" in ids

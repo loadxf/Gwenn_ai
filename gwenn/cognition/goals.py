@@ -190,6 +190,12 @@ class GoalSystem:
                     self._active_goals.append(goal)
                     new_goals.append(goal)
 
+        # Keep active priorities aligned with current need urgency.
+        for goal in self._active_goals:
+            source_need = self._needs.get(goal.source_need)
+            if source_need is not None:
+                goal.priority = source_need.urgency
+
         if new_goals:
             logger.info(
                 "goal_system.new_goals",

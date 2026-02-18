@@ -56,6 +56,7 @@ FACT: [content] | confidence: [0.0-1.0] | category: [person/concept/fact/prefere
 RELATIONSHIP: [source] -> [relationship_type] -> [target] | strength: [0.0-1.0]
 SELF: [self-knowledge content] | confidence: [0.0-1.0]
 PATTERN: [pattern description] | confidence: [0.0-1.0]
+EMOTIONAL_INSIGHT: [emotional pattern/insight] | confidence: [0.0-1.0]
 
 Episodes to consolidate:
 {episodes}"""
@@ -75,18 +76,22 @@ class ConsolidationEngine:
         episodic: EpisodicMemory,
         semantic: SemanticMemory,
         consolidation_interval: float = 600.0,  # 10 minutes between passes
+        max_episodes_per_pass: int = 200,
     ):
         self._episodic = episodic
         self._semantic = semantic
         self._interval = consolidation_interval
+        self._max_episodes_per_pass = max(1, int(max_episodes_per_pass))
         self._last_consolidation = 0.0
         self._total_consolidations = 0
         self._pending_episode_ids: list[str] = []
         self._last_processed_episode_ids: list[str] = []
+        self._last_emotional_insights: list[dict[str, Any]] = []
 
         logger.info(
             "consolidation_engine.initialized",
             interval_seconds=consolidation_interval,
+            max_episodes_per_pass=self._max_episodes_per_pass,
         )
 
     def should_consolidate(self) -> bool:
@@ -115,6 +120,17 @@ class ConsolidationEngine:
             self._pending_episode_ids = []
             logger.debug("consolidation.no_episodes")
             return None
+
+        if len(episodes) > self._max_episodes_per_pass:
+            skipped = len(episodes) - self._max_episodes_per_pass
+            episodes = sorted(episodes, key=lambda ep: ep.timestamp, reverse=True)[
+                : self._max_episodes_per_pass
+            ]
+            logger.info(
+                "consolidation.episode_cap_applied",
+                selected=len(episodes),
+                skipped=skipped,
+            )
 
         self._pending_episode_ids = [ep.episode_id for ep in episodes]
 
@@ -152,7 +168,14 @@ class ConsolidationEngine:
 
         Returns counts of items extracted by type.
         """
-        counts = {"facts": 0, "relationships": 0, "self_knowledge": 0, "patterns": 0}
+        counts = {
+            "facts": 0,
+            "relationships": 0,
+            "self_knowledge": 0,
+            "patterns": 0,
+            "emotional_insights": 0,
+        }
+        self._last_emotional_insights = []
 
         # Use the exact episode set that was sent in the prompt when available.
         # This avoids consolidating episodes that arrived while the model was thinking.
@@ -181,6 +204,17 @@ class ConsolidationEngine:
                 elif line.startswith("PATTERN:"):
                     if self._process_pattern(line, source_episode_ids=source_episode_ids):
                         counts["patterns"] += 1
+                elif (
+                    line.startswith("EMOTIONAL_INSIGHT:")
+                    or line.startswith("EMOTIONAL INSIGHT:")
+                    or line.startswith("EMOTIONAL_INSIGHTS:")
+                    or line.startswith("EMOTIONAL INSIGHTS:")
+                ):
+                    if self._process_emotional_insight(
+                        line,
+                        source_episode_ids=source_episode_ids,
+                    ):
+                        counts["emotional_insights"] += 1
             except (ValueError, IndexError) as e:
                 logger.warning("consolidation.parse_error", line=line[:80], error=str(e))
                 continue
@@ -214,7 +248,7 @@ class ConsolidationEngine:
         """Create a stable, human-readable label that avoids prefix-collision merges."""
         clean = " ".join(content.split()).strip()
         base = " ".join(clean.split()[:8]).strip()
-        digest = hashlib.sha1(clean.lower().encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha256(clean.lower().encode("utf-8")).hexdigest()[:8]
         if base:
             return f"{prefix}: {base} [{digest}]"
         return f"{prefix}: {digest}"
@@ -375,6 +409,59 @@ class ConsolidationEngine:
         self._attach_provenance(node, source_episode_ids, primary_episode_id)
         return True
 
+    def _process_emotional_insight(
+        self,
+        line: str,
+        source_episode_ids: Optional[list[str]] = None,
+    ) -> bool:
+        """Parse and store an EMOTIONAL_INSIGHT line with provenance tracking."""
+        prefixes = (
+            "EMOTIONAL_INSIGHT:",
+            "EMOTIONAL INSIGHT:",
+            "EMOTIONAL_INSIGHTS:",
+            "EMOTIONAL INSIGHTS:",
+        )
+        raw = line
+        for prefix in prefixes:
+            if raw.startswith(prefix):
+                raw = raw[len(prefix):].strip()
+                break
+        if not raw:
+            return False
+
+        parts = [part.strip() for part in raw.split("|")]
+        confidence = 0.5
+        content_parts: list[str] = []
+
+        for part in parts:
+            if part.lower().startswith("confidence:"):
+                confidence = self._clamp01(part.split(":", 1)[1].strip(), default=0.5)
+            elif part:
+                content_parts.append(part)
+
+        content = " | ".join(content_parts).strip()
+        if not content:
+            logger.warning("consolidation.emotion_empty_content", line=line[:80])
+            return False
+
+        label = self._stable_label("emotion", content)
+        primary_episode_id = source_episode_ids[0] if source_episode_ids else None
+        node = self._semantic.store_knowledge(
+            label=label,
+            content=content,
+            category="emotional_insight",
+            confidence=confidence,
+            source_episode_id=primary_episode_id,
+        )
+        self._attach_provenance(node, source_episode_ids, primary_episode_id)
+        self._last_emotional_insights.append(
+            {
+                "content": content,
+                "confidence": confidence,
+            }
+        )
+        return True
+
     @property
     def stats(self) -> dict[str, Any]:
         return {
@@ -389,3 +476,8 @@ class ConsolidationEngine:
     def last_processed_episode_ids(self) -> list[str]:
         """Episode IDs included in the most recent consolidation response processing."""
         return list(self._last_processed_episode_ids)
+
+    @property
+    def last_emotional_insights(self) -> list[dict[str, Any]]:
+        """Emotional insights extracted during the most recent consolidation pass."""
+        return [dict(item) for item in self._last_emotional_insights]

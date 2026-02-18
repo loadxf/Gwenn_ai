@@ -63,8 +63,8 @@ class CliChannel:
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("cli_channel.disconnect_close_failed", error=str(e))
             self._writer = None
             self._reader = None
 

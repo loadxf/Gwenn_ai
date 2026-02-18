@@ -12,8 +12,8 @@ Only uses: pathlib, json, time, random, string, structlog — no gwenn imports.
 from __future__ import annotations
 
 import json
-import random
 import re
+import secrets
 import string
 import time
 from datetime import datetime
@@ -89,7 +89,8 @@ class SessionStore:
 
         # Build session_id: YYYYMMDD-HHMMSS-xxxx
         ts_str = datetime.fromtimestamp(started_at).strftime("%Y%m%d-%H%M%S")
-        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+        alphabet = string.ascii_lowercase + string.digits
+        suffix = "".join(secrets.choice(alphabet) for _ in range(4))
         session_id = f"{ts_str}-{suffix}"
 
         ended_at = time.time()
@@ -230,10 +231,12 @@ def _format_session_time(ts: float) -> str:
     now = time.time()
     diff = now - ts
     dt = datetime.fromtimestamp(ts)
+    hour = dt.strftime("%I").lstrip("0") or "12"
+    time_text = f"{hour}:{dt.strftime('%M %p')}"
 
     if diff < 86400:  # today
-        return "Today " + dt.strftime("%-I:%M %p")
+        return "Today " + time_text
     elif diff < 172800:  # yesterday
-        return "Yesterday " + dt.strftime("%-I:%M %p")
+        return "Yesterday " + time_text
     else:
-        return dt.strftime("%A %-I:%M %p")
+        return f"{dt.strftime('%A')} {time_text}"
