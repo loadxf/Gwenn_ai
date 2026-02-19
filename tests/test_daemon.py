@@ -12,6 +12,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -124,9 +125,9 @@ class TestSessionStore:
         # Format: YYYYMMDD-HHMMSS-xxxx → 3 segments when split by "-"
         parts = sid.split("-")
         assert len(parts) == 3
-        assert len(parts[0]) == 8   # YYYYMMDD
-        assert len(parts[1]) == 6   # HHMMSS
-        assert len(parts[2]) == 4   # random suffix
+        assert len(parts[0]) == 8  # YYYYMMDD
+        assert len(parts[1]) == 6  # HHMMSS
+        assert len(parts[2]) == 4  # random suffix
 
     def test_save_empty_returns_empty(self, store: SessionStore) -> None:
         sid = store.save_session([], time.time())
@@ -148,8 +149,10 @@ class TestSessionStore:
 
     def test_save_caps_at_max_messages(self, store: SessionStore) -> None:
         # store has max_messages=10
-        msgs = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
-                for i in range(20)]
+        msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(20)
+        ]
         sid = store.save_session(msgs, time.time())
         loaded = store.load_session(sid)
         assert len(loaded) == 10
@@ -232,9 +235,7 @@ class TestSessionStore:
                 {"role": "assistant", "content": "also good"},
             ],
         }
-        (store.sessions_dir / f"{sid}.json").write_text(
-            json.dumps(payload), encoding="utf-8"
-        )
+        (store.sessions_dir / f"{sid}.json").write_text(json.dumps(payload), encoding="utf-8")
         loaded = store.load_session(sid)
         assert len(loaded) == 2
         assert loaded[0]["content"] == "good"
@@ -259,8 +260,7 @@ class TestFormatSessionTime:
         result = _format_session_time(time.time() - 3 * 86400)
         # Should be a weekday name
         assert any(
-            result.startswith(day)
-            for day in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+            result.startswith(day) for day in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
         )
 
 
@@ -280,7 +280,7 @@ async def mock_daemon_server(tmp_path: Path):
             if not raw:
                 break
             msg = json.loads(raw.decode())
-            req_id = msg.get("id", "")
+            req_id = msg.get("req_id", "")
             msg_type = msg.get("type", "")
 
             if msg_type == "ping":
@@ -321,6 +321,19 @@ async def mock_daemon_server(tmp_path: Path):
                 }
             elif msg_type == "load_session":
                 resp = {"type": "session_loaded", "req_id": req_id, "message_count": 5}
+            elif msg_type == "reset_session":
+                resp = {"type": "session_reset", "req_id": req_id, "cleared_messages": 3}
+            elif msg_type == "runtime_info":
+                resp = {
+                    "type": "runtime_info_response",
+                    "req_id": req_id,
+                    "status": {"name": "Gwenn", "total_interactions": 7},
+                    "skills": [{"name": "weather", "category": "information"}],
+                    "mcp": {"configured_servers": 1, "connected_servers": 1, "discovered_tools": 2},
+                    "tools": {"registered": 10, "enabled": 9},
+                    "configured_mcp_servers": [{"name": "docs"}],
+                    "active_connections": 1,
+                }
             elif msg_type == "stop":
                 resp = {"type": "ack_stop", "req_id": req_id}
                 line = json.dumps(resp) + "\n"
@@ -410,6 +423,25 @@ class TestCliChannel:
         assert count == 5
         await channel.disconnect()
 
+    async def test_reset_session(self, mock_daemon_server: Path) -> None:
+        from gwenn.channels.cli_channel import CliChannel
+
+        channel = CliChannel()
+        await channel.connect(mock_daemon_server)
+        cleared = await channel.reset_session()
+        assert cleared == 3
+        await channel.disconnect()
+
+    async def test_get_runtime_info(self, mock_daemon_server: Path) -> None:
+        from gwenn.channels.cli_channel import CliChannel
+
+        channel = CliChannel()
+        await channel.connect(mock_daemon_server)
+        resp = await channel.get_runtime_info()
+        assert resp["type"] == "runtime_info_response"
+        assert resp["skills"][0]["name"] == "weather"
+        await channel.disconnect()
+
     async def test_stop_daemon(self, mock_daemon_server: Path) -> None:
         from gwenn.channels.cli_channel import CliChannel
 
@@ -427,7 +459,7 @@ class TestCliChannel:
         async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             raw = await reader.readline()
             msg = json.loads(raw.decode())
-            req_id = msg.get("id", "")
+            req_id = msg.get("req_id", "")
             if msg.get("auth_token") != "secret":
                 resp = {"type": "error", "req_id": req_id, "message": "unauthorized"}
             else:
@@ -478,6 +510,7 @@ class TestGwennDaemonDispatch:
         agent = MagicMock()
         agent.respond = AsyncMock(return_value="test response")
         agent.affect_state.current_emotion.value = "curious"
+        agent.safety.emergency_stop = MagicMock()
         agent.status = {
             "name": "Gwenn",
             "emotion": "curious",
@@ -489,6 +522,16 @@ class TestGwennDaemonDispatch:
             "beat_count": 10,
             "current_interval": 30.0,
         }
+        agent.skill_registry.all_skills.return_value = [
+            SimpleNamespace(name="weather", category="information"),
+        ]
+        agent._mcp_client.stats = {
+            "configured_servers": 1,
+            "connected_servers": 1,
+            "discovered_tools": 2,
+        }
+        agent.tool_registry.count = 12
+        agent.tool_registry.enabled_count = 11
         return agent
 
     @pytest.fixture
@@ -512,6 +555,8 @@ class TestGwennDaemonDispatch:
             d._session_redactor = MagicMock()
             d._session_redactor.redact = lambda text: text
             d._session_store = SessionStore(d._sessions_dir)
+            d._channel_task = None
+            d._agent_respond_lock = asyncio.Lock()
             return d
 
     async def test_ping(self, daemon) -> None:
@@ -520,18 +565,14 @@ class TestGwennDaemonDispatch:
 
     async def test_chat(self, daemon, mock_agent) -> None:
         history = []
-        resp = await daemon._dispatch(
-            "chat", {"type": "chat", "text": "hello"}, history, "r2"
-        )
+        resp = await daemon._dispatch("chat", {"type": "chat", "text": "hello"}, history, "r2")
         assert resp["type"] == "response"
         assert resp["text"] == "test response"
         assert resp["emotion"] == "curious"
         mock_agent.respond.assert_called_once_with("hello", conversation_history=history)
 
     async def test_chat_empty_text(self, daemon) -> None:
-        resp = await daemon._dispatch(
-            "chat", {"type": "chat", "text": ""}, [], "r3"
-        )
+        resp = await daemon._dispatch("chat", {"type": "chat", "text": ""}, [], "r3")
         assert resp["type"] == "error"
 
     async def test_status(self, daemon) -> None:
@@ -590,10 +631,28 @@ class TestGwennDaemonDispatch:
         assert resp["type"] == "error"
         assert "invalid session id" in resp["message"]
 
+    async def test_reset_session(self, daemon) -> None:
+        history = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ]
+        resp = await daemon._dispatch("reset_session", {"type": "reset_session"}, history, "r8c")
+        assert resp["type"] == "session_reset"
+        assert resp["cleared_messages"] == 2
+        assert history == []
+
+    async def test_runtime_info(self, daemon) -> None:
+        resp = await daemon._dispatch("runtime_info", {"type": "runtime_info"}, [], "r8d")
+        assert resp["type"] == "runtime_info_response"
+        assert "skills" in resp
+        assert "mcp" in resp
+        assert "tools" in resp
+
     async def test_stop(self, daemon) -> None:
         resp = await daemon._dispatch("stop", {"type": "stop"}, [], "r9")
         assert resp["type"] == "ack_stop"
         assert daemon._shutdown_event.is_set()
+        daemon._agent.safety.emergency_stop.assert_called_once_with("daemon_stop_requested")
 
     async def test_unknown_type(self, daemon) -> None:
         resp = await daemon._dispatch("banana", {"type": "banana"}, [], "r10")
@@ -633,7 +692,9 @@ class TestGwennDaemonDispatch:
         writer.wait_closed.assert_awaited_once()
         assert daemon._active_connections == 2
 
-    async def test_dispatch_loop_honors_idle_timeout(self, daemon, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_dispatch_loop_honors_idle_timeout(
+        self, daemon, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         daemon._connection_timeout = 1.0
 
         async def _wait_for_timeout(coro, timeout):
@@ -652,3 +713,59 @@ class TestGwennDaemonDispatch:
 
         # Should stop after timeout budget, not spin forever.
         assert elapsed < 2.0
+
+    async def test_run_platform_channels_rolls_back_partial_start(
+        self, daemon, monkeypatch
+    ) -> None:
+        import gwenn.channels.discord_channel as dc_mod
+        import gwenn.channels.telegram_channel as tg_mod
+        import gwenn.config as config_mod
+
+        events: list[str] = []
+
+        class _Cfg:
+            def __init__(self, max_history_length=10, session_ttl_seconds=120.0):
+                self.max_history_length = max_history_length
+                self.session_ttl_seconds = session_ttl_seconds
+
+        class _Telegram:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def start(self):
+                events.append("telegram:start")
+
+            async def stop(self):
+                events.append("telegram:stop")
+
+        class _Discord:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def start(self):
+                events.append("discord:start")
+                raise RuntimeError("discord failed")
+
+            async def stop(self):
+                events.append("discord:stop")
+
+        monkeypatch.setattr(config_mod, "TelegramConfig", lambda: _Cfg(max_history_length=10))
+        monkeypatch.setattr(
+            config_mod,
+            "DiscordConfig",
+            lambda: _Cfg(max_history_length=20, session_ttl_seconds=300.0),
+        )
+        monkeypatch.setattr(tg_mod, "TelegramChannel", _Telegram)
+        monkeypatch.setattr(dc_mod, "DiscordChannel", _Discord)
+
+        with pytest.raises(RuntimeError, match="discord failed"):
+            await daemon._run_platform_channels(["telegram", "discord"])
+
+        assert events == ["telegram:start", "discord:start", "telegram:stop"]
+
+    async def test_channel_task_failure_sets_shutdown_event(self, daemon) -> None:
+        loop = asyncio.get_running_loop()
+        task = loop.create_future()
+        task.set_exception(RuntimeError("boom"))
+        daemon._on_channel_task_done(task)
+        assert daemon._shutdown_event.is_set()

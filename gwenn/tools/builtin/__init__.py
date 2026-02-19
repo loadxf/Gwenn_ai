@@ -606,9 +606,22 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
                 },
                 "risk_level": {
                     "type": "string",
-                    "enum": ["low", "medium"],
-                    "description": "Risk level. Use 'medium' if the skill makes network requests or modifies data.",
+                    "enum": ["low", "medium", "high", "critical"],
+                    "description": (
+                        "Risk level for safety gating. Use medium for network/data touches, "
+                        "high for sensitive actions requiring approval, "
+                        "critical for dangerous capabilities that should be denied by default."
+                    ),
                     "default": "low",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional list of keyword tags for discoverability in the SKILLS.md catalog. "
+                        "Good tags describe triggers and related concepts (e.g. ['weather', 'forecast', 'temperature'])."
+                    ),
+                    "default": [],
                 },
             },
             "required": ["name", "description", "instructions"],
@@ -616,6 +629,87 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         handler=None,
         risk_level="low",
         category="skills",
+    ))
+
+    registry.register(ToolDefinition(
+        name="delete_skill",
+        description=(
+            "Delete a skill by name, unregistering it immediately and removing its file. "
+            "Use when a skill is no longer needed, has been superseded, or was created in error. "
+            "The skill will be unavailable in the current session without restarting."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The exact snake_case name of the skill to delete.",
+                },
+            },
+            "required": ["name"],
+        },
+        handler=None,
+        risk_level="medium",
+        category="skills",
+    ))
+
+    registry.register(ToolDefinition(
+        name="reload_skills",
+        description=(
+            "Scan the skills directory for new .md files and load them without restarting. "
+            "Already-loaded skills are left unchanged — to update an existing skill, "
+            "use `delete_skill` first, then `reload_skills`. "
+            "Use this after manually dropping a skill file into the gwenn_skills/ directory."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {},
+        },
+        handler=None,
+        risk_level="low",
+        category="skills",
+    ))
+
+    registry.register(ToolDefinition(
+        name="search_knowledge",
+        description=(
+            "Search Gwenn's semantic knowledge graph — the structured facts and concepts "
+            "accumulated across all conversations. Unlike `recall` (which searches episodic "
+            "memories of specific events), this searches the knowledge graph of generalised "
+            "facts, beliefs, and relationships. Use this to look up what Gwenn knows about a "
+            "concept, person, topic, or relationship rather than recalling a specific episode."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to search for — a concept, label, or description.",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Optional category filter (e.g. 'person', 'concept', 'relationship').",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of knowledge nodes to return.",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 5,
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "description": "Minimum confidence threshold (0.0–1.0). Default 0.2.",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.2,
+                },
+            },
+            "required": ["query"],
+        },
+        handler=None,
+        risk_level="low",
+        category="memory",
     ))
 
     registry.register(ToolDefinition(

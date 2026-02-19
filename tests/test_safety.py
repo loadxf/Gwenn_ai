@@ -27,6 +27,11 @@ def _guard(
     sandbox: bool = True,
     default_policy: str = "allow",
     allowed_tools: list[str] | None = None,
+    max_input_tokens: int = 0,
+    max_output_tokens: int = 0,
+    max_api_calls: int = 0,
+    max_model_calls_per_second: int = 0,
+    max_model_calls_per_minute: int = 0,
 ) -> SafetyGuard:
     """Build a SafetyGuard with the given config, no ANTHROPIC_API_KEY needed.
 
@@ -39,6 +44,11 @@ def _guard(
         GWENN_SANDBOX_ENABLED=sandbox,
         GWENN_TOOL_DEFAULT_POLICY=default_policy,
         GWENN_ALLOWED_TOOLS=allowed_tools or [],
+        GWENN_MAX_INPUT_TOKENS=max_input_tokens,
+        GWENN_MAX_OUTPUT_TOKENS=max_output_tokens,
+        GWENN_MAX_API_CALLS=max_api_calls,
+        GWENN_MAX_MODEL_CALLS_PER_SECOND=max_model_calls_per_second,
+        GWENN_MAX_MODEL_CALLS_PER_MINUTE=max_model_calls_per_minute,
     )
     return SafetyGuard(cfg)
 
@@ -161,6 +171,13 @@ class TestIterationLimits:
         result = guard.pre_check(messages=[])
         assert result.allowed is False
 
+    def test_emergency_stop_blocks_tool_calls(self):
+        guard = _guard()
+        guard.emergency_stop("test emergency")
+        result = guard.check_tool_call("read_file", {"path": "/tmp/a"})
+        assert result.allowed is False
+        assert "Emergency stop active" in result.reason
+
 
 # ---------------------------------------------------------------------------
 # Budget enforcement
@@ -221,6 +238,12 @@ class TestBudgetEnforcement:
         assert guard._budget.total_output_tokens == 150
         assert guard._budget.total_api_calls == 2
 
+    def test_budget_limits_loaded_from_config(self):
+        guard = _guard(max_input_tokens=111, max_output_tokens=222, max_api_calls=7)
+        assert guard._budget.max_input_tokens == 111
+        assert guard._budget.max_output_tokens == 222
+        assert guard._budget.max_api_calls == 7
+
     def test_pre_check_blocks_when_budget_exceeded(self):
         guard = _guard()
         guard._budget.max_input_tokens = 100
@@ -228,6 +251,32 @@ class TestBudgetEnforcement:
         result = guard.pre_check(messages=[])
         assert result.allowed is False
         assert "budget" in result.reason.lower() or "token" in result.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# Model-call guardrails (budget/rate/kill switch)
+# ---------------------------------------------------------------------------
+
+class TestModelCallSafety:
+    def test_model_call_blocks_when_api_call_budget_reached(self):
+        guard = _guard(max_api_calls=2)
+        guard.update_budget(1, 1)
+        guard.update_budget(1, 1)
+        result = guard.check_model_call()
+        assert result.allowed is False
+        assert "API call budget reached" in result.reason
+
+    def test_model_call_rate_limit_returns_retry_after(self, monkeypatch):
+        guard = _guard(max_model_calls_per_second=1)
+        timeline = iter([10.0, 10.1])
+        monkeypatch.setattr("gwenn.harness.safety.time.monotonic", lambda: next(timeline))
+
+        first = guard.check_model_call()
+        assert first.allowed is True
+
+        second = guard.check_model_call()
+        assert second.allowed is False
+        assert second.retry_after_seconds > 0
 
 
 # ---------------------------------------------------------------------------

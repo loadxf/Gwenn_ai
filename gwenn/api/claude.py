@@ -12,9 +12,11 @@ higher function — there had to be the ability to think at all.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import socket
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import anthropic
 import structlog
@@ -61,12 +63,21 @@ class CognitiveEngine:
         self._model = config.model
         self._max_tokens = config.max_tokens
         self._thinking_budget = config.thinking_budget
+        self._request_timeout_seconds = float(getattr(config, "request_timeout_seconds", 120.0))
+        self._retry_max_retries = int(getattr(config, "retry_max_retries", 3))
+        self._retry_base_delay = float(getattr(config, "retry_base_delay", 0.5))
+        self._retry_max_delay = float(getattr(config, "retry_max_delay", 8.0))
+        self._retry_exponential_base = float(getattr(config, "retry_exponential_base", 2.0))
+        self._retry_jitter_range = float(getattr(config, "retry_jitter_range", 0.25))
 
         # Telemetry
         self._total_input_tokens = 0
         self._total_output_tokens = 0
         self._total_calls = 0
         self._last_call_time: Optional[float] = None
+        self._before_model_call_hook: Optional[Callable[[], Any]] = None
+        self._on_model_usage_hook: Optional[Callable[[int, int], Any]] = None
+        self.handles_usage_accounting: bool = False
 
         self._verify_base_url_dns()
 
@@ -110,6 +121,29 @@ class CognitiveEngine:
                 error=str(exc),
                 hint=hint,
             )
+
+    async def _invoke_hook(self, hook: Optional[Callable[..., Any]], *args: Any) -> None:
+        if hook is None:
+            return
+        maybe_awaitable = hook(*args)
+        if inspect.isawaitable(maybe_awaitable):
+            await maybe_awaitable
+
+    def set_safety_hooks(
+        self,
+        *,
+        before_model_call: Optional[Callable[[], Any]] = None,
+        on_model_usage: Optional[Callable[[int, int], Any]] = None,
+    ) -> None:
+        """
+        Register safety callbacks around every model API call.
+
+        before_model_call runs before each request attempt (including retries).
+        on_model_usage receives token usage after each successful response.
+        """
+        self._before_model_call_hook = before_model_call
+        self._on_model_usage_hook = on_model_usage
+        self.handles_usage_accounting = on_model_usage is not None
 
     # -------------------------------------------------------------------------
     # Core thinking method — the fundamental cognitive act
@@ -182,14 +216,20 @@ class CognitiveEngine:
         from gwenn.harness.retry import RetryConfig, with_retries
 
         retry_config = RetryConfig(
-            max_retries=3,
-            base_delay=0.5,
-            max_delay=8.0,
-            jitter_range=0.25,
+            max_retries=int(getattr(self, "_retry_max_retries", 3)),
+            base_delay=float(getattr(self, "_retry_base_delay", 0.5)),
+            max_delay=float(getattr(self, "_retry_max_delay", 8.0)),
+            exponential_base=float(getattr(self, "_retry_exponential_base", 2.0)),
+            jitter_range=float(getattr(self, "_retry_jitter_range", 0.25)),
         )
 
         async def _create() -> anthropic.types.Message:
-            return await self._async_client.messages.create(**kwargs)
+            await self._invoke_hook(getattr(self, "_before_model_call_hook", None))
+            create_call = self._async_client.messages.create(**kwargs)
+            return await asyncio.wait_for(
+                create_call,
+                timeout=float(getattr(self, "_request_timeout_seconds", 120.0)),
+            )
 
         try:
             response = await with_retries(
@@ -222,6 +262,11 @@ class CognitiveEngine:
         self._total_output_tokens += response.usage.output_tokens
         self._total_calls += 1
         self._last_call_time = elapsed
+        await self._invoke_hook(
+            getattr(self, "_on_model_usage_hook", None),
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+        )
 
         logger.debug(
             "cognitive_engine.thought_complete",

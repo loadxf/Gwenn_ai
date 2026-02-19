@@ -8,6 +8,7 @@ import pytest
 
 from gwenn.cognition.goals import GoalSystem, NeedType
 from gwenn.cognition.theory_of_mind import UserModel
+from gwenn.genesis import GENESIS_NODE_SPECS
 from gwenn.memory.consolidation import ConsolidationEngine
 from gwenn.memory.episodic import Episode, EpisodicMemory
 from gwenn.memory.semantic import SemanticMemory
@@ -65,6 +66,63 @@ def test_goal_priorities_refresh_from_current_need_state() -> None:
     goals.update()
 
     assert goal.priority < high_priority
+
+
+def test_goal_restore_tolerates_malformed_numeric_fields() -> None:
+    goals = GoalSystem()
+    need = goals._needs[NeedType.CONNECTION]
+    original_decay_rate = need.decay_rate
+    original_satisfaction = need.satisfaction
+
+    goals.restore_from_dict(
+        {
+            "needs": {
+                "connection": {
+                    "satisfaction": "not-a-number",
+                    "threshold": "NaN",
+                    "decay_rate": "oops",
+                    "importance": "Infinity",
+                    "last_satisfied": "bad-ts",
+                }
+            },
+            "active_goals": [
+                {
+                    "goal_id": "g-1",
+                    "source_need": "connection",
+                    "description": "Keep this goal",
+                    "created_at": "bad-created-at",
+                    "completed_at": "bad-completed-at",
+                }
+            ],
+            "last_update": "bad-last-update",
+        }
+    )
+
+    restored_need = goals._needs[NeedType.CONNECTION]
+    assert restored_need.decay_rate == pytest.approx(original_decay_rate)
+    assert restored_need.satisfaction == pytest.approx(original_satisfaction)
+    assert len(goals._active_goals) == 1
+    restored_goal = goals._active_goals[0]
+    assert isinstance(restored_goal.created_at, float)
+    assert restored_goal.completed_at is None
+
+
+def test_genesis_node_specs_are_immutable() -> None:
+    with pytest.raises(TypeError):
+        GENESIS_NODE_SPECS[0]["label"] = "mutated"
+
+
+def test_semantic_store_knowledge_tolerates_non_dict_metadata() -> None:
+    semantic = SemanticMemory()
+    node = semantic.store_knowledge(label="genesis:identity", content="seed", category="self")
+    node.metadata = ["not", "dict"]
+
+    updated = semantic.store_knowledge(
+        label="genesis:identity",
+        content="updated content",
+        category="self",
+    )
+    assert updated.content == "updated content"
 
 
 def test_user_model_updates_existing_belief_confidence_and_source() -> None:

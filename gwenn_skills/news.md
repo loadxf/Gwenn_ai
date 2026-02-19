@@ -25,19 +25,21 @@ Fetches and presents the latest {count} news headlines about **{topic}**.
 
 ## Steps
 
-1. Call `fetch_url` with URL: `https://news.google.com/rss/search?q={topic}&hl=en-GB&gl=GB&ceid=GB:en`
+1. URL-encode the topic before embedding it in the URL: replace spaces with `+` and percent-encode special characters (`&` → `%26`, `#` → `%23`, `=` → `%3D`, etc.). For example, `"AI & climate"` becomes `"AI+%26+climate"`.
+
+2. Call `fetch_url` with URL: `https://news.google.com/rss/search?q=<url-encoded-topic>&hl=en-GB&gl=GB&ceid=GB:en`
    - Returns an RSS/XML feed of recent Google News results
    - Look for `<item>` elements — each contains `<title>`, `<pubDate>`, and `<link>`
 
-2. Parse up to **{count}** items from the feed:
+3. Parse up to **{count}** items from the feed:
    - Extract the `<title>` content (strip surrounding CDATA markers if present)
    - Extract the `<pubDate>` for recency context
    - Extract the source name if present (often appended to the title after ` - `)
 
-3. If the Google News feed is unavailable or returns no results, fall back to:
+4. If the Google News feed is unavailable or returns no results, fall back to:
    `https://feeds.bbci.co.uk/news/rss.xml` (BBC World News — no topic filtering)
 
-4. Present the headlines in a clean numbered list. After the list, add 1–2 sentences summarising the dominant theme or story across the results.
+5. Present the headlines in a clean numbered list. After the list, add 1–2 sentences summarising the dominant theme or story across the results.
 
 ## Output format
 

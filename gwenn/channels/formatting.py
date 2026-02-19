@@ -9,11 +9,95 @@ last resort.
 
 from __future__ import annotations
 
+import html as _html_mod
 import re
 from typing import Any
 
 TELEGRAM_MAX_LEN: int = 4096
 DISCORD_MAX_LEN: int = 2000
+
+# Markdown is split *before* HTML conversion. HTML tags, entity escaping
+# (& → &amp;), and <pre>/<code> wrappers expand the text.  We split at a
+# reduced limit so converted chunks stay within TELEGRAM_MAX_LEN.
+_TELEGRAM_SPLIT_LEN: int = 3800
+
+# Telegram parse mode used with every bot.send_message / reply_text call that
+# delivers Gwenn's AI-generated responses. HTML is more robust than MarkdownV2
+# because it doesn't require escaping every punctuation character and handles
+# code blocks, bold and italic without ambiguity with bullet-list asterisks.
+TELEGRAM_PARSE_MODE: str = "HTML"
+
+# ── Compiled regexes for markdown → Telegram HTML conversion ─────────────────
+
+_FENCE_RE = re.compile(r"```([^\n`]*)\n(.*?)```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+# Underscore italic only — single-star italic is ambiguous with bullet lists.
+_ITALIC_RE = re.compile(r"(?<![_\w])_([^_\n]+)_(?![_\w])")
+_HEADER_RE = re.compile(r"^#{1,6} (.+)$", re.MULTILINE)
+
+
+def markdown_to_telegram_html(text: str) -> str:
+    """
+    Convert Claude markdown output to Telegram-compatible HTML.
+
+    Processing order:
+      1. Extract fenced code blocks → <pre language="…">…</pre>  (HTML-escaped)
+      2. Extract inline code        → <code>…</code>             (HTML-escaped)
+      3. HTML-escape all remaining plain text
+      4. Convert **bold** → <b>…</b>
+      5. Convert _italic_ → <i>…</i>   (underscore form only)
+      6. Convert ## headings → <b>…</b>
+      7. Restore extracted code blocks
+
+    Sentinels (\\x02N\\x03) protect code from HTML-escaping and markdown
+    regex passes. They survive html.escape() because \\x02/\\x03 are not
+    HTML-special characters.
+    """
+    sentinel_map: dict[str, str] = {}
+    counter = [0]
+
+    def _sentinel() -> str:
+        key = f"\x02{counter[0]}\x03"
+        counter[0] += 1
+        return key
+
+    def _fence_repl(m: re.Match) -> str:
+        lang = m.group(1).strip()
+        code = _html_mod.escape(m.group(2))
+        # Use <pre language="X"> instead of <pre><code class="language-X">
+        # to avoid spaces inside tags — the second-pass whitespace split in
+        # format_for_telegram could otherwise break a <code class=...> tag.
+        # Telegram accepts language= on <pre> but doesn't highlight either way.
+        block = f'<pre language="{lang}">{code}</pre>' if lang else f"<pre>{code}</pre>"
+        key = _sentinel()
+        sentinel_map[key] = block
+        return key
+
+    def _inline_repl(m: re.Match) -> str:
+        code = _html_mod.escape(m.group(1))
+        span = f"<code>{code}</code>"
+        key = _sentinel()
+        sentinel_map[key] = span
+        return key
+
+    # Phase 1 — protect code from further processing.
+    text = _FENCE_RE.sub(_fence_repl, text)
+    text = _INLINE_CODE_RE.sub(_inline_repl, text)
+
+    # Phase 2 — HTML-escape all remaining plain text.
+    text = _html_mod.escape(text)
+
+    # Phase 3 — convert markdown formatting to HTML tags.
+    text = _BOLD_RE.sub(lambda m: f"<b>{m.group(1)}</b>", text)
+    text = _ITALIC_RE.sub(lambda m: f"<i>{m.group(1)}</i>", text)
+    text = _HEADER_RE.sub(lambda m: f"<b>{m.group(1)}</b>", text)
+
+    # Phase 4 — restore protected blocks.
+    for key, block in sentinel_map.items():
+        text = text.replace(key, block)
+
+    return text
 
 
 def split_message(text: str, max_len: int) -> list[str]:
@@ -51,10 +135,10 @@ def _iterative_split(text: str, max_len: int, out: list[str]) -> None:
     limit for very long inputs with no natural break points.
     """
     _PATTERNS = [
-        r"\n\n",           # Paragraph break
-        r"\n",             # Single newline
+        r"\n\n",  # Paragraph break
+        r"\n",  # Single newline
         r"(?<=[.!?])\s+",  # Sentence boundary
-        r"\s+",            # Word boundary
+        r"\s+",  # Word boundary
     ]
     while text:
         if len(text) <= max_len:
@@ -63,14 +147,14 @@ def _iterative_split(text: str, max_len: int, out: list[str]) -> None:
 
         split_pos = None
         for pattern in _PATTERNS:
-            split_pos = _find_split(text, max_len, pattern)
-            if split_pos is not None:
+            pos = _find_split(text, max_len, pattern)
+            # Reject zero-length heads — they'd lose the delimiter and stall.
+            if pos is not None and pos > 0:
+                split_pos = pos
                 break
 
         if split_pos is not None:
-            head = text[:split_pos]
-            if head:
-                out.append(head)
+            out.append(text[:split_pos])
             text = text[split_pos:]
         else:
             # Hard truncation — no suitable break point found
@@ -94,9 +178,69 @@ def _find_split(text: str, max_len: int, pattern: str) -> int | None:
     return best
 
 
+def _find_safe_html_split(html: str, max_len: int) -> int | None:
+    """Find a split position in *html* that does not break inside an HTML tag.
+
+    Scans backwards from *max_len* looking for whitespace that is outside
+    any ``<…>`` tag.  Returns the position after the whitespace (start of
+    remainder), or None if no safe split point exists.
+    """
+    # Walk backwards from max_len to find whitespace that isn't inside a tag.
+    # We determine "inside a tag" by scanning forward up to the candidate
+    # position and tracking open '<' vs '>'.
+    # For efficiency, pre-compute the last '>' before each position.
+    pos = max_len
+    while pos > 0:
+        if html[pos - 1] in (" ", "\n", "\t"):
+            # Check that this position is not inside an HTML tag by looking
+            # for the nearest '<' and '>' before this position.
+            last_lt = html.rfind("<", 0, pos)
+            last_gt = html.rfind(">", 0, pos)
+            if last_lt <= last_gt:
+                # The most recent '<' was closed by a '>', so we're outside a tag.
+                return pos
+            # Inside a tag — keep searching backwards.
+        pos -= 1
+    return None
+
+
 def format_for_telegram(text: str) -> list[str]:
-    """Return *text* split into chunks suitable for the Telegram Bot API."""
-    return split_message(text, TELEGRAM_MAX_LEN)
+    """
+    Return *text* split into Telegram-sized chunks, each converted to HTML.
+
+    Two-pass approach:
+      1. Split raw markdown at ``_TELEGRAM_SPLIT_LEN`` so most chunks convert
+         to HTML within ``TELEGRAM_MAX_LEN``.
+      2. Convert each chunk to HTML.
+      3. If HTML expansion (entity escaping, tags) still pushes a chunk over
+         the limit, re-split using a tag-aware splitter that ensures split
+         points never fall inside an ``<…>`` tag.
+    """
+    md_chunks = split_message(text, _TELEGRAM_SPLIT_LEN)
+    result: list[str] = []
+    for md_chunk in md_chunks:
+        html = markdown_to_telegram_html(md_chunk)
+        if len(html) <= TELEGRAM_MAX_LEN:
+            result.append(html)
+        else:
+            _split_html_safe(html, TELEGRAM_MAX_LEN, result)
+    return result
+
+
+def _split_html_safe(html: str, max_len: int, out: list[str]) -> None:
+    """Split HTML text into chunks without breaking inside tags."""
+    while html:
+        if len(html) <= max_len:
+            out.append(html)
+            return
+        pos = _find_safe_html_split(html, max_len)
+        if pos is not None and pos > 0:
+            out.append(html[:pos])
+            html = html[pos:]
+        else:
+            # No safe split found — fall back to hard truncation.
+            out.append(html[:max_len])
+            html = html[max_len:]
 
 
 def format_for_discord(text: str) -> list[str]:
@@ -156,11 +300,7 @@ def describe_stress_guardrail(resilience: dict[str, Any]) -> str:
 
 def render_status_text(status: dict[str, Any], markdown_heading: bool = False) -> str:
     """Render a user-friendly status summary for channel commands."""
-    title = (
-        f"**{status['name']}** — Status"
-        if markdown_heading
-        else f"{status['name']} — Status"
-    )
+    title = f"**{status['name']}** — Status" if markdown_heading else f"{status['name']} — Status"
     mood = describe_mood(status["emotion"], status["valence"], status["arousal"])
     focus = describe_focus_load(status["working_memory_load"])
     stress = describe_stress_guardrail(status["resilience"])
@@ -178,10 +318,16 @@ def render_status_text(status: dict[str, Any], markdown_heading: bool = False) -
 def render_heartbeat_text(hb: dict[str, Any], markdown_heading: bool = False) -> str:
     """Render heartbeat status text for channel commands."""
     title = "**Heartbeat Status**" if markdown_heading else "Heartbeat Status"
+    circuit_open = bool(hb.get("circuit_open"))
+    recovery = float(hb.get("circuit_recovery_in", 0.0))
+    circuit_text = "open" if circuit_open else "closed"
+    if circuit_open:
+        circuit_text = f"open (recovering in {recovery:.1f}s)"
     return (
         f"{title}\n"
         f"Running: {hb['running']}\n"
         f"Beat count: {hb['beat_count']}\n"
         f"Current interval: {hb['current_interval']}s\n"
-        f"Beats since consolidation: {hb['beats_since_consolidation']}"
+        f"Beats since consolidation: {hb['beats_since_consolidation']}\n"
+        f"Circuit breaker: {circuit_text}"
     )

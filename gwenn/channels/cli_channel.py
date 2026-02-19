@@ -13,12 +13,16 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Type alias for server-push event handlers.
+ServerPushHandler = Callable[[dict[str, Any]], None]
 
 
 class DaemonNotRunningError(Exception):
@@ -36,11 +40,16 @@ class CliChannel:
         await channel.disconnect()
     """
 
-    def __init__(self, auth_token: str | None = None) -> None:
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
-        self._socket_path: Optional[Path] = None
+    def __init__(
+        self,
+        auth_token: str | None = None,
+        on_server_push: ServerPushHandler | None = None,
+    ) -> None:
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._socket_path: Path | None = None
         self._auth_token = auth_token
+        self._on_server_push = on_server_push
 
     async def connect(self, socket_path: Path) -> None:
         """
@@ -102,6 +111,15 @@ class CliChannel:
         resp = await self._request({"type": "load_session", "session_id": session_id})
         return resp.get("message_count", 0)
 
+    async def reset_session(self) -> int:
+        """Clear this connection's in-memory conversation history on the daemon."""
+        resp = await self._request({"type": "reset_session"})
+        return int(resp.get("cleared_messages", 0))
+
+    async def get_runtime_info(self) -> dict[str, Any]:
+        """Request runtime metadata used by advanced slash commands."""
+        return await self._request({"type": "runtime_info"})
+
     async def stop_daemon(self) -> dict[str, Any]:
         """Send graceful stop request to daemon."""
         return await self._request({"type": "stop"})
@@ -110,13 +128,16 @@ class CliChannel:
     # Internal transport
     # ------------------------------------------------------------------
 
+    # Default timeout for a single request/response round-trip (seconds).
+    _REQUEST_TIMEOUT: float = 120.0
+
     async def _request(self, payload: dict) -> dict[str, Any]:
-        """Send a JSON request and await the response."""
+        """Send a JSON request and await the response with a timeout."""
         if not self._reader or not self._writer:
             raise RuntimeError("CliChannel is not connected")
 
         req_id = uuid.uuid4().hex[:8]
-        payload["id"] = req_id
+        payload["req_id"] = req_id
         if self._auth_token:
             payload["auth_token"] = self._auth_token
 
@@ -124,7 +145,23 @@ class CliChannel:
         self._writer.write(line.encode("utf-8"))
         await self._writer.drain()
 
-        # Read until we get a response for our req_id
+        try:
+            return await asyncio.wait_for(
+                self._read_response(req_id),
+                timeout=self._REQUEST_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"Daemon did not respond within {self._REQUEST_TIMEOUT}s (req_id={req_id})"
+            )
+
+    async def _read_response(self, req_id: str) -> dict[str, Any]:
+        """Read lines from the socket until a message matching req_id arrives.
+
+        Non-matching messages (server-initiated events like proactive messages
+        or heartbeat notifications) are dispatched to the ``on_server_push``
+        callback if one was provided, otherwise logged and discarded.
+        """
         while True:
             raw = await self._reader.readline()
             if not raw:
@@ -136,3 +173,14 @@ class CliChannel:
                 continue
             if msg.get("req_id") == req_id:
                 return msg
+            # Server-push message — dispatch or log.
+            if self._on_server_push is not None:
+                try:
+                    self._on_server_push(msg)
+                except Exception:
+                    logger.debug("cli_channel.server_push_handler_error", exc_info=True)
+            else:
+                logger.debug(
+                    "cli_channel.server_push_ignored",
+                    msg_type=msg.get("type"),
+                )

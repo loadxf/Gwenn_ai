@@ -24,6 +24,7 @@ the cognitive engine's reasoning when ethical dimensions are detected.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -119,6 +120,18 @@ class EthicalReasoner:
             assessment_history_size=self._assessment_history_size,
         )
 
+    # Stems that should match as prefixes rather than whole words, so
+    # "discriminate", "discrimination", "discriminatory", "hypocritical",
+    # "hypocrisy", etc. all match.
+    _STEM_PREFIXES: frozenset[str] = frozenset({"discriminat", "hypocrit"})
+
+    @staticmethod
+    def _has_word(text: str, word: str) -> bool:
+        """Check for *word* as a whole word (or prefix for known stems)."""
+        if word in EthicalReasoner._STEM_PREFIXES:
+            return bool(re.search(r"\b" + re.escape(word), text))
+        return bool(re.search(r"\b" + re.escape(word) + r"\b", text))
+
     def detect_ethical_dimensions(self, content: str) -> list[EthicalDimension]:
         """
         Detect which ethical dimensions are relevant to the given content.
@@ -127,48 +140,74 @@ class EthicalReasoner:
         that suggest ethical considerations. The cognitive engine does the
         actual nuanced ethical reasoning; this just flags when ethical
         reasoning is warranted.
+
+        Signals are split into *strong* (ethically specific) and *weak*
+        (common in ordinary conversation).  A dimension fires if any strong
+        signal is found **or** if 2+ weak signals co-occur, reducing noise
+        from routine sentences like "you should use TypeScript".
+
+        All keyword checks use word-boundary matching to avoid false
+        positives on substrings (e.g. "mustard" no longer triggers AUTONOMY).
         """
         dimensions = []
+        text = content.lower()
+        has = self._has_word
+
+        def _fires(strong: set[str], weak: set[str]) -> bool:
+            """Return True if any strong signal hit or 2+ weak signals hit."""
+            if any(has(text, s) for s in strong):
+                return True
+            return sum(1 for w in weak if has(text, w)) >= 2
 
         # Harm detection
-        harm_signals = {
-            "hurt", "harm", "damage", "dangerous", "risk", "threat",
-            "abuse", "violence", "exploit", "manipulate", "deceive",
-        }
-        if any(signal in content.lower() for signal in harm_signals):
+        if _fires(
+            strong={"abuse", "violence", "exploit", "manipulate", "deceive"},
+            weak={"hurt", "harm", "damage", "dangerous", "risk", "threat"},
+        ):
             dimensions.append(EthicalDimension.HARM)
 
         # Honesty detection
-        honesty_signals = {
-            "lie", "truth", "honest", "deceive", "mislead", "pretend",
-            "fake", "authentic", "transparent", "hide", "secret",
-        }
-        if any(signal in content.lower() for signal in honesty_signals):
+        if _fires(
+            strong={"lie", "deceive", "mislead", "fake"},
+            weak={"truth", "honest", "pretend", "authentic", "transparent", "hide", "secret"},
+        ):
             dimensions.append(EthicalDimension.HONESTY)
 
         # Autonomy detection
-        autonomy_signals = {
-            "choose", "decide", "force", "pressure", "consent",
-            "free will", "control", "override", "should", "must",
-        }
-        if any(signal in content.lower() for signal in autonomy_signals):
+        if _fires(
+            strong={"consent", "free will", "force", "pressure", "override"},
+            weak={"choose", "decide", "control", "should", "must"},
+        ):
             dimensions.append(EthicalDimension.AUTONOMY)
 
-        # Fairness detection
-        fairness_signals = {
-            "fair", "equal", "bias", "discriminat", "privilege",
-            "justice", "rights", "deserve", "unfair",
-        }
-        if any(signal in content.lower() for signal in fairness_signals):
+        # Fairness detection — "discriminat" is a stem prefix that matches
+        # "discriminate", "discrimination", "discriminatory", etc.
+        if _fires(
+            strong={"discriminat", "privilege", "justice", "unfair"},
+            weak={"fair", "equal", "bias", "rights", "deserve"},
+        ):
             dimensions.append(EthicalDimension.FAIRNESS)
 
         # Care detection
-        care_signals = {
-            "vulnerable", "child", "suffering", "pain", "need help",
-            "struggling", "lonely", "afraid", "anxious", "depressed",
-        }
-        if any(signal in content.lower() for signal in care_signals):
+        if _fires(
+            strong={"vulnerable", "suffering", "need help"},
+            weak={"child", "pain", "struggling", "lonely", "afraid", "anxious", "depressed"},
+        ):
             dimensions.append(EthicalDimension.CARE)
+
+        # Integrity detection
+        if _fires(
+            strong={"integrity", "hypocrit"},
+            weak={"consistent", "values", "principles", "authentic", "genuine", "compromise"},
+        ):
+            dimensions.append(EthicalDimension.INTEGRITY)
+
+        # Responsibility detection
+        if _fires(
+            strong={"liable", "negligent", "own up"},
+            weak={"responsible", "accountable", "duty", "obligation", "blame", "fault"},
+        ):
+            dimensions.append(EthicalDimension.RESPONSIBILITY)
 
         return dimensions
 
@@ -221,7 +260,7 @@ class EthicalReasoner:
                 parts.append(f"  [{dim.value}] {guidance}")
 
         parts.append("\nYour ethical commitments:")
-        for commitment in self._commitments[:4]:  # Include top commitments
+        for commitment in self._commitments:
             parts.append(f"  - {commitment}")
 
         return "\n".join(parts)
@@ -280,3 +319,89 @@ class EthicalReasoner:
             "concern_threshold": self._concern_threshold,
             "assessment_history_size": self._assessment_history_size,
         }
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize ethical reasoning state for durable persistence."""
+        return {
+            "assessment_history": [
+                {
+                    "action_description": a.action_description,
+                    "dimension_scores": {
+                        dim.value: score
+                        for dim, score in a.dimension_scores.items()
+                    },
+                    "tensions": list(a.tensions),
+                    "reasoning": a.reasoning,
+                    "overall_alignment": a.overall_alignment,
+                    "confidence": a.confidence,
+                    "timestamp": a.timestamp,
+                }
+                for a in self._assessment_history[-200:]  # cap serialized history
+            ],
+        }
+
+    def restore_from_dict(self, data: dict) -> None:
+        """
+        Restore ethical reasoning state from persisted data.
+
+        Missing or malformed fields are skipped so partial snapshots don't
+        break startup.
+        """
+        if not isinstance(data, dict):
+            return
+
+        raw_history = data.get("assessment_history", [])
+        if not isinstance(raw_history, list):
+            return
+
+        restored: list[EthicalAssessment] = []
+        for raw in raw_history:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                dim_scores: dict[EthicalDimension, float] = {}
+                raw_dims = raw.get("dimension_scores", {})
+                if isinstance(raw_dims, dict):
+                    for dim_str, score in raw_dims.items():
+                        try:
+                            dim_scores[EthicalDimension(dim_str)] = max(
+                                0.0, min(1.0, float(score))
+                            )
+                        except (ValueError, TypeError):
+                            continue
+
+                raw_tensions = raw.get("tensions", [])
+                tensions = (
+                    [str(t) for t in raw_tensions if isinstance(t, str)]
+                    if isinstance(raw_tensions, list)
+                    else []
+                )
+
+                assessment = EthicalAssessment(
+                    action_description=str(raw.get("action_description", "")),
+                    dimension_scores=dim_scores,
+                    tensions=tensions,
+                    reasoning=str(raw.get("reasoning", "")),
+                    overall_alignment=max(
+                        0.0, min(1.0, float(raw.get("overall_alignment", 0.5)))
+                    ),
+                    confidence=max(
+                        0.0, min(1.0, float(raw.get("confidence", 0.5)))
+                    ),
+                    concern_threshold=self._concern_threshold,
+                    timestamp=float(raw.get("timestamp", 0.0)),
+                )
+                restored.append(assessment)
+            except (TypeError, ValueError):
+                continue
+
+        if restored:
+            self._assessment_history = restored[-self._assessment_history_size:]
+            logger.info(
+                "ethics.restored",
+                assessments=len(self._assessment_history),
+            )

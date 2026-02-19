@@ -67,7 +67,7 @@ class ToolDefinition:
     description: str
     input_schema: dict[str, Any]          # JSON Schema for tool parameters
     handler: Optional[Callable] = None    # The function to call
-    risk_level: str = "low"               # "low", "medium", "high"
+    risk_level: str = "low"               # "low", "medium", "high", "critical"
     requires_approval: bool = False       # Whether human must approve
     category: str = "general"             # For organizing in UI/logs
     enabled: bool = True                  # Can be disabled without removal
@@ -111,8 +111,21 @@ class ToolRegistry:
         self._tools: dict[str, ToolDefinition] = {}
         logger.info("tool_registry.initialized")
 
-    def register(self, tool: ToolDefinition) -> None:
-        """Register a tool. Replaces any existing tool with the same name."""
+    def register(self, tool: ToolDefinition, *, allow_override: bool = False) -> None:
+        """Register a tool, blocking accidental name collisions by default."""
+        existing = self._tools.get(tool.name)
+        if existing is not None and not allow_override:
+            logger.warning(
+                "tool_registry.name_collision",
+                name=tool.name,
+                existing_category=existing.category,
+                new_category=tool.category,
+            )
+            raise ValueError(
+                f"Tool '{tool.name}' is already registered. "
+                "Use allow_override=True for an explicit replacement."
+            )
+
         self._tools[tool.name] = tool
         logger.info(
             "tool_registry.registered",
@@ -131,18 +144,25 @@ class ToolRegistry:
         category: str = "general",
     ) -> None:
         """Convenience method to register a tool from a function."""
+        # Strip the non-standard "required" key from individual property dicts
+        # (it belongs only in the top-level "required" array, not inside each property).
+        required_params = [k for k, v in parameters.items() if isinstance(v, dict) and v.get("required", False)]
+        clean_properties = {
+            k: {pk: pv for pk, pv in v.items() if pk != "required"}
+            for k, v in parameters.items()
+            if isinstance(v, dict)
+        }
+        input_schema: dict[str, Any] = {"type": "object", "properties": clean_properties}
+        if required_params:
+            input_schema["required"] = required_params
         self.register(ToolDefinition(
             name=name,
             description=description,
-            input_schema={
-                "type": "object",
-                "properties": parameters,
-                "required": [k for k, v in parameters.items() if v.get("required", False)],
-            },
+            input_schema=input_schema,
             handler=handler,
             risk_level=risk_level,
             category=category,
-            requires_approval=risk_level in ("medium", "high"),
+            requires_approval=risk_level == "high",
         ))
 
     def unregister(self, name: str) -> bool:

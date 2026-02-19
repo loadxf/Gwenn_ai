@@ -12,9 +12,12 @@ configurable length to prevent unbounded growth.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+import structlog
 
 
 @dataclass
@@ -23,12 +26,14 @@ class UserSession:
 
     user_id: str
     conversation_history: list[dict[str, Any]] = field(default_factory=list)
+    # Wall-clock time for display in get_session_info.
     created_at: float = field(default_factory=time.time)
-    last_activity: float = field(default_factory=time.time)
+    # Monotonic clock for TTL expiration — immune to NTP/clock adjustments.
+    last_activity: float = field(default_factory=time.monotonic)
     message_count: int = 0
 
     def touch(self) -> None:
-        self.last_activity = time.time()
+        self.last_activity = time.monotonic()
         self.message_count += 1
 
 
@@ -47,6 +52,8 @@ class SessionManager:
         self._sessions: dict[str, UserSession] = {}
         self._max_history = max_history_length
         self._ttl = session_ttl_seconds
+        self._cleanup_task: asyncio.Task | None = None
+        self._logger = structlog.get_logger(__name__)
 
     # ------------------------------------------------------------------
     # Public API
@@ -96,7 +103,7 @@ class SessionManager:
         Returns the number of sessions removed.  Call this periodically
         (e.g. from the heartbeat or a background task).
         """
-        now = time.time()
+        now = time.monotonic()
         stale = [
             uid
             for uid, session in self._sessions.items()
@@ -121,5 +128,49 @@ class SessionManager:
             "history_length": len(session.conversation_history),
             "created_at": session.created_at,
             "last_activity": session.last_activity,
-            "idle_seconds": time.time() - session.last_activity,
+            "idle_seconds": time.monotonic() - session.last_activity,
         }
+
+    # ------------------------------------------------------------------
+    # Periodic cleanup
+    # ------------------------------------------------------------------
+
+    def start_cleanup_task(self, interval: float | None = None) -> None:
+        """
+        Start a background asyncio task that periodically expires stale sessions.
+
+        The interval defaults to half the TTL so sessions are reaped well before
+        they could accumulate significantly in a long-running daemon.
+        """
+        if self._cleanup_task is not None:
+            return
+        cleanup_interval = interval if interval is not None else max(30.0, self._ttl / 2)
+        self._cleanup_task = asyncio.create_task(
+            self._periodic_cleanup(cleanup_interval),
+            name="session_cleanup",
+        )
+
+    async def stop_cleanup_task(self) -> None:
+        """Cancel the periodic cleanup task."""
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+
+    async def _periodic_cleanup(self, interval: float) -> None:
+        """Background loop that expires stale sessions on a timer."""
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                removed = self.expire_stale_sessions()
+                if removed:
+                    self._logger.debug(
+                        "session_manager.cleanup",
+                        removed=removed,
+                        remaining=len(self._sessions),
+                    )
+        except asyncio.CancelledError:
+            pass

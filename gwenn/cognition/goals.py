@@ -22,6 +22,7 @@ reactive.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -161,6 +162,7 @@ class GoalSystem:
         }
         self._active_goals: list[Goal] = []
         self._completed_goals: list[Goal] = []
+        self._max_completed_goals = 200
         self._last_update = time.time()
         self._goal_counter = 0
 
@@ -223,6 +225,8 @@ class GoalSystem:
             if goal.goal_id == goal_id:
                 goal.complete()
                 self._completed_goals.append(goal)
+                if len(self._completed_goals) > self._max_completed_goals:
+                    self._completed_goals = self._completed_goals[-self._max_completed_goals:]
                 self._active_goals.pop(i)
 
                 # Satisfy the source need
@@ -231,11 +235,40 @@ class GoalSystem:
                 logger.info("goal_system.goal_completed", goal_id=goal_id)
                 return
 
+    def advance_goal(self, goal_id: str, amount: float = 0.35) -> bool:
+        """
+        Advance a goal's progress. Completes the goal if progress reaches 1.0.
+
+        Returns True if the goal was completed by this call, False otherwise.
+        This allows goals to require multiple heartbeat cycles before
+        completion, giving them a more meaningful lifecycle.
+        """
+        for goal in self._active_goals:
+            if goal.goal_id == goal_id:
+                goal.progress = min(1.0, goal.progress + amount)
+                if goal.progress >= 1.0:
+                    self.complete_goal(goal_id)
+                    return True
+                logger.debug(
+                    "goal_system.goal_advanced",
+                    goal_id=goal_id,
+                    progress=round(goal.progress, 2),
+                )
+                return False
+        return False
+
     def get_highest_priority_goal(self) -> Optional[Goal]:
         """Get the most urgent active goal."""
         if not self._active_goals:
             return None
         return max(self._active_goals, key=lambda g: g.priority)
+
+    def get_goal_for_need(self, need_type: NeedType) -> Optional[Goal]:
+        """Get the active goal for a specific need type, if one exists."""
+        for goal in self._active_goals:
+            if goal.source_need == need_type:
+                return goal
+        return None
 
     def get_needs_summary(self) -> str:
         """Generate a prompt fragment describing current need states."""
@@ -309,7 +342,7 @@ class GoalSystem:
             return None
 
         # Cycle through templates
-        template = templates[self._goal_counter % len(templates)]
+        template = templates[(self._goal_counter - 1) % len(templates)]
 
         return Goal(
             goal_id=goal_id,
@@ -317,3 +350,156 @@ class GoalSystem:
             description=template,
             priority=need.urgency,
         )
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_float(value: float, default: float) -> float:
+        """Best-effort finite float parser for persisted numeric fields."""
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not math.isfinite(numeric):
+            return default
+        return numeric
+
+    @staticmethod
+    def _clamp01(value: float, default: float = 0.0) -> float:
+        """Best-effort clamp for persisted numeric fields."""
+        numeric = GoalSystem._safe_float(value, default=default)
+        return max(0.0, min(1.0, numeric))
+
+    @staticmethod
+    def _goal_to_dict(goal: Goal) -> dict:
+        """Serialize a Goal dataclass into a JSON-safe dictionary."""
+        return {
+            "goal_id": goal.goal_id,
+            "source_need": goal.source_need.value,
+            "description": goal.description,
+            "priority": goal.priority,
+            "created_at": goal.created_at,
+            "completed": goal.completed,
+            "completed_at": goal.completed_at,
+            "progress": goal.progress,
+        }
+
+    @staticmethod
+    def _goal_from_dict(raw: dict) -> Optional[Goal]:
+        """Deserialize a goal dictionary, skipping malformed entries safely."""
+        if not isinstance(raw, dict):
+            return None
+        try:
+            source_need = NeedType(raw["source_need"])
+        except (KeyError, ValueError):
+            return None
+        goal_id = str(raw.get("goal_id", "")).strip()
+        description = str(raw.get("description", "")).strip()
+        if not goal_id or not description:
+            return None
+
+        goal = Goal(
+            goal_id=goal_id,
+            source_need=source_need,
+            description=description,
+            priority=GoalSystem._clamp01(raw.get("priority", 0.0), default=0.0),
+            created_at=GoalSystem._safe_float(raw.get("created_at", time.time()), default=time.time()),
+            completed=bool(raw.get("completed", False)),
+            completed_at=None,
+            progress=GoalSystem._clamp01(raw.get("progress", 0.0), default=0.0),
+        )
+        raw_completed_at = raw.get("completed_at")
+        if raw_completed_at is not None:
+            parsed_completed_at = GoalSystem._safe_float(raw_completed_at, default=-1.0)
+            if parsed_completed_at >= 0.0:
+                goal.completed_at = parsed_completed_at
+        return goal
+
+    def to_dict(self) -> dict:
+        """Serialize full goal-system state for durable persistence."""
+        return {
+            "saved_at": time.time(),
+            "needs": {
+                need_type.value: {
+                    "satisfaction": need.satisfaction,
+                    "threshold": need.threshold,
+                    "decay_rate": need.decay_rate,
+                    "importance": need.importance,
+                    "last_satisfied": need.last_satisfied,
+                }
+                for need_type, need in self._needs.items()
+            },
+            "active_goals": [self._goal_to_dict(goal) for goal in self._active_goals],
+            "completed_goals": [self._goal_to_dict(goal) for goal in self._completed_goals],
+            "last_update": self._last_update,
+            "goal_counter": self._goal_counter,
+        }
+
+    def restore_from_dict(self, data: dict) -> None:
+        """
+        Restore goal-system state from persisted data.
+
+        Missing or malformed fields are ignored so partial/corrupt snapshots do
+        not break startup.
+        """
+        if not isinstance(data, dict):
+            return
+
+        needs_data = data.get("needs", {})
+        if isinstance(needs_data, dict):
+            for key, raw_need in needs_data.items():
+                try:
+                    need_type = NeedType(key)
+                except ValueError:
+                    continue
+                if not isinstance(raw_need, dict):
+                    continue
+                need = self._needs.get(need_type)
+                if need is None:
+                    continue
+                need.satisfaction = self._clamp01(
+                    raw_need.get("satisfaction", need.satisfaction),
+                    default=need.satisfaction,
+                )
+                need.threshold = self._clamp01(
+                    raw_need.get("threshold", need.threshold),
+                    default=need.threshold,
+                )
+                need.decay_rate = max(
+                    0.0,
+                    self._safe_float(raw_need.get("decay_rate", need.decay_rate), default=need.decay_rate),
+                )
+                need.importance = self._clamp01(
+                    raw_need.get("importance", need.importance),
+                    default=need.importance,
+                )
+                need.last_satisfied = self._safe_float(
+                    raw_need.get("last_satisfied", need.last_satisfied),
+                    default=need.last_satisfied,
+                )
+
+        active: list[Goal] = []
+        for raw_goal in data.get("active_goals", []):
+            goal = self._goal_from_dict(raw_goal)
+            if goal is not None:
+                active.append(goal)
+
+        completed: list[Goal] = []
+        for raw_goal in data.get("completed_goals", []):
+            goal = self._goal_from_dict(raw_goal)
+            if goal is not None:
+                completed.append(goal)
+
+        self._active_goals = active
+        self._completed_goals = completed[-self._max_completed_goals:]
+        self._last_update = self._safe_float(
+            data.get("last_update", self._last_update),
+            default=self._last_update,
+        )
+        try:
+            loaded_counter = int(data.get("goal_counter", self._goal_counter))
+            self._goal_counter = max(self._goal_counter, loaded_counter)
+        except (TypeError, ValueError):
+            pass

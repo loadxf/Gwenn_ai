@@ -105,6 +105,14 @@ class SensoryIntegrator:
     def receive(self, percept: GroundedPercept) -> None:
         """Receive a new percept on one of the sensory channels."""
         channel_percepts = self._percepts[percept.channel]
+
+        # Evict expired percepts before appending the new one.
+        now = time.time()
+        expiry = self._percept_expiry_seconds
+        self._percepts[percept.channel] = [
+            p for p in channel_percepts if now - p.timestamp < expiry
+        ]
+        channel_percepts = self._percepts[percept.channel]
         channel_percepts.append(percept)
 
         # Keep bounded
@@ -176,7 +184,7 @@ class SensoryIntegrator:
             interval = now - self._last_user_message_time
             self._message_intervals.append(interval)
             if len(self._message_intervals) > 20:
-                self._message_intervals = self._message_intervals[-20:]
+                del self._message_intervals[:-20]
 
         self._last_user_message_time = now
 
@@ -261,3 +269,51 @@ class SensoryIntegrator:
                 if self._message_intervals else None
             ),
         }
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize sensory state for durable persistence."""
+        return {
+            "session_start": self._session_start,
+            "last_user_message_time": self._last_user_message_time,
+            "message_intervals": list(self._message_intervals[-20:]),
+        }
+
+    def restore_from_dict(self, data: dict) -> None:
+        """
+        Restore sensory state from persisted data.
+
+        Missing or malformed fields are skipped so partial snapshots don't
+        break startup.
+        """
+        if not isinstance(data, dict):
+            return
+
+        raw_start = data.get("session_start")
+        if raw_start is not None:
+            try:
+                self._session_start = float(raw_start)
+            except (TypeError, ValueError):
+                pass
+
+        raw_last = data.get("last_user_message_time")
+        if raw_last is not None:
+            try:
+                self._last_user_message_time = float(raw_last)
+            except (TypeError, ValueError):
+                pass
+
+        raw_intervals = data.get("message_intervals", [])
+        if isinstance(raw_intervals, list):
+            restored: list[float] = []
+            for v in raw_intervals:
+                try:
+                    restored.append(float(v))
+                except (TypeError, ValueError):
+                    continue
+            self._message_intervals = restored[-20:]
+
+        logger.info("sensory.restored")

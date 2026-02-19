@@ -45,6 +45,7 @@ class GwennDaemon:
         self._config = config
         self._agent: Optional[Any] = None
         self._server: Optional[asyncio.AbstractServer] = None
+        self._channel_task: asyncio.Task | None = None
         self._shutdown_event = asyncio.Event()
         self._connection_count = 0  # total connections ever accepted
         self._active_connections = 0  # connections currently open
@@ -118,15 +119,27 @@ class GwennDaemon:
 
         await self._agent.initialize()
         await self._agent.start()
+        setattr(self._agent, "_gwenn_respond_lock", self._agent_respond_lock)
         logger.info("daemon.agent_started")
 
         # Start configured channels (telegram, discord) if requested
         channel_list = self._config.daemon.get_channel_list()
         if "telegram" in channel_list or "discord" in channel_list:
-            asyncio.create_task(
+            self._channel_task = asyncio.create_task(
                 self._run_platform_channels(channel_list),
                 name="daemon-channels",
             )
+            self._channel_task.add_done_callback(self._on_channel_task_done)
+
+    def _on_channel_task_done(self, task: asyncio.Task) -> None:
+        """Monitor daemon channel task and trigger shutdown if it crashes."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        logger.error("daemon.channels_task_failed", error=str(exc), exc_info=True)
+        self._request_shutdown("daemon_channels_task_failed")
 
     async def _start_socket_server(self) -> None:
         """Open the Unix domain socket server."""
@@ -150,56 +163,13 @@ class GwennDaemon:
 
     async def _run_platform_channels(self, channel_list: list[str]) -> None:
         """Start Telegram/Discord channels in the daemon's event loop."""
-        from gwenn.channels.session import SessionManager
+        from gwenn.channels.startup import build_channels, run_channels_until_shutdown
 
-        tg_config = None
-        dc_config = None
-
-        if "telegram" in channel_list:
-            try:
-                from gwenn.config import TelegramConfig
-                tg_config = TelegramConfig()
-            except Exception as e:
-                logger.error("daemon.telegram_config_failed", error=str(e))
-
-        if "discord" in channel_list:
-            try:
-                from gwenn.config import DiscordConfig
-                dc_config = DiscordConfig()
-            except Exception as e:
-                logger.error("daemon.discord_config_failed", error=str(e))
-
-        if not tg_config and not dc_config:
+        sessions, channels = build_channels(self._agent, channel_list=channel_list)
+        if not channels:
             return
 
-        if tg_config and dc_config:
-            max_history = min(tg_config.max_history_length, dc_config.max_history_length)
-            session_ttl = dc_config.session_ttl_seconds
-        elif tg_config:
-            max_history = tg_config.max_history_length
-            session_ttl = 3600.0
-        else:
-            max_history = dc_config.max_history_length
-            session_ttl = dc_config.session_ttl_seconds
-
-        sessions = SessionManager(max_history_length=max_history, session_ttl_seconds=session_ttl)
-        channels = []
-
-        if tg_config:
-            from gwenn.channels.telegram_channel import TelegramChannel
-            channels.append(TelegramChannel(self._agent, sessions, tg_config))
-
-        if dc_config:
-            from gwenn.channels.discord_channel import DiscordChannel
-            channels.append(DiscordChannel(self._agent, sessions, dc_config))
-
-        for ch in channels:
-            await ch.start()
-
-        await self._shutdown_event.wait()
-
-        for ch in channels:
-            await ch.stop()
+        await run_channels_until_shutdown(self._agent, sessions, channels, self._shutdown_event)
 
     # ------------------------------------------------------------------
     # Client connection handler
@@ -288,7 +258,7 @@ class GwennDaemon:
                 logger.warning("daemon.bad_json")
                 continue
 
-            req_id = msg.get("id", "")
+            req_id = msg.get("req_id", "")
             msg_type = msg.get("type", "")
 
             response = await self._dispatch(msg_type, msg, history, req_id)
@@ -316,10 +286,13 @@ class GwennDaemon:
                 text = msg.get("text", "")
                 if not text:
                     return {"type": "error", "req_id": req_id, "message": "empty text"}
-                lock = getattr(self, "_agent_respond_lock", None)
-                if lock is None:
+                lock = getattr(self._agent, "_gwenn_respond_lock", None)
+                if not isinstance(lock, asyncio.Lock):
+                    lock = getattr(self, "_agent_respond_lock", None)
+                if not isinstance(lock, asyncio.Lock):
                     lock = asyncio.Lock()
                     self._agent_respond_lock = lock
+                setattr(self._agent, "_gwenn_respond_lock", lock)
                 async with lock:
                     response_text = await self._agent.respond(
                         text,
@@ -368,13 +341,60 @@ class GwennDaemon:
                     # Replace this connection's history with the loaded session
                     history.clear()
                     history.extend(loaded)
-                    return {"type": "session_loaded", "req_id": req_id, "message_count": len(loaded)}
+                    return {
+                        "type": "session_loaded",
+                        "req_id": req_id,
+                        "message_count": len(loaded),
+                    }
                 except FileNotFoundError:
                     return {"type": "error", "req_id": req_id, "message": "session not found"}
 
+            elif msg_type == "reset_session":
+                cleared = len(history)
+                history.clear()
+                return {"type": "session_reset", "req_id": req_id, "cleared_messages": cleared}
+
+            elif msg_type == "runtime_info":
+                status = self._agent.status if self._agent else {}
+                skills: list[dict[str, Any]] = []
+                if self._agent is not None:
+                    skill_registry = getattr(self._agent, "skill_registry", None)
+                    all_skills = getattr(skill_registry, "all_skills", None)
+                    if callable(all_skills):
+                        try:
+                            for skill in all_skills():
+                                skills.append(
+                                    {
+                                        "name": str(getattr(skill, "name", "unknown")),
+                                        "category": str(getattr(skill, "category", "skill")),
+                                    }
+                                )
+                        except Exception as e:
+                            logger.debug("daemon.runtime_info_skill_list_failed", error=str(e))
+
+                mcp_stats = getattr(getattr(self._agent, "_mcp_client", None), "stats", {})
+                if not isinstance(mcp_stats, dict):
+                    mcp_stats = {}
+                tool_registry = getattr(self._agent, "tool_registry", None)
+                tools = {
+                    "registered": int(getattr(tool_registry, "count", 0)),
+                    "enabled": int(getattr(tool_registry, "enabled_count", 0)),
+                }
+                configured_mcp_servers = self._config.mcp.get_server_list()
+                return {
+                    "type": "runtime_info_response",
+                    "req_id": req_id,
+                    "status": status,
+                    "skills": skills,
+                    "mcp": mcp_stats,
+                    "tools": tools,
+                    "configured_mcp_servers": configured_mcp_servers,
+                    "active_connections": self._active_connections,
+                }
+
             elif msg_type == "stop":
                 logger.info("daemon.stop_requested")
-                self._shutdown_event.set()
+                self._request_shutdown("daemon_stop_requested")
                 return {"type": "ack_stop", "req_id": req_id}
 
             else:
@@ -416,6 +436,17 @@ class GwennDaemon:
             self._server.close()
             await self._server.wait_closed()
 
+        if self._channel_task is not None:
+            # Let channel task observe shutdown and stop adapters cleanly.
+            self._shutdown_event.set()
+            try:
+                await self._channel_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("daemon.channels_task_join_failed")
+            self._channel_task = None
+
         if self._agent:
             await self._agent.shutdown()
 
@@ -428,11 +459,26 @@ class GwennDaemon:
 
         logger.info("daemon.stopped")
 
+    def _request_shutdown(self, reason: str) -> None:
+        """Trigger daemon shutdown and activate the agent kill switch."""
+        agent = self._agent
+        if agent is not None:
+            safety = getattr(agent, "safety", None)
+            emergency_stop = getattr(safety, "emergency_stop", None)
+            if callable(emergency_stop):
+                try:
+                    emergency_stop(reason)
+                except Exception:
+                    logger.debug("daemon.emergency_stop_failed", reason=reason, exc_info=True)
+        self._shutdown_event.set()
+
     def _install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> None:
         """Install SIGINT/SIGTERM handlers for graceful shutdown."""
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, self._shutdown_event.set)
+                loop.add_signal_handler(
+                    sig, self._request_shutdown, f"daemon_signal_{sig.name.lower()}"
+                )
             except NotImplementedError:
                 pass
 

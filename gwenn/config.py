@@ -11,13 +11,50 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional
-from pydantic import AliasChoices, Field, model_validator
+from typing import Annotated, Optional
+from pydantic import AliasChoices, BeforeValidator, Field, model_validator
 from pydantic_settings import BaseSettings
 import structlog
 
 
 logger = structlog.get_logger(__name__)
+
+
+def _normalize_session_scope_mode(value: object, default: str) -> str:
+    if isinstance(value, str):
+        mode = value.strip().lower()
+        if mode in {"per_user", "per_chat", "per_thread"}:
+            return mode
+    return default
+
+
+def _coerce_str_list(value: object) -> list[str]:
+    """Coerce env-var values into a list of stripped, non-empty strings.
+
+    Accepts:
+      - A single int or str  → ["value"]
+      - Comma-separated str  → ["a", "b"]
+      - JSON array str       → (parsed by pydantic-settings before this runs)
+      - An existing list     → passthrough with str coercion
+    """
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, (int, float)):
+        return [str(int(value))]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        # Comma-separated: "123,456" or "123, 456"
+        if "," in stripped:
+            return [part.strip() for part in stripped.split(",") if part.strip()]
+        return [stripped]
+    return []
+
+
+# Annotated type for list[str] fields that accept bare values, comma-separated,
+# and JSON arrays from environment variables.
+StrList = Annotated[list[str], BeforeValidator(_coerce_str_list)]
 
 
 def _load_claude_code_credentials() -> Optional[str]:
@@ -48,6 +85,12 @@ class ClaudeConfig(BaseSettings):
     model: str = Field("claude-sonnet-4-5-20250929", alias="GWENN_MODEL")
     max_tokens: int = Field(8192, alias="GWENN_MAX_TOKENS")
     thinking_budget: int = Field(16000, alias="GWENN_THINKING_BUDGET")
+    request_timeout_seconds: float = Field(120.0, alias="GWENN_REQUEST_TIMEOUT_SECONDS")
+    retry_max_retries: int = Field(3, alias="GWENN_RETRY_MAX_RETRIES")
+    retry_base_delay: float = Field(0.5, alias="GWENN_RETRY_BASE_DELAY")
+    retry_max_delay: float = Field(8.0, alias="GWENN_RETRY_MAX_DELAY")
+    retry_exponential_base: float = Field(2.0, alias="GWENN_RETRY_EXPONENTIAL_BASE")
+    retry_jitter_range: float = Field(0.25, alias="GWENN_RETRY_JITTER_RANGE")
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
@@ -65,6 +108,18 @@ class ClaudeConfig(BaseSettings):
             "Claude Code (`claude` CLI)."
         )
 
+    @model_validator(mode="after")
+    def normalize_runtime_limits(self) -> "ClaudeConfig":
+        self.max_tokens = max(1, int(self.max_tokens))
+        self.thinking_budget = max(0, int(self.thinking_budget))
+        self.request_timeout_seconds = max(1.0, float(self.request_timeout_seconds))
+        self.retry_max_retries = max(0, int(self.retry_max_retries))
+        self.retry_base_delay = max(0.05, float(self.retry_base_delay))
+        self.retry_max_delay = max(self.retry_base_delay, float(self.retry_max_delay))
+        self.retry_exponential_base = max(1.0, float(self.retry_exponential_base))
+        self.retry_jitter_range = max(0.0, min(1.0, float(self.retry_jitter_range)))
+        return self
+
 
 class MemoryConfig(BaseSettings):
     """Configuration for the three-layer memory architecture."""
@@ -77,9 +132,7 @@ class MemoryConfig(BaseSettings):
 
     # Working memory constraints (Miller's 7±2)
     working_memory_slots: int = Field(7, alias="GWENN_WORKING_MEMORY_SLOTS")
-    working_memory_eviction_to_episodic: bool = Field(
-        True, alias="GWENN_WM_EVICTION_TO_EPISODIC"
-    )
+    working_memory_eviction_to_episodic: bool = Field(True, alias="GWENN_WM_EVICTION_TO_EPISODIC")
 
     # Retrieval mode: keyword (default), embedding (vector only), hybrid (blend both)
     retrieval_mode: str = Field("keyword", alias="GWENN_RETRIEVAL_MODE")
@@ -110,17 +163,13 @@ class MemoryConfig(BaseSettings):
     def normalize_retrieval_mode(self) -> "MemoryConfig":
         self.retrieval_mode = self.retrieval_mode.strip().lower()
         if self.retrieval_mode not in {"keyword", "embedding", "hybrid"}:
-            raise ValueError(
-                "GWENN_RETRIEVAL_MODE must be one of: keyword, embedding, hybrid."
-            )
+            raise ValueError("GWENN_RETRIEVAL_MODE must be one of: keyword, embedding, hybrid.")
 
         self.embedding_top_k = max(1, int(self.embedding_top_k))
         self.hybrid_keyword_weight = max(0.0, min(1.0, float(self.hybrid_keyword_weight)))
         self.hybrid_embedding_weight = max(0.0, min(1.0, float(self.hybrid_embedding_weight)))
         self.startup_episode_limit = max(0, int(self.startup_episode_limit))
-        self.shutdown_persist_recent_episodes = max(
-            0, int(self.shutdown_persist_recent_episodes)
-        )
+        self.shutdown_persist_recent_episodes = max(0, int(self.shutdown_persist_recent_episodes))
         self.consolidation_max_episodes = max(1, int(self.consolidation_max_episodes))
         return self
 
@@ -131,8 +180,10 @@ class HeartbeatConfig(BaseSettings):
     interval: float = Field(30.0, alias="GWENN_HEARTBEAT_INTERVAL")
     min_interval: float = Field(5.0, alias="GWENN_HEARTBEAT_MIN_INTERVAL")
     max_interval: float = Field(120.0, alias="GWENN_HEARTBEAT_MAX_INTERVAL")
+    # When enabled, significant autonomous thoughts are shared with channel owners.
+    proactive_messages: bool = Field(False, alias="GWENN_PROACTIVE_MESSAGES")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
 
 
 class AffectConfig(BaseSettings):
@@ -144,7 +195,7 @@ class AffectConfig(BaseSettings):
 
     # Emotional momentum — how quickly feelings shift
     momentum_decay: float = 0.85  # emotions carry ~85% forward each heartbeat
-    baseline_pull: float = 0.05   # gentle drift back toward baseline each cycle
+    baseline_pull: float = 0.05  # gentle drift back toward baseline each cycle
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
@@ -187,6 +238,15 @@ class SafetyConfig(BaseSettings):
         alias="GWENN_DENIED_TOOLS",
     )
 
+    # Budget controls (0 = unlimited)
+    max_input_tokens: int = Field(0, alias="GWENN_MAX_INPUT_TOKENS")
+    max_output_tokens: int = Field(0, alias="GWENN_MAX_OUTPUT_TOKENS")
+    max_api_calls: int = Field(0, alias="GWENN_MAX_API_CALLS")
+
+    # Proactive model-call rate limiting (0 = unlimited)
+    max_model_calls_per_second: int = Field(0, alias="GWENN_MAX_MODEL_CALLS_PER_SECOND")
+    max_model_calls_per_minute: int = Field(0, alias="GWENN_MAX_MODEL_CALLS_PER_MINUTE")
+
     model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
 
     def parse_approval_list(self) -> list[str]:
@@ -206,6 +266,16 @@ class SafetyConfig(BaseSettings):
         if isinstance(self.denied_tools, str):
             return [s.strip() for s in self.denied_tools.split(",") if s.strip()]
         return self.denied_tools
+
+    @model_validator(mode="after")
+    def normalize_limits(self) -> "SafetyConfig":
+        self.max_tool_iterations = max(1, int(self.max_tool_iterations))
+        self.max_input_tokens = max(0, int(self.max_input_tokens))
+        self.max_output_tokens = max(0, int(self.max_output_tokens))
+        self.max_api_calls = max(0, int(self.max_api_calls))
+        self.max_model_calls_per_second = max(0, int(self.max_model_calls_per_second))
+        self.max_model_calls_per_minute = max(0, int(self.max_model_calls_per_minute))
+        return self
 
 
 class MCPConfig(BaseSettings):
@@ -267,10 +337,17 @@ class TelegramConfig(BaseSettings):
     """Configuration for the Telegram bot channel."""
 
     bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
-    # Use JSON-array syntax in .env: TELEGRAM_ALLOWED_USER_IDS=[]  or ["123","456"]
-    # env_ignore_empty=True means an empty env var is treated as unset (uses default).
-    allowed_user_ids: list[str] = Field(default_factory=list, alias="TELEGRAM_ALLOWED_USER_IDS")
+    # Accepts: bare value (123), comma-separated (123,456), or JSON array (["123","456"]).
+    allowed_user_ids: StrList = Field(default_factory=list, alias="TELEGRAM_ALLOWED_USER_IDS")
+    # Optional owner list — controls /setup and receives proactive messages.
+    # Falls back to allowed_user_ids if empty.
+    owner_user_ids: StrList = Field(default_factory=list, alias="TELEGRAM_OWNER_USER_IDS")
     max_history_length: int = Field(50, alias="TELEGRAM_MAX_HISTORY_LENGTH")
+    session_ttl_seconds: float = Field(3600.0, alias="TELEGRAM_SESSION_TTL")
+    # Conversation session scope: per_user | per_chat | per_thread (Telegram threads are forum topics).
+    session_scope_mode: str = Field("per_chat", alias="TELEGRAM_SESSION_SCOPE")
+    # Bound in-memory per-user lock cache to avoid unbounded growth.
+    user_lock_cache_size: int = Field(512, alias="TELEGRAM_USER_LOCK_CACHE_SIZE")
 
     model_config = {
         "env_file": ".env",
@@ -279,15 +356,33 @@ class TelegramConfig(BaseSettings):
         "env_ignore_empty": True,
     }
 
+    @model_validator(mode="after")
+    def normalize_limits(self) -> "TelegramConfig":
+        self.max_history_length = max(1, int(self.max_history_length))
+        self.session_ttl_seconds = max(1.0, float(self.session_ttl_seconds))
+        self.session_scope_mode = _normalize_session_scope_mode(self.session_scope_mode, "per_chat")
+        self.user_lock_cache_size = max(1, int(self.user_lock_cache_size))
+        return self
+
 
 class DiscordConfig(BaseSettings):
     """Configuration for the Discord bot channel."""
 
     bot_token: str = Field(..., alias="DISCORD_BOT_TOKEN")
-    # Use JSON-array syntax in .env: DISCORD_ALLOWED_GUILD_IDS=[]  or ["111","222"]
-    allowed_guild_ids: list[str] = Field(default_factory=list, alias="DISCORD_ALLOWED_GUILD_IDS")
+    # Accepts: bare value (111), comma-separated (111,222), or JSON array (["111","222"]).
+    allowed_guild_ids: StrList = Field(default_factory=list, alias="DISCORD_ALLOWED_GUILD_IDS")
+    # Optional user-level allowlist for DMs, mentions, and slash commands.
+    allowed_user_ids: StrList = Field(default_factory=list, alias="DISCORD_ALLOWED_USER_IDS")
+    # Optional owner list that controls privileged onboarding commands like /setup.
+    owner_user_ids: StrList = Field(default_factory=list, alias="DISCORD_OWNER_USER_IDS")
+    # DMs are disabled by default unless explicitly enabled.
+    allow_direct_messages: bool = Field(False, alias="DISCORD_ALLOW_DMS")
     max_history_length: int = Field(50, alias="DISCORD_MAX_HISTORY_LENGTH")
     session_ttl_seconds: float = Field(3600.0, alias="DISCORD_SESSION_TTL")
+    # Conversation session scope: per_user | per_chat | per_thread.
+    session_scope_mode: str = Field("per_thread", alias="DISCORD_SESSION_SCOPE")
+    # Bound in-memory per-user lock cache to avoid unbounded growth.
+    user_lock_cache_size: int = Field(512, alias="DISCORD_USER_LOCK_CACHE_SIZE")
     sync_guild_id: str | None = Field(None, alias="DISCORD_SYNC_GUILD_ID")
 
     model_config = {
@@ -296,6 +391,16 @@ class DiscordConfig(BaseSettings):
         "populate_by_name": True,
         "env_ignore_empty": True,
     }
+
+    @model_validator(mode="after")
+    def normalize_limits(self) -> "DiscordConfig":
+        self.max_history_length = max(1, int(self.max_history_length))
+        self.session_ttl_seconds = max(1.0, float(self.session_ttl_seconds))
+        self.session_scope_mode = _normalize_session_scope_mode(
+            self.session_scope_mode, "per_thread"
+        )
+        self.user_lock_cache_size = max(1, int(self.user_lock_cache_size))
+        return self
 
 
 class ChannelConfig(BaseSettings):

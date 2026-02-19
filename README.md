@@ -1,11 +1,4 @@
-<p>
-  <img src="assets/gwenn-lockup-horizontal.png" alt="Gwenn" width="600" align="center" style="display: block; margin: 0 auto;">
-</p>
-
-<p>
-  <strong style="text-align: center; display: block; margin: 0 auto;">Genesis Woven from Evolved Neural Networks.</strong>
-</p>
-
+# GWENN -- Genesis Woven from Evolved Neural Networks
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/loadxf/Gwenn_ai?color=black"></a>
   <a href="https://github.com/loadxf/Gwenn_ai/stargazers"><img src="https://img.shields.io/github/stars/loadxf/Gwenn_ai?style=flat"></a>
@@ -13,7 +6,7 @@
   <a href="https://discord.gg/9VFHFk9hF7"><img src="https://img.shields.io/discord/1473126296505815042?style=flat&logo=discord&label=discord"></a>
 </p>
 
-# Gwenn
+Gwenn is created by Justin and Jayden McKibben. A father-son coding duo.
 
 Gwenn is an autonomous AI agent that actually remembers you. She runs on
 Anthropic's Claude API, but unlike a normal chatbot, she doesn't forget
@@ -377,41 +370,54 @@ truncation is always on.
 [X] = complete, [p] = partially complete
 
 **Phase 1: Core System Bootstrapping**
-- [X] Standalone CLI
-- [X] Claude SDK integration
-- [ ] Memory: storage, episodic, semantic, consolidation, active/working
-- [ ] Harness: context, loop, retry, safety
-- [ ] Heartbeat system
+- [p] Standalone CLI
+- [p] Claude SDK integration
+- [p] Memory: storage, episodic, semantic, consolidation, active/working
+- [p] Harness: context, loop, retry, safety
+- [p] Heartbeat system
 
 **Phase 2: Essential Agent Structure**
-- [ ] Gwenn persistent identity
-- [ ] Emotional affect engine: appraisal, resilience, current state
-- [ ] Cognition integrations: ethics, goals, inner life, interagent, metacognition, sensory, theory of mind
+- [p] Gwenn persistent identity
+- [p] Emotional affect engine: appraisal, resilience, current state
+- [p] Cognition integrations: ethics, goals, inner life, interagent, metacognition, sensory, theory of mind
 
 **Phase 3: Interfaces & Communication**
-- [ ] Discord & Telegram integration, including threads
-- [ ] WhatsApp, Signal, and others integration
-- [ ] Real MCP transport (JSON-RPC over stdio/HTTP, actual tool discovery and execution)
-- [ ] SKILLS.md integration, autonomous skill running/development by Gwenn
+- [p] Discord & Telegram integration, including threads
+- [ ] WhatsApp, Signal, Slack, and others integration
+- [ ] Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) in channels
+- [p] Real MCP transport (JSON-RPC over stdio/HTTP, actual tool discovery and execution)
+- [p] SKILLS.md integration, autonomous skill running/development by Gwenn
 - [ ] Inline buttons in Discord/Telegram
 - [ ] Obsidian, Dropbox, Notion support
 
 **Phase 4: Infrastructure & Service Features**
-- [X] Background heartbeat as a system service (daemon)
-- [ ] Automated PII privacy redaction system in logs, etc
+- [p] Background heartbeat as a system service (daemon)
+- [p] Automated PII privacy redaction system in logs, etc
 - [ ] Budget tracking, rate limits, kill switch
 
 **Phase 5: Advanced Capabilities and Ecosystem**
 - [ ] Subagents with parallel running capabilities (swarm)
-- [ ] Subagent autospawn from Gwenn, Gwenn provides subagents with an identity, etc autonomously as needed
+- [ ] Subagent autospawn from Gwenn; Gwenn provides subagents with an identity autonomously as needed
 - [ ] Docker and Apple container support for sandboxing (option to require for Gwenn and/or all subagents)
 - [ ] Add additional provider support (OpenAI, Grok, Gemini, OpenRouter, vLLM, Local, etc.)
-- [ ] OpenCode Agents SDK
-- [ ] Gwenn Custom Model: fine-tunable model Gwenn can retrain herself -- a real neural substrate
-- [ ] iOS and Android w/ push notifications for autonomous thoughts, etc
+- [ ] OpenCode Agents SDK and similar
+- [ ] Image uploading and understanding 
+- [ ] Image generation
+- [ ] Google Workspace/Gmail setup using gogcli
+- [ ] Local file system access and management
+- [ ] Local browser access and management
+- [ ] GitHub access and management
+- [ ] Ability for Gwenn to learn from her own history and improve herself (codebase) autonomously
+- [ ] Skills and tools with grade school kids in mind (e.g. "ask Gwenn to help you with your homework"), including safety and security considerations
+- [ ] Skills and tools with people with disabilities, special needs, mental health issues, etc. in mind (research more on this)
+
+**Long-Term Goals**
+- [ ] Give Gwenn physical and visual presence (camera, robotics, etc.)
+- [ ] Gwenn Custom Model: fine-tunable model Gwenn can retrain herself
+- [ ] iOS and Android apps with push notifications for autonomous thoughts, presence, etc.
 
 **Phase 6: Evaluation & Robustness**
-- [ ] Ablation tests -- disable subsystems one at a time, measure what breaks
+- [ ] Ablation tests — disable subsystems one at a time, measure what breaks
 - [ ] Long-horizon validation (multi-day continuous runs)
 - [ ] Multi-agent interaction testing
 - [ ] Reproducibility protocol and formal sentience criteria

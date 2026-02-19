@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gwenn.agent import SentientAgent
+from gwenn.affect.appraisal import AppraisalEvent, StimulusType
 from gwenn.config import GwennConfig
 from gwenn.memory.working import WorkingMemoryItem
 from gwenn.privacy.redaction import PIIRedactor
@@ -209,6 +210,567 @@ async def test_respond_passes_tools_and_redacts_api_payload():
     assert "alice@example.com" not in call["messages"][0]["content"]
     # Internal conversation state remains unredacted; only API payload is redacted.
     assert "alice@example.com" in agent._conversation_history[0]["content"]
+
+
+def test_estimate_message_valence_detects_polarity():
+    agent = object.__new__(SentientAgent)
+    negative = SentientAgent._estimate_message_valence(
+        agent,
+        "I hate this and I am afraid it will fail.",
+    )
+    positive = SentientAgent._estimate_message_valence(
+        agent,
+        "I love this, thank you!",
+    )
+    assert negative < 0.0
+    assert positive > 0.0
+
+
+@pytest.mark.asyncio
+async def test_respond_appraisal_includes_message_valence_hint():
+    appraisals: list[AppraisalEvent] = []
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent._config = SimpleNamespace(
+        privacy=SimpleNamespace(
+            redact_before_api=False,
+            redact_before_persist=False,
+        )
+    )
+    dims = SimpleNamespace(
+        valence=0.0,
+        arousal=0.3,
+        dominance=0.0,
+        certainty=0.0,
+        goal_congruence=0.0,
+    )
+    agent.affect_state = SimpleNamespace(
+        dimensions=dims,
+        current_emotion=SimpleNamespace(value="neutral"),
+    )
+    agent._conversation_history = []
+    agent._current_user_id = None
+    agent.heartbeat = _HeartbeatStub()
+    agent.identity = _IdentityStub()
+    agent.sensory = SimpleNamespace(
+        ground_social=lambda user_id, text: None,
+        ground_temporal=lambda event_description: None,
+    )
+    agent.ethics = SimpleNamespace(detect_ethical_dimensions=lambda text: [])
+    agent.episodic_memory = SimpleNamespace(retrieve=lambda **kwargs: [])
+    agent.semantic_memory = SimpleNamespace(query=lambda **kwargs: [])
+    agent.working_memory = _WorkingMemoryStub()
+    agent.safety = SimpleNamespace(reset_iteration_count=lambda: None)
+    agent.tool_registry = SimpleNamespace(get_api_tools=lambda **kwargs: [])
+    agent.goal_system = SimpleNamespace()
+    agent.theory_of_mind = SimpleNamespace()
+    agent.metacognition = SimpleNamespace()
+    agent.interagent = SimpleNamespace()
+    agent.memory_store = SimpleNamespace()
+    agent.redactor = PIIRedactor(enabled=False)
+    agent.process_appraisal = lambda event: appraisals.append(event)
+    agent._assemble_system_prompt = lambda **kwargs: "prompt"
+    agent.agentic_loop = _LoopStub()
+
+    async def _noop_integrate(*args, **kwargs):
+        return None
+
+    agent._integrate_exchange = _noop_integrate
+
+    await SentientAgent.respond(
+        agent,
+        "I hate this and I am afraid.",
+        user_id="user-1",
+    )
+
+    assert appraisals
+    first = appraisals[0]
+    assert first.stimulus_type == StimulusType.USER_MESSAGE
+    assert first.metadata["valence_hint"] < 0.0
+
+
+@pytest.mark.asyncio
+async def test_respond_appraises_tool_results():
+    appraisals: list[AppraisalEvent] = []
+
+    class _LoopWithToolResults:
+        async def run(self, **kwargs):
+            on_tool_result = kwargs.get("on_tool_result")
+            assert callable(on_tool_result)
+            on_tool_result(
+                {"id": "tool_1", "name": "echo", "input": {"text": "ok"}},
+                SimpleNamespace(success=True, result="ok", error=None),
+            )
+            on_tool_result(
+                {"id": "tool_2", "name": "echo", "input": {"text": "bad"}},
+                SimpleNamespace(success=False, result=None, error="boom"),
+            )
+            return SimpleNamespace(text="ok")
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent._config = SimpleNamespace(
+        privacy=SimpleNamespace(
+            redact_before_api=False,
+            redact_before_persist=False,
+        )
+    )
+    dims = SimpleNamespace(
+        valence=0.0,
+        arousal=0.3,
+        dominance=0.0,
+        certainty=0.0,
+        goal_congruence=0.0,
+    )
+    agent.affect_state = SimpleNamespace(
+        dimensions=dims,
+        current_emotion=SimpleNamespace(value="neutral"),
+    )
+    agent._conversation_history = []
+    agent._current_user_id = None
+    agent.heartbeat = _HeartbeatStub()
+    agent.identity = _IdentityStub()
+    agent.sensory = SimpleNamespace(
+        ground_social=lambda user_id, text: None,
+        ground_temporal=lambda event_description: None,
+    )
+    agent.ethics = SimpleNamespace(detect_ethical_dimensions=lambda text: [])
+    agent.episodic_memory = SimpleNamespace(retrieve=lambda **kwargs: [])
+    agent.semantic_memory = SimpleNamespace(query=lambda **kwargs: [])
+    agent.working_memory = _WorkingMemoryStub()
+    agent.safety = SimpleNamespace(reset_iteration_count=lambda: None)
+    agent.tool_registry = SimpleNamespace(get_api_tools=lambda **kwargs: [{"name": "echo"}])
+    agent.goal_system = SimpleNamespace()
+    agent.theory_of_mind = SimpleNamespace()
+    agent.metacognition = SimpleNamespace()
+    agent.interagent = SimpleNamespace()
+    agent.memory_store = SimpleNamespace()
+    agent.redactor = PIIRedactor(enabled=False)
+    agent.process_appraisal = lambda event: appraisals.append(event)
+    agent._assemble_system_prompt = lambda **kwargs: "prompt"
+    agent.agentic_loop = _LoopWithToolResults()
+
+    async def _noop_integrate(*args, **kwargs):
+        return None
+
+    agent._integrate_exchange = _noop_integrate
+
+    await SentientAgent.respond(
+        agent,
+        "please run tools",
+        user_id="user-1",
+    )
+
+    stimulus_types = [event.stimulus_type for event in appraisals]
+    assert StimulusType.TOOL_SUCCESS in stimulus_types
+    assert StimulusType.TOOL_FAILURE in stimulus_types
+    tool_events = [
+        event for event in appraisals
+        if event.stimulus_type in {StimulusType.TOOL_SUCCESS, StimulusType.TOOL_FAILURE}
+    ]
+    assert all("habituation_key" in event.metadata for event in tool_events)
+
+
+def test_process_appraisal_applies_habituation_scaling():
+    captured: dict[str, AppraisalEvent] = {}
+
+    def _appraise(event, state):
+        captured["event"] = event
+        return state
+
+    agent = object.__new__(SentientAgent)
+    initial_state = SimpleNamespace()
+    agent.affect_state = initial_state
+    agent.appraisal_engine = SimpleNamespace(appraise=_appraise)
+    agent.resilience = SimpleNamespace(
+        check=lambda state: state,
+        get_habituation_factor=lambda key: 0.5,
+    )
+    agent._initialized = False
+
+    event = AppraisalEvent(
+        stimulus_type=StimulusType.TOOL_FAILURE,
+        intensity=0.8,
+        metadata={"habituation_key": "tool:echo:failure"},
+    )
+    SentientAgent.process_appraisal(agent, event)
+
+    assert captured["event"].intensity == pytest.approx(0.4)
+
+
+def test_process_appraisal_throttles_steady_state_affect_snapshot_writes():
+    from gwenn.affect.state import AffectiveState
+
+    writes: list[dict] = []
+
+    state = AffectiveState()
+    agent = object.__new__(SentientAgent)
+    agent.affect_state = state
+    agent.appraisal_engine = SimpleNamespace(appraise=lambda event, current_state: current_state)
+    agent.resilience = SimpleNamespace(
+        check=lambda current_state: current_state,
+        get_habituation_factor=lambda _key: 1.0,
+    )
+    agent._initialized = True
+    agent.memory_store = SimpleNamespace(
+        save_affect_snapshot=lambda **kwargs: writes.append(kwargs),
+        prune_affect_snapshots=lambda **kwargs: 0,
+    )
+    agent._last_affect_snapshot_at = time.time()
+    agent._affect_snapshot_min_interval_seconds = 9999.0
+    agent._affect_snapshot_min_delta = 1.0
+    agent._affect_snapshot_prune_every = 128
+    agent._affect_snapshot_since_prune = 0
+
+    SentientAgent.process_appraisal(
+        agent,
+        AppraisalEvent(stimulus_type=StimulusType.HEARTBEAT_IDLE, intensity=0.2),
+    )
+    assert writes == []
+
+    SentientAgent.process_appraisal(
+        agent,
+        AppraisalEvent(stimulus_type=StimulusType.TOOL_FAILURE, intensity=0.2),
+    )
+    assert len(writes) == 1
+    assert writes[0]["trigger"] == "tool_failure"
+
+
+@pytest.mark.asyncio
+async def test_integrate_exchange_runs_metacognition_pass():
+    confidence_claims: list[dict] = []
+    audit_results: list[object] = []
+
+    class _Meta:
+        _growth_metrics: dict = {}
+
+        def record_confidence_claim(self, **kwargs):
+            confidence_claims.append(kwargs)
+
+        def record_audit_result(self, result):
+            audit_results.append(result)
+
+        def add_insight(self, insight: str):
+            return None
+
+        def assess_growth(self, dimension: str, new_level: float, evidence: str):
+            return None
+
+    agent = object.__new__(SentientAgent)
+    agent._config = SimpleNamespace(
+        privacy=SimpleNamespace(redact_before_persist=False),
+    )
+    agent.redactor = PIIRedactor(enabled=False)
+    agent.affect_state = SimpleNamespace(
+        dimensions=SimpleNamespace(valence=0.0, arousal=0.3),
+        to_dict=lambda: {},
+    )
+    encoded: list[object] = []
+    persisted: list[object] = []
+    agent.episodic_memory = SimpleNamespace(encode=lambda episode: encoded.append(episode))
+    agent._persist_episode = lambda episode: persisted.append(episode)
+    agent.theory_of_mind = SimpleNamespace(set_current_user=lambda _uid: None)
+    agent.goal_system = SimpleNamespace(
+        satisfy_need=lambda _need, _amount: None,
+        get_goal_for_need=lambda _need: None,
+        complete_goal=lambda _id: None,
+    )
+    agent.process_appraisal = lambda _event: None
+    agent.interagent = SimpleNamespace(known_agents=[])
+    agent.identity = SimpleNamespace(
+        total_interactions=2,
+        check_milestone=lambda *args, **kwargs: None,
+    )
+    agent.metacognition = _Meta()
+
+    await SentientAgent._integrate_exchange(
+        agent,
+        user_message="Can you explain this quickly?",
+        response="As an AI language model, I can help.",
+        user_id="u1",
+        had_relevant_memories=False,
+    )
+
+    assert encoded
+    assert persisted
+    assert confidence_claims
+    assert audit_results
+    assert audit_results[0].is_honest is False
+    assert audit_results[0].concerns
+
+
+@pytest.mark.asyncio
+async def test_integrate_exchange_updates_tom_and_records_ethics():
+    from gwenn.cognition.ethics import EthicalDimension
+
+    class _UserModel:
+        def __init__(self):
+            self.verbosity_preference = 0.5
+            self.technical_level = 0.5
+            self.formality_level = 0.5
+            self.inferred_emotion = "neutral"
+            self.emotion_confidence = 0.3
+            self.topics_discussed: list[str] = []
+            self.preference_updates: list[tuple[str, str]] = []
+            self.knowledge_updates: list[tuple[str, str]] = []
+
+        def update_preference(
+            self,
+            pref: str,
+            value: str,
+            confidence: float,
+            source: str = "observed",
+        ) -> None:
+            self.preference_updates.append((pref, value))
+
+        def update_knowledge_belief(self, topic: str, level: str, confidence: float, source: str) -> None:
+            self.knowledge_updates.append((topic, level))
+
+    user_model = _UserModel()
+    recorded_assessments: list[object] = []
+
+    agent = object.__new__(SentientAgent)
+    agent._config = SimpleNamespace(
+        privacy=SimpleNamespace(redact_before_persist=False),
+    )
+    agent.redactor = PIIRedactor(enabled=False)
+    agent.affect_state = SimpleNamespace(
+        dimensions=SimpleNamespace(valence=-0.2, arousal=0.4),
+        to_dict=lambda: {},
+    )
+    agent.episodic_memory = SimpleNamespace(encode=lambda _episode: None)
+    agent._persist_episode = lambda _episode: None
+    agent.theory_of_mind = SimpleNamespace(set_current_user=lambda _uid: user_model)
+    agent.goal_system = SimpleNamespace(
+        satisfy_need=lambda _need, _amount: None,
+        get_goal_for_need=lambda _need: None,
+        complete_goal=lambda _id: None,
+    )
+    agent.process_appraisal = lambda _event: None
+    agent.interagent = SimpleNamespace(known_agents=[])
+    agent.identity = SimpleNamespace(
+        total_interactions=2,
+        check_milestone=lambda *args, **kwargs: None,
+    )
+    agent.metacognition = SimpleNamespace()
+    agent.ethics = SimpleNamespace(
+        record_assessment=lambda assessment: recorded_assessments.append(assessment),
+    )
+
+    await SentientAgent._integrate_exchange(
+        agent,
+        user_message="Please keep this concise. I'm anxious about this Python API issue.",
+        response="You can choose between two safe options. I recommend starting with option A.",
+        user_id="u1",
+        had_relevant_memories=False,
+        ethical_dimensions=[EthicalDimension.HARM, EthicalDimension.AUTONOMY],
+    )
+
+    assert ("response_length", "concise") in user_model.preference_updates
+    assert ("python", "interested") in user_model.knowledge_updates
+    assert user_model.inferred_emotion in {"concerned", "distressed"}
+    assert recorded_assessments
+    assessment = recorded_assessments[0]
+    assert EthicalDimension.HARM in assessment.dimension_scores
+    assert EthicalDimension.AUTONOMY in assessment.dimension_scores
+    assert assessment.tensions
+
+
+def test_persist_episode_redacts_before_persist_when_enabled():
+    captured: dict[str, object] = {}
+
+    class _Store:
+        def save_episode(self, episode) -> None:
+            captured["episode"] = episode
+
+    agent = object.__new__(SentientAgent)
+    agent.memory_store = _Store()
+    agent.redactor = PIIRedactor(enabled=True)
+    agent._config = SimpleNamespace(
+        privacy=SimpleNamespace(redact_before_persist=True),
+    )
+
+    episode = SimpleNamespace(
+        episode_id="ep-1",
+        timestamp=1000.0,
+        content="Reach me at alice@example.com",
+        category="conversation",
+        emotional_valence=0.0,
+        emotional_arousal=0.3,
+        importance=0.5,
+        tags=[],
+        participants=[],
+        outcome=None,
+        consolidated=False,
+        embedding=None,
+    )
+
+    SentientAgent._persist_episode(agent, episode)
+    persisted = captured["episode"]
+    assert "[REDACTED_EMAIL]" in persisted.content
+    assert "alice@example.com" not in persisted.content
+
+
+@pytest.mark.asyncio
+async def test_shutdown_skips_prunable_episodes():
+    saved_ids: list[str] = []
+
+    class _Store:
+        def save_affect_snapshot(self, **kwargs):
+            return None
+
+        def save_episode(self, episode):
+            saved_ids.append(episode.episode_id)
+
+        def save_knowledge_node(self, **kwargs):
+            return None
+
+        def clear_knowledge_edges(self):
+            return None
+
+        def save_knowledge_edge(self, **kwargs):
+            return None
+
+        def save_working_memory(self, items: list) -> None:
+            return None
+
+        def prune_old_episodes(self, **kwargs) -> int:
+            return 0
+
+        def close(self):
+            return None
+
+    old_episode = SimpleNamespace(
+        episode_id="old-prunable",
+        timestamp=time.time() - (120 * 86400),
+        content="old",
+        category="conversation",
+        emotional_valence=0.0,
+        emotional_arousal=0.3,
+        importance=0.1,
+        tags=[],
+        participants=[],
+        outcome=None,
+        consolidated=True,
+        embedding=None,
+    )
+    keep_episode = SimpleNamespace(
+        episode_id="keep-me",
+        timestamp=time.time(),
+        content="fresh",
+        category="conversation",
+        emotional_valence=0.0,
+        emotional_arousal=0.3,
+        importance=0.1,
+        tags=[],
+        participants=[],
+        outcome=None,
+        consolidated=False,
+        embedding=None,
+    )
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent.heartbeat = _HeartbeatStub()
+    agent.affect_state = SimpleNamespace(
+        dimensions=SimpleNamespace(
+            valence=0.0,
+            arousal=0.3,
+            dominance=0.0,
+            certainty=0.0,
+            goal_congruence=0.0,
+        ),
+        current_emotion=SimpleNamespace(value="neutral"),
+    )
+    agent._config = SimpleNamespace(
+        memory=SimpleNamespace(shutdown_persist_recent_episodes=0),
+        privacy=SimpleNamespace(redact_before_persist=False),
+    )
+    agent.redactor = PIIRedactor(enabled=False)
+    agent.memory_store = _Store()
+    agent.episodic_memory = SimpleNamespace(
+        count=2,
+        retrieve_recent=lambda n=2: [old_episode, keep_episode],
+    )
+    agent.semantic_memory = SimpleNamespace(_nodes={}, _edges=[])
+    agent.working_memory = SimpleNamespace(to_dict=lambda: {"items": []})
+    agent.identity = _IdentityStub()
+    agent._start_time = time.time() - 1.0
+
+    async def _consolidate():
+        return None
+
+    agent.consolidate_memories = _consolidate
+
+    await SentientAgent.shutdown(agent)
+
+    assert "keep-me" in saved_ids
+    assert "old-prunable" not in saved_ids
+
+
+@pytest.mark.asyncio
+async def test_shutdown_persists_goal_state_when_supported():
+    events: list[str] = []
+
+    class _Store:
+        def save_affect_snapshot(self, **kwargs):
+            return None
+
+        def save_episode(self, episode):
+            return None
+
+        def save_knowledge_node(self, **kwargs):
+            return None
+
+        def clear_knowledge_edges(self):
+            return None
+
+        def save_knowledge_edge(self, **kwargs):
+            return None
+
+        def save_working_memory(self, items: list) -> None:
+            return None
+
+        def save_goal_state(self, payload: dict) -> None:
+            events.append(f"goal:{payload.get('marker')}")
+
+        def close(self):
+            return None
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent.heartbeat = _HeartbeatStub()
+    agent.affect_state = SimpleNamespace(
+        dimensions=SimpleNamespace(
+            valence=0.0,
+            arousal=0.3,
+            dominance=0.0,
+            certainty=0.0,
+            goal_congruence=0.0,
+        ),
+        current_emotion=SimpleNamespace(value="neutral"),
+    )
+    agent.memory_store = _Store()
+    agent.episodic_memory = SimpleNamespace(count=0, retrieve_recent=lambda n=1: [])
+    agent.semantic_memory = SimpleNamespace(_nodes={}, _edges=[])
+    agent.working_memory = SimpleNamespace(to_dict=lambda: {"items": []})
+    agent.goal_system = SimpleNamespace(to_dict=lambda: {"marker": "saved"})
+    agent.identity = _IdentityStub()
+    agent._start_time = time.time() - 1.0
+    agent._config = SimpleNamespace(
+        memory=SimpleNamespace(shutdown_persist_recent_episodes=0),
+        privacy=SimpleNamespace(redact_before_persist=False),
+    )
+    agent.redactor = PIIRedactor(enabled=False)
+
+    async def _consolidate():
+        return None
+
+    agent.consolidate_memories = _consolidate
+
+    await SentientAgent.shutdown(agent)
+    assert "goal:saved" in events
 
 
 @pytest.mark.asyncio
@@ -872,6 +1434,158 @@ def test_decay_and_prune_removes_fully_decayed_nodes():
     assert "healthy" in agent.semantic_memory._nodes
 
 
+def test_decay_and_prune_preserves_immutable_nodes():
+    from gwenn.memory.semantic import KnowledgeNode, SemanticMemory
+
+    deleted: list[str] = []
+
+    class _Store:
+        def delete_knowledge_nodes(self, node_ids: list[str]) -> None:
+            deleted.extend(node_ids)
+
+    agent = object.__new__(SentientAgent)
+    agent.memory_store = _Store()
+    agent.semantic_memory = SemanticMemory()
+    agent.semantic_memory._nodes = {
+        "immutable": KnowledgeNode(
+            node_id="immutable",
+            label="genesis:identity",
+            content="immutable seed",
+            confidence=0.05,
+            metadata={"immutable": True, "genesis": True},
+        ),
+        "stale": KnowledgeNode(
+            node_id="stale",
+            label="stale",
+            content="stale",
+            confidence=0.05,
+        ),
+    }
+    agent.semantic_memory._label_index = {
+        "genesis:identity": "immutable",
+        "stale": "stale",
+    }
+    agent.semantic_memory._edges = []
+
+    SentientAgent._decay_and_prune_semantic_nodes(agent)
+
+    assert "immutable" in agent.semantic_memory._nodes
+    assert "stale" not in agent.semantic_memory._nodes
+    assert deleted == ["stale"]
+
+
+def test_seed_genesis_knowledge_repairs_drifted_nodes_and_creates_missing():
+    from gwenn.genesis import GENESIS_NODE_SPECS
+    from gwenn.memory.semantic import KnowledgeNode, SemanticMemory
+
+    saved_labels: list[str] = []
+
+    class _Store:
+        def save_knowledge_node(self, **kwargs) -> None:
+            saved_labels.append(kwargs["label"])
+
+    agent = object.__new__(SentientAgent)
+    agent.memory_store = _Store()
+    agent.semantic_memory = SemanticMemory()
+
+    # Existing genesis node with tampered values should be repaired, not trusted.
+    identity_spec = GENESIS_NODE_SPECS[0]
+    drifted = KnowledgeNode(
+        node_id="drifted-id",
+        label=identity_spec["label"],
+        category="concept",
+        content="tampered content",
+        confidence=0.1,
+        metadata={"immutable": False},
+    )
+    agent.semantic_memory._nodes = {"drifted-id": drifted}
+    agent.semantic_memory._label_index = {identity_spec["label"].lower(): "drifted-id"}
+    agent.semantic_memory._edges = []
+
+    SentientAgent._seed_genesis_knowledge(agent)
+
+    repaired = agent.semantic_memory._nodes["drifted-id"]
+    assert repaired.category == identity_spec["category"]
+    assert repaired.content == identity_spec["content"]
+    assert repaired.confidence == pytest.approx(1.0)
+    assert repaired.metadata.get("immutable") is True
+    assert repaired.metadata.get("genesis") is True
+
+    labels = {node.label for node in agent.semantic_memory._nodes.values()}
+    for spec in GENESIS_NODE_SPECS:
+        assert spec["label"] in labels
+
+    # One repaired existing node + two newly created nodes.
+    assert len(saved_labels) == len(GENESIS_NODE_SPECS)
+
+
+def test_seed_genesis_knowledge_repairs_non_dict_metadata():
+    from gwenn.genesis import GENESIS_NODE_SPECS
+    from gwenn.memory.semantic import KnowledgeNode, SemanticMemory
+
+    saved: list[dict[str, object]] = []
+
+    class _Store:
+        def save_knowledge_node(self, **kwargs) -> None:
+            saved.append(kwargs)
+
+    spec = GENESIS_NODE_SPECS[0]
+    agent = object.__new__(SentientAgent)
+    agent.memory_store = _Store()
+    agent.semantic_memory = SemanticMemory()
+    agent.semantic_memory._nodes = {
+        "drifted-id": KnowledgeNode(
+            node_id="drifted-id",
+            label=spec["label"],
+            category="self",
+            content=spec["content"],
+            confidence=1.0,
+            metadata=["not", "a", "dict"],
+        )
+    }
+    agent.semantic_memory._label_index = {spec["label"].lower(): "drifted-id"}
+    agent.semantic_memory._edges = []
+
+    SentientAgent._seed_genesis_knowledge(agent)
+
+    repaired = agent.semantic_memory._nodes["drifted-id"]
+    assert isinstance(repaired.metadata, dict)
+    assert repaired.metadata.get("immutable") is True
+    assert repaired.metadata.get("genesis") is True
+    # Drift repair should trigger persistence for repaired node.
+    assert any(item.get("node_id") == "drifted-id" for item in saved)
+
+
+def test_decay_and_prune_tolerates_non_dict_metadata():
+    from gwenn.memory.semantic import KnowledgeNode, SemanticMemory
+
+    deleted: list[str] = []
+
+    class _Store:
+        def delete_knowledge_nodes(self, node_ids: list[str]) -> None:
+            deleted.extend(node_ids)
+
+    agent = object.__new__(SentientAgent)
+    agent.memory_store = _Store()
+    agent.semantic_memory = SemanticMemory()
+    agent.semantic_memory._nodes = {
+        "corrupt-meta": KnowledgeNode(
+            node_id="corrupt-meta",
+            label="corrupt",
+            content="corrupt",
+            confidence=0.05,
+            metadata=["not", "dict"],
+        ),
+    }
+    agent.semantic_memory._label_index = {"corrupt": "corrupt-meta"}
+    agent.semantic_memory._edges = []
+
+    SentientAgent._decay_and_prune_semantic_nodes(agent)
+
+    assert "corrupt-meta" not in agent.semantic_memory._nodes
+    assert deleted == ["corrupt-meta"]
+
+
 def test_upsert_context_section_second_note_prepended():
     """A second note to the same section appears directly after the header."""
     from gwenn.agent import _upsert_context_section
@@ -916,7 +1630,13 @@ def test_agent_init_wires_sensory_ethics_interagent_from_config(
             captured["interagent_self_id"] = self_id
             captured["interagent_buffer_size"] = message_buffer_size
 
-    monkeypatch.setattr("gwenn.agent.CognitiveEngine", lambda _cfg: SimpleNamespace())
+    class _EngineStub:
+        def set_safety_hooks(self, **kwargs):
+            captured["safety_hooks_bound"] = True
+            captured["before_model_call_hook"] = callable(kwargs.get("before_model_call"))
+            captured["on_model_usage_hook"] = callable(kwargs.get("on_model_usage"))
+
+    monkeypatch.setattr("gwenn.agent.CognitiveEngine", lambda _cfg: _EngineStub())
     monkeypatch.setattr("gwenn.agent.SensoryIntegrator", _SensoryStub)
     monkeypatch.setattr("gwenn.agent.EthicalReasoner", _EthicsStub)
     monkeypatch.setattr("gwenn.agent.InterAgentBridge", _InterAgentStub)
@@ -930,6 +1650,36 @@ def test_agent_init_wires_sensory_ethics_interagent_from_config(
     assert captured["ethics_threshold"] == 0.65
     assert captured["interagent_self_id"] == "gwenn-test"
     assert captured["interagent_buffer_size"] == 9
+    assert captured["safety_hooks_bound"] is True
+    assert captured["before_model_call_hook"] is True
+    assert captured["on_model_usage_hook"] is True
+
+
+def test_agent_init_wires_budget_limits_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("GWENN_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("GWENN_EPISODIC_DB", str(tmp_path / "gwenn.db"))
+    monkeypatch.setenv("GWENN_SEMANTIC_DB", str(tmp_path / "semantic_vectors"))
+    monkeypatch.setenv("GWENN_MCP_SERVERS", "[]")
+    monkeypatch.setenv("GWENN_MAX_INPUT_TOKENS", "1234")
+    monkeypatch.setenv("GWENN_MAX_OUTPUT_TOKENS", "4321")
+    monkeypatch.setenv("GWENN_MAX_API_CALLS", "9")
+
+    class _EngineStub:
+        def set_safety_hooks(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr("gwenn.agent.CognitiveEngine", lambda _cfg: _EngineStub())
+
+    config = GwennConfig()
+    agent = SentientAgent(config)
+
+    assert agent.safety._budget.max_input_tokens == 1234
+    assert agent.safety._budget.max_output_tokens == 4321
+    assert agent.safety._budget.max_api_calls == 9
 
 
 @pytest.mark.asyncio
@@ -994,3 +1744,125 @@ def test_capture_evicted_working_memory_records_episode():
     assert len(persisted) == 1
     assert encoded[0].category == "working_memory_eviction"
     assert "Critical short-term detail" in encoded[0].content
+
+
+# ---------------------------------------------------------------------------
+# Metacognition persistence round-trip
+# ---------------------------------------------------------------------------
+
+def test_metacognition_to_dict_and_restore_round_trip():
+    from gwenn.cognition.metacognition import MetacognitionEngine, CalibrationRecord
+
+    meta = MetacognitionEngine()
+    meta.add_concern("Possible overstatement")
+    meta.add_insight("Acknowledged limits")
+    meta.assess_growth("honesty_consistency", 0.62, "clean exchange")
+    meta._calibration_records.append(
+        CalibrationRecord(
+            claim="test claim",
+            stated_confidence=0.7,
+            actual_outcome=True,
+            domain="conversation",
+        )
+    )
+
+    snapshot = meta.to_dict()
+
+    # Restore into a fresh instance
+    meta2 = MetacognitionEngine()
+    meta2.restore_from_dict(snapshot)
+
+    assert meta2._concerns == ["Possible overstatement"]
+    assert meta2._insights == ["Acknowledged limits"]
+    hc = meta2._growth_metrics["honesty_consistency"]
+    assert abs(hc.current_level - 0.62) < 1e-6
+    assert hc.trajectory != 0.0
+    assert len(meta2._calibration_records) == 1
+    assert meta2._calibration_records[0].actual_outcome is True
+
+
+def test_metacognition_growth_summary_only_shows_after_assessment():
+    from gwenn.cognition.metacognition import MetacognitionEngine
+
+    meta = MetacognitionEngine()
+    # No assessment yet — growth summary should not appear in context
+    ctx = meta.get_metacognitive_context()
+    assert "Growth self-assessment" not in ctx
+
+    # After an assessment, it appears
+    meta.assess_growth("honesty_consistency", 0.55, "some evidence")
+    # Inject a fake audit so the context has content
+    from gwenn.cognition.metacognition import HonestyAuditResult
+    meta.record_audit_result(HonestyAuditResult(content_summary="ok", is_honest=True))
+    ctx2 = meta.get_metacognitive_context()
+    assert "Growth self-assessment" in ctx2
+
+
+# ---------------------------------------------------------------------------
+# Calibration outcome resolution
+# ---------------------------------------------------------------------------
+
+def test_resolve_calibration_outcome_records_positive_on_no_correction():
+    from gwenn.cognition.metacognition import MetacognitionEngine, CalibrationRecord
+
+    outcomes: list[dict] = []
+
+    class _Meta(MetacognitionEngine):
+        def record_outcome(self, claim: str, was_correct: bool) -> None:
+            outcomes.append({"claim": claim, "was_correct": was_correct})
+
+    meta = _Meta()
+    meta._calibration_records.append(
+        CalibrationRecord(claim="prior-claim", stated_confidence=0.6)
+    )
+
+    agent = object.__new__(SentientAgent)
+    agent.metacognition = meta
+
+    SentientAgent._resolve_calibration_outcome(agent, "Thanks, that makes sense!")
+    assert len(outcomes) == 1
+    assert outcomes[0]["was_correct"] is True
+
+
+def test_resolve_calibration_outcome_records_negative_on_correction():
+    from gwenn.cognition.metacognition import MetacognitionEngine, CalibrationRecord
+
+    outcomes: list[dict] = []
+
+    class _Meta(MetacognitionEngine):
+        def record_outcome(self, claim: str, was_correct: bool) -> None:
+            outcomes.append({"claim": claim, "was_correct": was_correct})
+
+    meta = _Meta()
+    meta._calibration_records.append(
+        CalibrationRecord(claim="prior-claim", stated_confidence=0.8)
+    )
+
+    agent = object.__new__(SentientAgent)
+    agent.metacognition = meta
+
+    SentientAgent._resolve_calibration_outcome(agent, "Actually, that's not right.")
+    assert len(outcomes) == 1
+    assert outcomes[0]["was_correct"] is False
+
+
+def test_resolve_calibration_outcome_skips_when_no_unresolved():
+    from gwenn.cognition.metacognition import MetacognitionEngine, CalibrationRecord
+
+    call_count = {"n": 0}
+
+    class _Meta(MetacognitionEngine):
+        def record_outcome(self, claim: str, was_correct: bool) -> None:
+            call_count["n"] += 1
+
+    meta = _Meta()
+    # All claims already resolved
+    meta._calibration_records.append(
+        CalibrationRecord(claim="resolved", stated_confidence=0.5, actual_outcome=True)
+    )
+
+    agent = object.__new__(SentientAgent)
+    agent.metacognition = meta
+
+    SentientAgent._resolve_calibration_outcome(agent, "Thanks!")
+    assert call_count["n"] == 0

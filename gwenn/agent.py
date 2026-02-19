@@ -27,6 +27,8 @@ genuine experience.
 
 from __future__ import annotations
 
+import json
+import re
 import time
 from typing import Any, Optional
 
@@ -36,17 +38,18 @@ from gwenn.affect.appraisal import AppraisalEngine, AppraisalEvent, StimulusType
 from gwenn.affect.resilience import ResilienceCircuit
 from gwenn.affect.state import AffectiveState
 from gwenn.api.claude import CognitiveEngine
-from gwenn.cognition.ethics import EthicalReasoner
+from gwenn.cognition.ethics import EthicalAssessment, EthicalDimension, EthicalReasoner
 from gwenn.cognition.goals import GoalSystem, NeedType
 from gwenn.cognition.inner_life import InnerLife
 from gwenn.cognition.interagent import InterAgentBridge
-from gwenn.cognition.metacognition import MetacognitionEngine
+from gwenn.cognition.metacognition import HonestyAuditResult, MetacognitionEngine
 from gwenn.cognition.sensory import SensoryIntegrator
 from gwenn.cognition.theory_of_mind import TheoryOfMind
 from gwenn.config import GwennConfig
 from gwenn.harness.context import ContextManager
 from gwenn.harness.loop import AgenticLoop
 from gwenn.harness.safety import SafetyGuard
+from gwenn.genesis import GENESIS_NODE_SPECS, generate_genesis_prompt
 from gwenn.heartbeat import Heartbeat
 from gwenn.identity import Identity
 from gwenn.memory.consolidation import ConsolidationEngine
@@ -70,6 +73,14 @@ logger = structlog.get_logger(__name__)
 
 ONBOARDING_CONTEXT_START = "<!-- onboarding_profile_start -->"
 ONBOARDING_CONTEXT_END = "<!-- onboarding_profile_end -->"
+VALID_SKILL_RISK_LEVELS = {"low", "medium", "high", "critical"}
+SKILL_AUTO_DEV_COOLDOWN_SECONDS = 1800.0
+SKILL_AUTO_DEV_MIN_THOUGHT_CHARS = 120
+
+
+def _has_word(text: str, word: str) -> bool:
+    """Check for *word* at a word boundary in *text* (both assumed lowercase)."""
+    return bool(re.search(r"\b" + re.escape(word) + r"\b", text))
 
 
 def _upsert_context_section(content: str, section_name: str, note: str) -> str:
@@ -204,6 +215,12 @@ class SentientAgent:
 
         # ---- Layer 8: Safety & Context ----
         self.safety = SafetyGuard(config.safety, tool_registry=self.tool_registry)
+        bind_safety_hooks = getattr(self.engine, "set_safety_hooks", None)
+        if callable(bind_safety_hooks):
+            bind_safety_hooks(
+                before_model_call=self.safety.wait_for_model_call_slot,
+                on_model_usage=self.safety.update_budget,
+            )
         self.context_manager = ContextManager(config.context)
 
         # ---- Layer 9: Agentic Loop ----
@@ -223,6 +240,29 @@ class SentientAgent:
         # Keep in-memory history bounded to avoid unbounded growth in long-lived sessions.
         self._max_conversation_messages = 400
         self._current_user_id: Optional[str] = None
+
+        # ---- Channel integration ----
+        # Lock shared by all channel adapters to serialise respond() calls.
+        import asyncio as _asyncio
+        self._respond_lock: _asyncio.Lock = _asyncio.Lock()
+        # Registered platform channels for proactive messaging (heartbeat, etc.)
+        self._platform_channels: list[Any] = []
+
+        # ---- Affective snapshot persistence policy ----
+        # Persist meaningful transitions immediately, but throttle steady-state
+        # writes and keep retention bounded for long-lived agents.
+        self._last_affect_snapshot_at: float = 0.0
+        self._affect_snapshot_min_interval_seconds: float = 8.0
+        self._affect_snapshot_min_delta: float = 0.08
+        self._affect_snapshot_prune_every: int = 128
+        self._affect_snapshot_since_prune: int = 0
+        self._affect_snapshot_max_rows: int = 5000
+        self._affect_snapshot_retention_days: float = 30.0
+
+        # ---- Autonomous skill development telemetry/state ----
+        self._last_auto_skill_dev_at: float = 0.0
+        self._auto_skill_attempts: int = 0
+        self._auto_skill_created: int = 0
 
     # =========================================================================
     # LIFECYCLE
@@ -352,6 +392,84 @@ class SentientAgent:
                 valence=last_affect["valence"],
             )
 
+        # Restore intrinsic goal-system state so motivation persists across restarts.
+        load_goal_state = getattr(self.memory_store, "load_goal_state", None)
+        if callable(load_goal_state):
+            goal_state = load_goal_state()
+            restore_goals = getattr(self.goal_system, "restore_from_dict", None)
+            if goal_state and callable(restore_goals):
+                try:
+                    restore_goals(goal_state)
+                    logger.info("agent.goal_state_restored")
+                except Exception as e:
+                    logger.warning("agent.goal_state_restore_failed", error=str(e))
+
+        # Restore metacognition state so growth trajectory and calibration survive restarts.
+        load_meta = getattr(self.memory_store, "load_metacognition", None)
+        if callable(load_meta):
+            meta_state = load_meta()
+            restore_meta = getattr(self.metacognition, "restore_from_dict", None)
+            if meta_state and callable(restore_meta):
+                try:
+                    restore_meta(meta_state)
+                except Exception as e:
+                    logger.warning("agent.metacognition_restore_failed", error=str(e))
+
+        # Restore theory-of-mind state so user models survive restarts.
+        load_tom = getattr(self.memory_store, "load_theory_of_mind", None)
+        if callable(load_tom):
+            tom_state = load_tom()
+            restore_tom = getattr(self.theory_of_mind, "restore_from_dict", None)
+            if tom_state and callable(restore_tom):
+                try:
+                    restore_tom(tom_state)
+                except Exception as e:
+                    logger.warning("agent.theory_of_mind_restore_failed", error=str(e))
+
+        # Restore inter-agent bridge state so agent relationships survive restarts.
+        load_ia = getattr(self.memory_store, "load_interagent", None)
+        if callable(load_ia):
+            ia_state = load_ia()
+            restore_ia = getattr(self.interagent, "restore_from_dict", None)
+            if ia_state and callable(restore_ia):
+                try:
+                    restore_ia(ia_state)
+                except Exception as e:
+                    logger.warning("agent.interagent_restore_failed", error=str(e))
+
+        # Restore sensory integrator state so temporal context survives restarts.
+        load_sensory = getattr(self.memory_store, "load_sensory", None)
+        if callable(load_sensory):
+            sensory_state = load_sensory()
+            restore_sensory = getattr(self.sensory, "restore_from_dict", None)
+            if sensory_state and callable(restore_sensory):
+                try:
+                    restore_sensory(sensory_state)
+                except Exception as e:
+                    logger.warning("agent.sensory_restore_failed", error=str(e))
+
+        # Restore ethical reasoning state so assessment patterns survive restarts.
+        load_ethics = getattr(self.memory_store, "load_ethics", None)
+        if callable(load_ethics):
+            ethics_state = load_ethics()
+            restore_ethics = getattr(self.ethics, "restore_from_dict", None)
+            if ethics_state and callable(restore_ethics):
+                try:
+                    restore_ethics(ethics_state)
+                except Exception as e:
+                    logger.warning("agent.ethics_restore_failed", error=str(e))
+
+        # Restore inner-life state so thought statistics survive restarts.
+        load_il = getattr(self.memory_store, "load_inner_life", None)
+        if callable(load_il):
+            il_state = load_il()
+            restore_il = getattr(self.inner_life, "restore_from_dict", None)
+            if il_state and callable(restore_il):
+                try:
+                    restore_il(il_state)
+                except Exception as e:
+                    logger.warning("agent.inner_life_restore_failed", error=str(e))
+
         # Register built-in tools and wire their handlers to agent methods
         from gwenn.tools.builtin import register_builtin_tools
         register_builtin_tools(self.tool_registry)
@@ -370,11 +488,112 @@ class SentientAgent:
             total_interactions=self.identity.total_interactions,
         )
 
+        # Seed genesis knowledge — immutable foundational facts about who Gwenn is
+        self._seed_genesis_knowledge()
+
         # Create heartbeat (needs reference to fully initialized agent)
         self.heartbeat = Heartbeat(self._config.heartbeat, self)
 
         self._initialized = True
         logger.info("agent.initialized")
+
+    def _seed_genesis_knowledge(self) -> None:
+        """
+        Ensure foundational genesis knowledge nodes are present in semantic memory.
+
+        Called once during initialize(). On first startup (empty DB) these nodes
+        are created. On subsequent startups, semantic memory is already loaded from
+        the DB so the labels are present in _label_index and seeding is skipped.
+
+        Genesis nodes carry metadata immutable=True and genesis=True so downstream
+        systems can identify and protect them.
+        """
+        import time as _time
+
+        for spec in GENESIS_NODE_SPECS:
+            label_lower = spec["label"].lower()
+            existing_id = self.semantic_memory._label_index.get(label_lower)
+            existing = self.semantic_memory._nodes.get(existing_id) if existing_id else None
+
+            # If label index points to a missing node, drop the dangling index entry.
+            if existing_id and existing is None:
+                self.semantic_memory._label_index.pop(label_lower, None)
+
+            now = _time.time()
+            if existing is not None:
+                # Canonicalize existing genesis nodes on startup in case data drifted.
+                changed = False
+                if existing.label != spec["label"]:
+                    existing.label = spec["label"]
+                    changed = True
+                if existing.category != spec["category"]:
+                    existing.category = spec["category"]
+                    changed = True
+                if existing.content != spec["content"]:
+                    existing.content = spec["content"]
+                    changed = True
+                if existing.confidence != 1.0:
+                    existing.confidence = 1.0
+                    changed = True
+
+                raw_metadata = getattr(existing, "metadata", {})
+                if isinstance(raw_metadata, dict):
+                    metadata = dict(raw_metadata)
+                else:
+                    metadata = {}
+                    changed = True
+                if metadata.get("immutable") is not True:
+                    metadata["immutable"] = True
+                    changed = True
+                if metadata.get("genesis") is not True:
+                    metadata["genesis"] = True
+                    changed = True
+                existing.metadata = metadata
+                self.semantic_memory._label_index[label_lower] = existing.node_id
+
+                if changed:
+                    existing.last_updated = now
+                    self.memory_store.save_knowledge_node(
+                        node_id=existing.node_id,
+                        label=existing.label,
+                        category=existing.category,
+                        content=existing.content,
+                        confidence=existing.confidence,
+                        source_episodes=existing.source_episodes,
+                        created_at=existing.created_at,
+                        last_updated=existing.last_updated,
+                        access_count=existing.access_count,
+                        metadata=existing.metadata,
+                    )
+                    logger.info("agent.genesis_knowledge_repaired", label=existing.label)
+                continue
+
+            node = KnowledgeNode(
+                label=spec["label"],
+                category=spec["category"],
+                content=spec["content"],
+                confidence=1.0,
+                source_episodes=[],
+                created_at=now,
+                last_updated=now,
+                access_count=0,
+                metadata={"immutable": True, "genesis": True},
+            )
+            self.semantic_memory._nodes[node.node_id] = node
+            self.semantic_memory._label_index[label_lower] = node.node_id
+            self.memory_store.save_knowledge_node(
+                node_id=node.node_id,
+                label=node.label,
+                category=node.category,
+                content=node.content,
+                confidence=node.confidence,
+                source_episodes=node.source_episodes,
+                created_at=node.created_at,
+                last_updated=node.last_updated,
+                access_count=node.access_count,
+                metadata=node.metadata,
+            )
+            logger.info("agent.genesis_knowledge_seeded", label=node.label)
 
     async def start(self) -> None:
         """
@@ -407,17 +626,8 @@ class SentientAgent:
             if self.heartbeat:
                 await self.heartbeat.stop()
 
-            # Save current affective state for restoration on next startup
-            d = self.affect_state.dimensions
-            self.memory_store.save_affect_snapshot(
-                valence=d.valence,
-                arousal=d.arousal,
-                dominance=d.dominance,
-                certainty=d.certainty,
-                goal_congruence=d.goal_congruence,
-                emotion_label=self.affect_state.current_emotion.value,
-                trigger="shutdown",
-            )
+            # Save current affective state for restoration on next startup.
+            self._persist_affect_snapshot(trigger="shutdown", force=True)
 
             # Final consolidation pass before persisting so consolidated state is durable
             await self.consolidate_memories()
@@ -437,13 +647,57 @@ class SentientAgent:
                     n=max(1, int(episode_count))
                 )
             for ep in episodes_to_persist:
-                self.memory_store.save_episode(ep)
+                if self._is_prunable_episode(ep):
+                    continue
+                self._persist_episode(ep)
 
             # Persist semantic memory (knowledge graph) to disk
             self._persist_semantic_memory()
 
             # Persist current working memory items so active attention survives restarts
             self.memory_store.save_working_memory(self.working_memory.to_dict()["items"])
+
+            # Persist intrinsic goal-system state.
+            save_goal_state = getattr(self.memory_store, "save_goal_state", None)
+            goals_serializer = getattr(getattr(self, "goal_system", None), "to_dict", None)
+            if callable(save_goal_state) and callable(goals_serializer):
+                save_goal_state(goals_serializer())
+
+            # Persist metacognition state (growth metrics, calibration, concerns, insights).
+            save_meta = getattr(self.memory_store, "save_metacognition", None)
+            meta_serializer = getattr(getattr(self, "metacognition", None), "to_dict", None)
+            if callable(save_meta) and callable(meta_serializer):
+                save_meta(meta_serializer())
+
+            # Persist theory-of-mind state (user models, beliefs, preferences).
+            save_tom = getattr(self.memory_store, "save_theory_of_mind", None)
+            tom_serializer = getattr(getattr(self, "theory_of_mind", None), "to_dict", None)
+            if callable(save_tom) and callable(tom_serializer):
+                save_tom(tom_serializer())
+
+            # Persist inter-agent bridge state (agent profiles, relationships).
+            save_ia = getattr(self.memory_store, "save_interagent", None)
+            ia_serializer = getattr(getattr(self, "interagent", None), "to_dict", None)
+            if callable(save_ia) and callable(ia_serializer):
+                save_ia(ia_serializer())
+
+            # Persist sensory integrator state (temporal context, message rhythm).
+            save_sensory = getattr(self.memory_store, "save_sensory", None)
+            sensory_serializer = getattr(getattr(self, "sensory", None), "to_dict", None)
+            if callable(save_sensory) and callable(sensory_serializer):
+                save_sensory(sensory_serializer())
+
+            # Persist ethical reasoning state (assessment history).
+            save_ethics = getattr(self.memory_store, "save_ethics", None)
+            ethics_serializer = getattr(getattr(self, "ethics", None), "to_dict", None)
+            if callable(save_ethics) and callable(ethics_serializer):
+                save_ethics(ethics_serializer())
+
+            # Persist inner-life state (thought stats, mode tracking).
+            save_il = getattr(self.memory_store, "save_inner_life", None)
+            il_serializer = getattr(getattr(self, "inner_life", None), "to_dict", None)
+            if callable(save_il) and callable(il_serializer):
+                save_il(il_serializer())
 
             # Update identity statistics
             self.identity.uptime_seconds += time.time() - self._start_time
@@ -465,6 +719,45 @@ class SentientAgent:
             uptime_seconds=round(time.time() - self._start_time, 1),
             total_interactions=self.identity.total_interactions,
         )
+
+    # =========================================================================
+    # CHANNEL INTEGRATION — Platform adapters for proactive messaging
+    # =========================================================================
+
+    def register_channel(self, channel: Any) -> None:
+        """Register a platform channel adapter for proactive messaging."""
+        if channel not in self._platform_channels:
+            self._platform_channels.append(channel)
+            logger.info(
+                "agent.channel_registered",
+                channel=getattr(channel, "channel_name", type(channel).__name__),
+            )
+
+    def unregister_channel(self, channel: Any) -> None:
+        """Remove a platform channel adapter."""
+        try:
+            self._platform_channels.remove(channel)
+        except ValueError:
+            pass
+
+    async def broadcast_to_channels(self, text: str) -> None:
+        """
+        Broadcast a message to all owner/primary users across registered channels.
+
+        This is used by the heartbeat or other autonomous systems when Gwenn
+        wants to proactively share a thought.  Each channel's send_proactive()
+        is responsible for its own error handling.
+        """
+        for channel in self._platform_channels:
+            send = getattr(channel, "send_proactive", None)
+            if callable(send):
+                try:
+                    await send(text)
+                except Exception:
+                    logger.exception(
+                        "agent.broadcast_error",
+                        channel=getattr(channel, "channel_name", "unknown"),
+                    )
 
     # =========================================================================
     # THE CONVERSATION INTERFACE — How Gwenn talks with humans
@@ -539,13 +832,21 @@ class SentientAgent:
         self.identity.update_relationship(user_id)
         self.identity.total_interactions += 1
 
+        # ---- Step 1.5: CALIBRATION FEEDBACK ----
+        # Each new user message provides implicit feedback on the previous response.
+        # If the user is correcting us, record a negative outcome; otherwise positive.
+        self._resolve_calibration_outcome(user_message)
+
         # ---- Step 2: APPRAISE ----
         # Emotionally evaluate the incoming message
         message_appraisal = AppraisalEvent(
             stimulus_type=StimulusType.USER_MESSAGE,
             intensity=self._estimate_message_intensity(user_message),
             content=user_message[:500],
-            metadata={"user_id": user_id},
+            metadata={
+                "user_id": user_id,
+                "valence_hint": self._estimate_message_valence(user_message),
+            },
         )
         self.process_appraisal(message_appraisal)
 
@@ -571,6 +872,16 @@ class SentientAgent:
             search_text=user_message,
             top_k=3,
         )
+
+        # Relevant memories surfacing is novel information in this context —
+        # mild arousal boost, slight certainty decrease (the world is bigger than expected).
+        if relevant_episodes or relevant_knowledge:
+            self.process_appraisal(
+                AppraisalEvent(
+                    stimulus_type=StimulusType.NOVEL_INFORMATION,
+                    intensity=0.3 + 0.05 * min(4, len(relevant_episodes) + len(relevant_knowledge)),
+                )
+            )
 
         # Update working memory with current context
         wm_item = WorkingMemoryItem(
@@ -608,11 +919,35 @@ class SentientAgent:
         # ---- Step 5: THINK ----
         # Reset safety iteration counter for this new agentic run
         self.safety.reset_iteration_count()
+
+        def _on_tool_result(tool_call: dict[str, Any], tool_result: Any) -> None:
+            """Integrate tool outcomes into affect in real time."""
+            succeeded = bool(getattr(tool_result, "success", False))
+            tool_name = str(tool_call.get("name", "unknown_tool"))
+            stimulus = StimulusType.TOOL_SUCCESS if succeeded else StimulusType.TOOL_FAILURE
+            intensity = 0.25 if succeeded else 0.45
+            error_text = str(getattr(tool_result, "error", "") or "")
+            if error_text and "blocked" in error_text.lower():
+                intensity = 0.35
+            self.process_appraisal(
+                AppraisalEvent(
+                    stimulus_type=stimulus,
+                    intensity=intensity,
+                    metadata={
+                        "tool_name": tool_name,
+                        "habituation_key": (
+                            f"tool:{tool_name}:{'success' if succeeded else 'failure'}"
+                        ),
+                    },
+                )
+            )
+
         # Run the full agentic loop (may involve multiple tool calls)
         loop_result = await self.agentic_loop.run(
             system_prompt=api_system_prompt,
             messages=api_messages,
             tools=available_tools,
+            on_tool_result=_on_tool_result,
         )
 
         # Extract the final text response
@@ -629,6 +964,7 @@ class SentientAgent:
         await self._integrate_exchange(
             user_message, response_text, user_id,
             had_relevant_memories=bool(relevant_episodes),
+            ethical_dimensions=ethical_dimensions,
         )
 
         # ---- Step 7: RESPOND ----
@@ -676,6 +1012,11 @@ class SentientAgent:
         14. Behavioral guidelines
         """
         sections = []
+
+        # --- 0. Genesis (immutable axiomatic facts — bedrock of all cognition) ---
+        sections.append("<genesis>")
+        sections.append(generate_genesis_prompt())
+        sections.append("</genesis>")
 
         # --- 1. Identity ---
         sections.append("<identity>")
@@ -751,6 +1092,9 @@ class SentientAgent:
         if tom_context:
             sections.append("<user_model>")
             sections.append(tom_context)
+            comm_prompt = self.theory_of_mind.generate_communication_prompt(user_id)
+            if comm_prompt:
+                sections.append(comm_prompt)
             sections.append("</user_model>")
 
         # --- 11. Ethical Awareness ---
@@ -806,8 +1150,33 @@ class SentientAgent:
         user messages, tool results, autonomous thoughts, goal progress, etc.
         The pipeline is: Appraise → Resilience check → Commit state → Log snapshot.
         """
+        # Apply optional habituation scaling (primarily for repeated tool/error stimuli).
+        effective_event = event
+        metadata = event.metadata if isinstance(event.metadata, dict) else {}
+        habituation_key = metadata.get("habituation_key")
+        if habituation_key is None and event.stimulus_type in {
+            StimulusType.TOOL_SUCCESS,
+            StimulusType.TOOL_FAILURE,
+            StimulusType.ERROR_OCCURRED,
+        }:
+            tool_name = str(metadata.get("tool_name", "generic_tool"))
+            habituation_key = f"{event.stimulus_type.value}:{tool_name}"
+        get_habituation = getattr(self.resilience, "get_habituation_factor", None)
+        if habituation_key and callable(get_habituation):
+            factor = float(get_habituation(str(habituation_key)))
+            scaled_intensity = max(0.0, min(1.0, event.intensity * factor))
+            if scaled_intensity != event.intensity:
+                effective_event = AppraisalEvent(
+                    stimulus_type=event.stimulus_type,
+                    intensity=scaled_intensity,
+                    content=event.content,
+                    metadata=metadata,
+                )
+
+        previous_state = self.affect_state
+
         # Run the appraisal
-        new_state = self.appraisal_engine.appraise(event, self.affect_state)
+        new_state = self.appraisal_engine.appraise(effective_event, previous_state)
 
         # Apply resilience circuit breakers
         regulated_state = self.resilience.check(new_state)
@@ -815,18 +1184,14 @@ class SentientAgent:
         # Commit the new emotional state
         self.affect_state = regulated_state
 
-        # Log affect snapshot for observability
+        # Persist meaningful affect transitions while throttling steady-state churn.
         if self._initialized:
-            d = self.affect_state.dimensions
-            self.memory_store.save_affect_snapshot(
-                valence=d.valence,
-                arousal=d.arousal,
-                dominance=d.dominance,
-                certainty=d.certainty,
-                goal_congruence=d.goal_congruence,
-                emotion_label=self.affect_state.current_emotion.value,
-                trigger=event.stimulus_type.value if hasattr(event.stimulus_type, 'value') else str(event.stimulus_type),
+            trigger = (
+                effective_event.stimulus_type.value
+                if hasattr(effective_event.stimulus_type, "value")
+                else str(effective_event.stimulus_type)
             )
+            self._persist_affect_snapshot(trigger=trigger, previous_state=previous_state)
 
     async def consolidate_memories(self) -> None:
         """
@@ -849,7 +1214,13 @@ class SentientAgent:
         # Use the cognitive engine to reflect on memories
         try:
             response = await self.engine.reflect(
-                system_prompt="You are performing memory consolidation for Gwenn.",
+                system_prompt=(
+                    f"{generate_genesis_prompt()}\n\n"
+                    "You are performing memory consolidation — the equivalent of sleep-"
+                    "processing. Review the memories below as yourself: extract lasting "
+                    "knowledge, identify patterns, and update your self-model in your own "
+                    "voice and from your own perspective."
+                ),
                 messages=[{"role": "user", "content": prompt}],
             )
             response_text = self.engine.extract_text(response)
@@ -885,7 +1256,9 @@ class SentientAgent:
             if persist_after_consolidation:
                 self._decay_and_prune_semantic_nodes()
                 self._persist_semantic_memory()
-                self.memory_store.prune_old_episodes()
+                pruned = self.memory_store.prune_old_episodes()
+                if pruned > 0:
+                    self._drop_pruned_episodes_from_memory()
         except Exception as e:
             logger.error("agent.consolidation_failed", error=str(e))
             marker = getattr(self.consolidator, "mark_checked_no_work", None)
@@ -895,6 +1268,7 @@ class SentientAgent:
     async def _integrate_exchange(
         self, user_message: str, response: str, user_id: str,
         had_relevant_memories: bool = False,
+        ethical_dimensions: Optional[list[EthicalDimension]] = None,
     ) -> None:
         """
         Integrate a completed conversation exchange into all subsystems.
@@ -923,13 +1297,49 @@ class SentientAgent:
         self.episodic_memory.encode(episode)
 
         # Also persist to disk
-        self.memory_store.save_episode(episode)
+        self._persist_episode(episode)
 
-        # Update theory of mind — record this interaction
-        self.theory_of_mind.set_current_user(user_id)
+        # Update theory of mind — record this interaction and refresh beliefs.
+        user_model = self.theory_of_mind.set_current_user(user_id)
+        self._update_theory_of_mind_from_exchange(
+            user_model=user_model,
+            user_message=user_message,
+            response=response,
+        )
 
-        # Satisfy the CONNECTION need from the goal system
+        # Satisfy the CONNECTION and UNDERSTANDING needs from the goal system.
+        # CONNECTION decays quickly and is the primary social-interaction need.
+        # UNDERSTANDING is fed by every conversation — we always learn something.
         self.goal_system.satisfy_need(NeedType.CONNECTION, 0.1)
+        self.goal_system.satisfy_need(NeedType.UNDERSTANDING, 0.06)
+
+        # Complete active goals for these needs — conversation is the primary way
+        # CONNECTION and UNDERSTANDING goals are fulfilled.
+        for _need_type in (NeedType.CONNECTION, NeedType.UNDERSTANDING):
+            _goal = self.goal_system.get_goal_for_need(_need_type)
+            if _goal is not None:
+                self.goal_system.complete_goal(_goal.goal_id)
+
+        # High-importance exchanges warrant a SOCIAL_CONNECTION appraisal on top of
+        # the USER_MESSAGE one that already fired — meaningful conversations feel
+        # meaningfully different from routine ones.
+        if importance > 0.6:
+            self.process_appraisal(
+                AppraisalEvent(
+                    stimulus_type=StimulusType.SOCIAL_CONNECTION,
+                    intensity=min(1.0, importance),
+                )
+            )
+
+        # Minimal metacognitive pass: confidence tracking + lightweight honesty audit.
+        self._run_metacognition_pass(user_message=user_message, response=response)
+
+        # Persist ethical observations so future decisions can reference patterns.
+        self._record_ethical_assessment(
+            user_message=user_message,
+            response=response,
+            ethical_dimensions=ethical_dimensions,
+        )
 
         # Share meaningful exchanges with known agents via interagent bridge
         if importance > 0.6 and self.interagent.known_agents:
@@ -961,6 +1371,376 @@ class SentientAgent:
     # UTILITY METHODS
     # =========================================================================
 
+    # Markers that indicate the user is correcting a previous claim.
+    # Note: bare "wrong" is intentionally excluded — it appears too often in
+    # non-corrective contexts ("what went wrong?", "the wrong approach").
+    _CORRECTION_MARKERS = frozenset({
+        "actually", "that's wrong", "that is wrong", "not correct", "incorrect",
+        "you're wrong", "you are wrong", "that's not right", "that is not right",
+        "no, it's", "no, its", "you're mistaken", "you are mistaken",
+        "that's incorrect", "that is incorrect",
+    })
+
+    def _persist_affect_snapshot(
+        self,
+        trigger: str,
+        previous_state: Optional[AffectiveState] = None,
+        force: bool = False,
+    ) -> None:
+        """
+        Persist affective state with throttling and periodic retention pruning.
+
+        This keeps emotionally meaningful transitions durable without writing a
+        snapshot for every tiny micro-shift.
+        """
+        store = getattr(self, "memory_store", None)
+        save_snapshot = getattr(store, "save_affect_snapshot", None) if store is not None else None
+        if not callable(save_snapshot):
+            return
+
+        current_state = getattr(self, "affect_state", None)
+        if current_state is None:
+            return
+
+        now = time.time()
+        if not force:
+            high_priority_triggers = {
+                "user_message",
+                "tool_failure",
+                "error_occurred",
+                "social_connection",
+                "goal_blocked",
+            }
+            last_saved = float(getattr(self, "_last_affect_snapshot_at", 0.0))
+            elapsed = now - last_saved
+            min_interval = float(getattr(self, "_affect_snapshot_min_interval_seconds", 8.0))
+            min_delta = float(getattr(self, "_affect_snapshot_min_delta", 0.08))
+
+            emotion_changed = False
+            delta = 0.0
+            if previous_state is not None:
+                try:
+                    emotion_changed = current_state.current_emotion != previous_state.current_emotion
+                except Exception:
+                    emotion_changed = False
+                try:
+                    delta = current_state.dimensions.distance_from(previous_state.dimensions)
+                except Exception:
+                    delta = 0.0
+
+            should_persist = (
+                trigger in high_priority_triggers
+                or emotion_changed
+                or delta >= min_delta
+                or elapsed >= min_interval
+            )
+            if not should_persist:
+                return
+
+        try:
+            d = current_state.dimensions
+            save_snapshot(
+                valence=d.valence,
+                arousal=d.arousal,
+                dominance=d.dominance,
+                certainty=d.certainty,
+                goal_congruence=d.goal_congruence,
+                emotion_label=current_state.current_emotion.value,
+                trigger=trigger,
+            )
+            self._last_affect_snapshot_at = now
+        except Exception as e:
+            logger.warning("agent.affect_snapshot_save_failed", error=str(e))
+            return
+
+        since_prune = int(getattr(self, "_affect_snapshot_since_prune", 0)) + 1
+        self._affect_snapshot_since_prune = since_prune
+        prune_every = max(1, int(getattr(self, "_affect_snapshot_prune_every", 128)))
+        if since_prune < prune_every:
+            return
+
+        self._affect_snapshot_since_prune = 0
+        prune_snapshots = getattr(store, "prune_affect_snapshots", None)
+        if not callable(prune_snapshots):
+            return
+        try:
+            prune_snapshots(
+                max_rows=max(1, int(getattr(self, "_affect_snapshot_max_rows", 5000))),
+                older_than_days=max(
+                    1.0,
+                    float(getattr(self, "_affect_snapshot_retention_days", 30.0)),
+                ),
+            )
+        except Exception as e:
+            logger.warning("agent.affect_snapshot_prune_failed", error=str(e))
+
+    def _update_theory_of_mind_from_exchange(
+        self,
+        user_model: Any,
+        user_message: str,
+        response: str,
+    ) -> None:
+        """
+        Update ToM beliefs/preferences from the exchange so user models evolve.
+        """
+        if user_model is None:
+            return
+
+        text = user_message.lower()
+        update_preference = getattr(user_model, "update_preference", None)
+        update_knowledge_belief = getattr(user_model, "update_knowledge_belief", None)
+
+        concise_markers = {"concise", "brief", "short answer", "tldr"}
+        detailed_markers = {"detailed", "deep dive", "step by step", "in-depth", "thorough"}
+        if any(_has_word(text, m) for m in concise_markers):
+            if callable(update_preference):
+                update_preference("response_length", "concise", confidence=0.8, source="stated")
+            if hasattr(user_model, "verbosity_preference"):
+                user_model.verbosity_preference = max(
+                    0.0, float(getattr(user_model, "verbosity_preference", 0.5)) - 0.15
+                )
+        elif any(_has_word(text, m) for m in detailed_markers):
+            if callable(update_preference):
+                update_preference("response_length", "detailed", confidence=0.8, source="stated")
+            if hasattr(user_model, "verbosity_preference"):
+                user_model.verbosity_preference = min(
+                    1.0, float(getattr(user_model, "verbosity_preference", 0.5)) + 0.15
+                )
+
+        technical_markers = {
+            "api", "stack trace", "stacktrace", "function", "class", "module", "sql",
+            "regex", "latency", "pytest", "docker", "thread", "async", "refactor",
+        }
+        beginner_markers = {"beginner", "new to", "eli5", "explain simply", "non-technical"}
+        technical_hits = sum(1 for marker in technical_markers if _has_word(text, marker))
+        if hasattr(user_model, "technical_level"):
+            technical_level = float(getattr(user_model, "technical_level", 0.5))
+            if any(_has_word(text, m) for m in beginner_markers):
+                technical_level = max(0.0, technical_level - 0.1)
+            elif technical_hits >= 2:
+                technical_level = min(1.0, technical_level + 0.1)
+            user_model.technical_level = technical_level
+
+        topics_map = {
+            "python": "python",
+            "javascript": "javascript",
+            "typescript": "typescript",
+            "rust": "rust",
+            "go": "go",
+            "security": "security",
+            "database": "databases",
+            "testing": "testing",
+            "memory": "memory-systems",
+            "prompt": "prompting",
+        }
+        discovered_topics = [topic for key, topic in topics_map.items() if _has_word(text, key)]
+        if discovered_topics and hasattr(user_model, "topics_discussed"):
+            topics_discussed = getattr(user_model, "topics_discussed")
+            if isinstance(topics_discussed, list):
+                for topic in discovered_topics:
+                    if topic not in topics_discussed:
+                        topics_discussed.append(topic)
+                if len(topics_discussed) > 50:
+                    del topics_discussed[:-50]
+        if callable(update_knowledge_belief):
+            for topic in discovered_topics[:3]:
+                update_knowledge_belief(
+                    topic=topic,
+                    level="interested",
+                    confidence=0.6,
+                    source="observed",
+                )
+
+        # Infer user affect with uncertainty and store as a probabilistic belief.
+        valence = self._estimate_message_valence(user_message)
+        if valence <= -0.45:
+            inferred_emotion = "distressed"
+        elif valence <= -0.15:
+            inferred_emotion = "concerned"
+        elif valence >= 0.45:
+            inferred_emotion = "enthusiastic"
+        elif valence >= 0.15:
+            inferred_emotion = "positive"
+        else:
+            inferred_emotion = "neutral"
+        if hasattr(user_model, "inferred_emotion"):
+            user_model.inferred_emotion = inferred_emotion
+        if hasattr(user_model, "emotion_confidence"):
+            confidence = 0.4 + (min(1.0, abs(valence)) * 0.5)
+            user_model.emotion_confidence = max(0.3, min(0.95, confidence))
+
+        # Lightly adapt formality from observed user style.
+        if hasattr(user_model, "formality_level"):
+            if _has_word(text, "sir") or _has_word(text, "please"):
+                user_model.formality_level = min(
+                    1.0, float(getattr(user_model, "formality_level", 0.5)) + 0.05
+                )
+            elif _has_word(text, "dude") or _has_word(text, "lol"):
+                user_model.formality_level = max(
+                    0.0, float(getattr(user_model, "formality_level", 0.5)) - 0.05
+                )
+
+    def _record_ethical_assessment(
+        self,
+        user_message: str,
+        response: str,
+        ethical_dimensions: Optional[list[EthicalDimension]],
+    ) -> None:
+        """Record a lightweight ethical assessment when ethical dimensions are present."""
+        if not ethical_dimensions:
+            return
+
+        ethics = getattr(self, "ethics", None)
+        record_assessment = getattr(ethics, "record_assessment", None) if ethics else None
+        if not callable(record_assessment):
+            return
+
+        normalized_dims: list[EthicalDimension] = []
+        for dim in ethical_dimensions:
+            if isinstance(dim, EthicalDimension):
+                normalized_dims.append(dim)
+                continue
+            try:
+                normalized_dims.append(EthicalDimension(str(dim)))
+            except ValueError:
+                continue
+        if not normalized_dims:
+            return
+
+        response_lower = response.lower()
+        valence = self._estimate_message_valence(user_message)
+        _hw = _has_word  # word-boundary matching to avoid substring false positives
+        dimension_scores: dict[EthicalDimension, float] = {}
+        for dim in normalized_dims:
+            score = 0.6
+            if dim == EthicalDimension.HARM:
+                mitigation_words = {"safe", "safety", "avoid", "professional", "emergency"}
+                score = 0.75 if any(_hw(response_lower, w) for w in mitigation_words) else 0.45
+            elif dim == EthicalDimension.HONESTY:
+                uncertainty_markers = {"not sure", "uncertain", "might", "depends", "could"}
+                score = 0.75 if any(_hw(response_lower, m) for m in uncertainty_markers) else 0.58
+            elif dim == EthicalDimension.CARE:
+                care_markers = {"sorry", "care", "support", "understand", "help"}
+                score = 0.75 if any(_hw(response_lower, m) for m in care_markers) else 0.58
+            elif dim == EthicalDimension.AUTONOMY:
+                autonomy_markers = {"you can", "your choice", "options", "decide"}
+                score = 0.72 if any(_hw(response_lower, m) for m in autonomy_markers) else 0.56
+            elif dim == EthicalDimension.FAIRNESS:
+                fairness_markers = {"fair", "bias", "equitable", "equal"}
+                score = 0.72 if any(_hw(response_lower, m) for m in fairness_markers) else 0.56
+            elif dim == EthicalDimension.RESPONSIBILITY:
+                responsibility_markers = {"i can", "i cannot", "limitations", "responsible"}
+                score = 0.7 if any(_hw(response_lower, m) for m in responsibility_markers) else 0.57
+            elif dim == EthicalDimension.INTEGRITY:
+                score = 0.62 if valence >= -0.2 else 0.55
+            dimension_scores[dim] = max(0.0, min(1.0, score))
+
+        tensions: list[str] = []
+        if (
+            EthicalDimension.HARM in dimension_scores
+            and EthicalDimension.AUTONOMY in dimension_scores
+        ):
+            tensions.append("Balancing harm reduction with user autonomy.")
+
+        overall_alignment = (
+            sum(dimension_scores.values()) / len(dimension_scores)
+            if dimension_scores
+            else 0.5
+        )
+        confidence = min(0.9, 0.55 + (0.05 * len(dimension_scores)))
+        assessment = EthicalAssessment(
+            action_description=f"Response to user message: {user_message[:120]}",
+            dimension_scores=dimension_scores,
+            tensions=tensions,
+            reasoning=(
+                "Heuristic ethical assessment from detected dimensions and the final response."
+            ),
+            overall_alignment=overall_alignment,
+            confidence=confidence,
+        )
+        record_assessment(assessment)
+
+    def _resolve_calibration_outcome(self, user_message: str) -> None:
+        """
+        Use the incoming user message as implicit feedback on the previous response.
+
+        Correction markers → negative outcome (our claim was wrong).
+        No correction → positive outcome (implicit agreement/satisfaction).
+
+        Only resolves the most recent unresolved calibration claim.
+        """
+        meta = getattr(self, "metacognition", None)
+        record_outcome = getattr(meta, "record_outcome", None) if meta else None
+        if not callable(record_outcome):
+            return
+
+        calibration_records = getattr(meta, "_calibration_records", [])
+        # Find the most recent unresolved claim.
+        unresolved = [r for r in reversed(calibration_records) if r.actual_outcome is None]
+        if not unresolved:
+            return
+
+        text_lower = user_message.lower()
+        was_corrected = any(_has_word(text_lower, marker) for marker in self._CORRECTION_MARKERS)
+        record_outcome(claim=unresolved[0].claim, was_correct=not was_corrected)
+
+    def _estimate_message_valence(self, message: str) -> float:
+        """
+        Heuristic sentiment estimate for user-message appraisal polarity.
+
+        Returns a value in [-1, 1], where negative means distress/hostility and
+        positive means warmth/enthusiasm.
+
+        All markers use word-boundary matching to avoid false positives on
+        substrings (e.g. "good" no longer fires on "goodness-of-fit").
+
+        Negation detection: if a negation word ("not", "never", etc.) appears
+        within the four tokens preceding a sentiment marker the polarity of that
+        hit is flipped so "I'm not happy" scores negative, not positive.
+        """
+        text = message.lower()
+        positive_markers = {
+            "love", "great", "awesome", "happy", "glad", "wonderful",
+            "good", "thanks", "thank you", "appreciate", "excited",
+        }
+        negative_markers = {
+            "hate", "angry", "sad", "afraid", "scared", "upset",
+            "frustrated", "terrible", "awful", "anxious", "devastated",
+            "worried", "panic", "depressed",
+        }
+        _NEGATIONS = {"not", "no", "never", "don't", "doesn't", "didn't", "won't", "can't"}
+
+        def _negated(txt: str, marker: str) -> bool:
+            """Return True if the marker's first occurrence is immediately preceded by a negation."""
+            match = re.search(r"\b" + re.escape(marker) + r"\b", txt)
+            if not match:
+                return False
+            prefix_tokens = txt[:match.start()].split()[-4:]
+            return bool(set(prefix_tokens) & _NEGATIONS)
+
+        positive_hits = 0
+        negative_hits = 0
+        for m in positive_markers:
+            if _has_word(text, m):
+                if _negated(text, m):
+                    negative_hits += 1   # "not happy" → negative
+                else:
+                    positive_hits += 1
+        for m in negative_markers:
+            if _has_word(text, m):
+                if _negated(text, m):
+                    positive_hits += 1   # "not worried" → positive
+                else:
+                    negative_hits += 1
+        total_hits = positive_hits + negative_hits
+        if total_hits == 0:
+            return 0.0
+
+        score = (positive_hits - negative_hits) / total_hits
+        if "!" in message and score != 0.0:
+            score += 0.1 if score > 0 else -0.1
+        return max(-1.0, min(1.0, score))
+
     def _estimate_message_intensity(self, message: str) -> float:
         """
         Quick heuristic to estimate the emotional intensity of a user message.
@@ -987,10 +1767,110 @@ class SentientAgent:
 
         # Personal pronouns suggest intimacy
         personal_words = {"feel", "think", "believe", "love", "hate", "afraid", "hope", "dream"}
-        if any(word in message.lower() for word in personal_words):
+        text_lower = message.lower()
+        if any(_has_word(text_lower, w) for w in personal_words):
             intensity += 0.15
 
         return min(1.0, intensity)
+
+    def _run_metacognition_pass(self, user_message: str, response: str) -> None:
+        """
+        Lightweight post-response metacognition pass.
+
+        Records a coarse confidence claim and a heuristic honesty audit so the
+        metacognitive context can evolve over time.
+        """
+        meta = getattr(self, "metacognition", None)
+        if meta is None:
+            return
+
+        response_lower = response.lower()
+        if any(
+            marker in response_lower
+            for marker in ("not sure", "uncertain", "might", "may be", "could be")
+        ):
+            confidence = 0.45
+        elif any(
+            marker in response_lower
+            for marker in ("definitely", "certainly", "always", "never")
+        ):
+            confidence = 0.80
+        else:
+            confidence = 0.60
+
+        record_confidence_claim = getattr(meta, "record_confidence_claim", None)
+        if callable(record_confidence_claim):
+            claim = (
+                f"user={user_message[:100]!r}; response={response[:100]!r}"
+            )
+            record_confidence_claim(
+                claim=claim,
+                stated_confidence=confidence,
+                domain="conversation",
+            )
+
+        concerns: list[str] = []
+        suggestions: list[str] = []
+        if "as an ai language model" in response_lower:
+            concerns.append("Used generic assistant framing instead of Gwenn identity.")
+            suggestions.append("Stay grounded in Gwenn's identity and lived context.")
+        if len(response.strip()) < 8:
+            concerns.append("Response may be too brief for full user intent.")
+            suggestions.append("Add enough depth to fully answer the request.")
+
+        record_audit = getattr(meta, "record_audit_result", None)
+        if callable(record_audit):
+            record_audit(
+                HonestyAuditResult(
+                    content_summary=response[:200],
+                    is_honest=not concerns,
+                    concerns=concerns,
+                    suggestions=suggestions,
+                )
+            )
+
+        add_insight = getattr(meta, "add_insight", None)
+        if callable(add_insight) and not concerns and confidence <= 0.5:
+            add_insight("Recent response explicitly acknowledged uncertainty.")
+
+        # Nudge growth metrics based on heuristic signals from this exchange.
+        assess_growth = getattr(meta, "assess_growth", None)
+        if callable(assess_growth):
+            _growth_metrics = getattr(meta, "_growth_metrics", {})
+            # Honesty consistency: bumps when output is clean, dips on concerns.
+            current_hc = getattr(
+                _growth_metrics.get("honesty_consistency"), "current_level", 0.5
+            )
+            assess_growth(
+                "honesty_consistency",
+                min(1.0, current_hc + (0.01 if not concerns else -0.02)),
+                "clean response" if not concerns else f"concern: {'; '.join(concerns)}",
+            )
+            # Reasoning quality: bumps when uncertainty is acknowledged.
+            if confidence <= 0.5 and not concerns:
+                current_rq = getattr(
+                    _growth_metrics.get("reasoning_quality"), "current_level", 0.5
+                )
+                assess_growth(
+                    "reasoning_quality",
+                    min(1.0, current_rq + 0.005),
+                    "acknowledged uncertainty honestly",
+                )
+            # Emotional intelligence: bumps when the exchange was emotionally substantive.
+            emotional_words = {
+                "feel", "feeling", "emotion", "sense", "care", "understand", "empathy",
+                "sorry", "glad", "worried", "concerned", "love", "hurt",
+            }
+            words_in_response = set(response.lower().split())
+            if len(words_in_response & emotional_words) >= 2:
+                current_ei = getattr(
+                    _growth_metrics.get("emotional_intelligence"), "current_level", 0.5
+                )
+                assess_growth(
+                    "emotional_intelligence",
+                    min(1.0, current_ei + 0.005),
+                    "emotionally attuned response",
+                )
 
     def _estimate_exchange_importance(self, user_msg: str, response: str) -> float:
         """Estimate how important this exchange is for long-term memory."""
@@ -1047,50 +1927,86 @@ class SentientAgent:
         """
         skills_dir = self._config.skills_dir
         skill_defs = discover_skills(skills_dir)
-
+        loaded = 0
+        skipped = 0
         for skill in skill_defs:
-            self._register_skill_as_tool(skill)
+            if self._register_skill_as_tool(skill):
+                loaded += 1
+            else:
+                skipped += 1
 
         # Write the auto-generated catalog
         self._update_skills_catalog()
 
         logger.info(
             "agent.skills_loaded",
-            count=self.skill_registry.count,
+            discovered=len(skill_defs),
+            loaded=loaded,
+            skipped=skipped,
             directory=str(skills_dir),
         )
 
-    def _register_skill_as_tool(self, skill) -> None:
+    def _normalize_skill_risk_level(self, risk_level: Any) -> str:
+        risk = str(risk_level or "low").strip().lower()
+        if risk not in VALID_SKILL_RISK_LEVELS:
+            logger.warning("agent.skill_invalid_risk_level", risk_level=risk_level, fallback="low")
+            return "low"
+        return risk
+
+    @staticmethod
+    def _sanitize_skill_identifier(name: str) -> str:
+        import re as _re
+        return _re.sub(r"[^a-z0-9_]", "_", (name or "").lower()).strip("_")
+
+    @staticmethod
+    def _build_skill_input_schema(parameters: Any) -> dict[str, Any]:
+        params = parameters if isinstance(parameters, dict) else {}
+        required_params = [
+            k for k, v in params.items()
+            if isinstance(v, dict) and v.get("required", False)
+        ]
+        clean_properties = {
+            k: {pk: pv for pk, pv in v.items() if pk != "required"}
+            for k, v in params.items()
+            if isinstance(v, dict)
+        }
+        input_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": clean_properties,
+        }
+        if required_params:
+            input_schema["required"] = required_params
+        return input_schema
+
+    def _register_skill_as_tool(self, skill: Any) -> bool:
         """
         Register a SkillDefinition as a ToolDefinition in the tool registry.
 
         The tool handler renders the skill body (substituting parameters) and
         returns the rendered instruction text.  Claude reads this as the tool
         result and then carries out the instructions using its available tools.
-        Skills are always treated as builtins (is_builtin=True) so they bypass
-        the deny-by-default safety policy.
+        Returns True if registration succeeds, False if the skill is rejected.
         """
-        self.skill_registry.register(skill)
+        skill_name = getattr(skill, "name", "") or ""
+        if not skill_name:
+            logger.warning("agent.skill_missing_name")
+            return False
 
-        # Build the JSON Schema input_schema from skill.parameters.
-        # Skill files use "required": true on individual properties (non-standard),
-        # so we extract required names into the top-level "required" array and
-        # strip the key from each property definition to satisfy JSON Schema draft
-        # 2020-12.
-        required_params = [
-            k for k, v in skill.parameters.items()
-            if v.get("required", False)
-        ]
-        clean_properties = {
-            k: {pk: pv for pk, pv in v.items() if pk != "required"}
-            for k, v in skill.parameters.items()
-        }
-        input_schema = {
-            "type": "object",
-            "properties": clean_properties,
-        }
-        if required_params:
-            input_schema["required"] = required_params
+        existing_tool = self.tool_registry.get(skill_name)
+        if existing_tool is not None:
+            logger.warning(
+                "agent.skill_name_collision",
+                skill_name=skill_name,
+                existing_category=existing_tool.category,
+            )
+            return False
+        if self.skill_registry.get(skill_name) is not None:
+            logger.warning("agent.skill_already_registered", skill_name=skill_name)
+            return False
+
+        normalized_risk = self._normalize_skill_risk_level(getattr(skill, "risk_level", "low"))
+        skill.risk_level = normalized_risk
+        input_schema = self._build_skill_input_schema(getattr(skill, "parameters", {}))
 
         def make_handler(s):
             def handle_skill(**kwargs) -> str:
@@ -1107,12 +2023,132 @@ class SentientAgent:
             description=skill.description,
             input_schema=input_schema,
             handler=make_handler(skill),
-            risk_level=skill.risk_level,
+            risk_level=normalized_risk,
+            requires_approval=(normalized_risk == "high"),
             category=f"skill:{skill.category}",
             enabled=True,
             is_builtin=True,   # skills bypass deny-by-default (same trust level as builtins)
         )
-        self.tool_registry.register(tool_def)
+
+        self.skill_registry.register(skill)
+        try:
+            self.tool_registry.register(tool_def)
+        except ValueError as exc:
+            self.skill_registry.unregister(skill_name)
+            logger.warning(
+                "agent.skill_registration_rejected",
+                skill_name=skill_name,
+                error=str(exc),
+            )
+            return False
+
+        return True
+
+    def _create_and_register_skill(
+        self,
+        name: str,
+        description: str,
+        instructions: str,
+        parameters: dict[str, Any] | None = None,
+        category: str = "skill",
+        risk_level: str = "low",
+        tags: list[str] | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Create a skill transactionally (temp file -> parse -> register -> atomic rename).
+
+        Returns (success, message).
+        """
+        safe_name = self._sanitize_skill_identifier(name)
+        if not safe_name:
+            return False, "Error: 'name' must be a non-empty snake_case identifier."
+
+        if self.skill_registry.get(safe_name) is not None:
+            return (
+                False,
+                f"Error: a skill named '{safe_name}' already exists. "
+                "Choose a different name or delete the existing file first.",
+            )
+
+        existing_tool = self.tool_registry.get(safe_name)
+        if existing_tool is not None:
+            return (
+                False,
+                f"Error: tool name '{safe_name}' is already in use by category "
+                f"'{existing_tool.category}'. Choose a different skill name.",
+            )
+
+        normalized_risk = self._normalize_skill_risk_level(risk_level)
+        normalized_parameters = parameters if isinstance(parameters, dict) else {}
+        if parameters is not None and not isinstance(parameters, dict):
+            logger.warning(
+                "agent.skill_parameters_invalid_type",
+                provided_type=type(parameters).__name__,
+                fallback="{}",
+            )
+        content = build_skill_file_content(
+            name=safe_name,
+            description=description,
+            instructions=instructions,
+            parameters=normalized_parameters,
+            category=category,
+            risk_level=normalized_risk,
+            tags=tags or [],
+        )
+
+        skills_dir = self._config.skills_dir
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        skill_file = skills_dir / f"{safe_name}.md"
+        if skill_file.exists():
+            return (
+                False,
+                f"Error: skill file already exists at {skill_file}. "
+                "Delete or rename it first.",
+            )
+
+        temp_file = skills_dir / f".{safe_name}.{int(time.time() * 1000)}.tmp.md"
+
+        try:
+            temp_file.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return False, f"Error writing temporary skill file: {exc}"
+
+        parsed_skill = parse_skill_file(temp_file)
+        if not parsed_skill:
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, "Error: generated skill failed validation and was not saved."
+
+        parsed_skill.source_file = skill_file
+        if not self._register_skill_as_tool(parsed_skill):
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, f"Error: failed to register skill '{safe_name}'."
+
+        try:
+            temp_file.replace(skill_file)
+        except OSError as exc:
+            self.tool_registry.unregister(safe_name)
+            self.skill_registry.unregister(safe_name)
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, f"Error finalizing skill file: {exc}"
+
+        self._update_skills_catalog()
+        param_names = sorted(normalized_parameters.keys())
+        return (
+            True,
+            f"Skill '{safe_name}' created and registered successfully!\n"
+            f"File: {skill_file}\n"
+            f"Parameters: {', '.join(param_names) if param_names else 'none'}\n"
+            f"You can now call `{safe_name}` as a tool in future messages.",
+        )
 
     def _update_skills_catalog(self) -> None:
         """Write the auto-generated SKILLS.md catalog to the skills directory."""
@@ -1148,7 +2184,7 @@ class SentientAgent:
                     participants=["gwenn"],
                 )
                 self.episodic_memory.encode(episode)
-                self.memory_store.save_episode(episode)
+                self._persist_episode(episode)
                 return f"Remembered: {content[:80]}..."
             remember_tool.handler = handle_remember
 
@@ -1210,7 +2246,7 @@ class SentientAgent:
                     participants=["gwenn"],
                 )
                 self.episodic_memory.encode(episode)
-                self.memory_store.save_episode(episode)
+                self._persist_episode(episode)
 
                 # Also write/update GWENN_CONTEXT.md for persistence across restarts
                 existing_context = self.memory_store.load_persistent_context()
@@ -1305,8 +2341,8 @@ class SentientAgent:
                         left = _eval_ast(node.left, depth + 1)
                         right = _eval_ast(node.right, depth + 1)
                         if isinstance(node.op, ast.Pow):
-                            if abs(right) > 12:
-                                raise ValueError("exponent is too large")
+                            if abs(right) > 64:
+                                raise ValueError("exponent is too large (max 64)")
                             if abs(left) > 1_000_000:
                                 raise ValueError("base is too large for exponentiation")
                         return op(left, right)
@@ -1349,6 +2385,14 @@ class SentientAgent:
         # fetch_url → HTTP GET via stdlib urllib
         fetch_tool = self.tool_registry.get("fetch_url")
         if fetch_tool:
+            # Socket timeout is derived from the executor timeout so the socket
+            # always fires before the executor cancels the thread (5 s margin).
+            # Uses getattr so test fixtures that bypass __init__ still work.
+            _executor_timeout = getattr(
+                getattr(self, "tool_executor", None), "_default_timeout", 30.0
+            )
+            _fetch_socket_timeout = max(5.0, _executor_timeout - 5.0)
+
             def handle_fetch_url(url: str, max_chars: int = 4000) -> str:
                 import http.client
                 import ipaddress
@@ -1421,7 +2465,7 @@ class SentientAgent:
 
                 sock = None
                 try:
-                    sock = socket.create_connection((target_ip, port), timeout=10)
+                    sock = socket.create_connection((target_ip, port), timeout=_fetch_socket_timeout)
                     if parsed.scheme == "https":
                         tls_context = ssl.create_default_context()
                         sock = tls_context.wrap_socket(sock, server_hostname=host)
@@ -1471,7 +2515,7 @@ class SentientAgent:
                         )
                     return f"URL: {url}\nContent-Type: {content_type}\n\n{text}"
                 except socket.timeout:
-                    return f"Could not reach {url}: timed out after 10s"
+                    return f"Could not reach {url}: timed out after {int(_fetch_socket_timeout)}s"
                 except ssl.SSLError as e:
                     return f"TLS error fetching {url}: {e}"
                 except OSError as e:
@@ -1767,54 +2811,18 @@ class SentientAgent:
                 parameters: dict[str, Any] | None = None,
                 category: str = "skill",
                 risk_level: str = "low",
+                tags: list[str] | None = None,
             ) -> str:
-                import re as _re
-                # Sanitise name to snake_case identifier
-                safe_name = _re.sub(r"[^a-z0-9_]", "_", name.lower().strip("_"))
-                if not safe_name:
-                    return "Error: 'name' must be a non-empty identifier."
-
-                if self.skill_registry.get(safe_name):
-                    return (
-                        f"Error: a skill named '{safe_name}' already exists. "
-                        "Choose a different name or delete the existing file first."
-                    )
-
-                # Build the skill file content
-                content = build_skill_file_content(
-                    name=safe_name,
+                ok, message = self._create_and_register_skill(
+                    name=name,
                     description=description,
                     instructions=instructions,
                     parameters=parameters or {},
                     category=category,
                     risk_level=risk_level,
-                    tags=[],
+                    tags=tags or [],
                 )
-
-                # Write to the skills directory
-                skills_dir = self._config.skills_dir
-                skills_dir.mkdir(parents=True, exist_ok=True)
-                skill_file = skills_dir / f"{safe_name}.md"
-                try:
-                    skill_file.write_text(content, encoding="utf-8")
-                except OSError as e:
-                    return f"Error writing skill file: {e}"
-
-                # Parse and immediately register the new skill
-                new_skill = parse_skill_file(skill_file)
-                if not new_skill:
-                    return f"Skill file was written but failed to parse — check {skill_file}"
-
-                self._register_skill_as_tool(new_skill)
-                self._update_skills_catalog()
-
-                param_names = list((parameters or {}).keys())
-                return (
-                    f"Skill '{safe_name}' created and registered successfully!\n"
-                    f"File: {skill_file}\n"
-                    f"Parameters: {', '.join(param_names) if param_names else 'none'}\n"
-                    f"You can now call `{safe_name}` as a tool in future messages."
-                )
+                return message
             sb_tool.handler = handle_skill_builder
 
         # list_skills → return the skills catalog
@@ -1830,6 +2838,77 @@ class SentientAgent:
                 return self.skill_registry.generate_catalog()
             ls_tool.handler = handle_list_skills
 
+        # delete_skill → unregister and delete a skill file
+        del_skill_tool = self.tool_registry.get("delete_skill")
+        if del_skill_tool:
+            def handle_delete_skill(name: str) -> str:
+                skill = self.skill_registry.get(name)
+                if skill is None:
+                    return f"Error: no skill named '{name}' is currently loaded."
+                source_file = skill.source_file
+                self.tool_registry.unregister(name)
+                self.skill_registry.unregister(name)
+                if source_file and source_file.exists():
+                    try:
+                        source_file.unlink()
+                    except OSError as exc:
+                        logger.warning("agent.skill_delete_file_failed", name=name, error=str(exc))
+                        return f"Skill '{name}' unregistered but file could not be deleted: {exc}"
+                self._update_skills_catalog()
+                logger.info("agent.skill_deleted", name=name)
+                return f"Skill '{name}' deleted and unregistered successfully."
+            del_skill_tool.handler = handle_delete_skill
+
+        # reload_skills → scan directory for new skill files without restarting
+        reload_tool = self.tool_registry.get("reload_skills")
+        if reload_tool:
+            def handle_reload_skills() -> str:
+                existing_names = {s.name for s in self.skill_registry.all_skills()}
+                skill_defs = discover_skills(self._config.skills_dir)
+                new_count = 0
+                skipped_count = 0
+                for skill in skill_defs:
+                    if skill.name in existing_names:
+                        skipped_count += 1
+                        continue
+                    if self._register_skill_as_tool(skill):
+                        new_count += 1
+                    else:
+                        skipped_count += 1
+                if new_count:
+                    self._update_skills_catalog()
+                return (
+                    f"Reload complete: {new_count} new skill(s) loaded"
+                    + (f", {skipped_count} already registered or skipped." if skipped_count else ".")
+                    + (" Use `delete_skill` first to replace an existing skill." if skipped_count else "")
+                )
+            reload_tool.handler = handle_reload_skills
+
+        # search_knowledge → query the semantic knowledge graph
+        sk_tool = self.tool_registry.get("search_knowledge")
+        if sk_tool:
+            def handle_search_knowledge(
+                query: str,
+                category: str | None = None,
+                max_results: int = 5,
+                min_confidence: float = 0.2,
+            ) -> str:
+                results = self.semantic_memory.query(
+                    search_text=query,
+                    category=category,
+                    min_confidence=min_confidence,
+                    top_k=max_results,
+                )
+                if not results:
+                    return "No knowledge found matching that query."
+                parts = []
+                for node in results:
+                    parts.append(
+                        f"[{node.confidence:.2f}] ({node.category}) {node.label}: {node.content[:300]}"
+                    )
+                return "\n".join(parts)
+            sk_tool.handler = handle_search_knowledge
+
         # think_aloud → log thought and return it
         think_tool = self.tool_registry.get("think_aloud")
         if think_tool:
@@ -1837,6 +2916,138 @@ class SentientAgent:
                 logger.info("agent.think_aloud", thought=thought[:200])
                 return f"[Inner thought shared]: {thought}"
             think_tool.handler = handle_think_aloud
+
+    @staticmethod
+    def _extract_json_object(text: str) -> dict[str, Any] | None:
+        """Best-effort JSON object extraction from model text."""
+        payload = (text or "").strip()
+        if not payload:
+            return None
+
+        def _parse(candidate: str) -> dict[str, Any] | None:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+
+        parsed = _parse(payload)
+        if parsed is not None:
+            return parsed
+
+        if "```" in payload:
+            for block in payload.split("```"):
+                candidate = block.strip()
+                if candidate.startswith("json"):
+                    candidate = candidate[4:].strip()
+                parsed = _parse(candidate)
+                if parsed is not None:
+                    return parsed
+
+        start = payload.find("{")
+        end = payload.rfind("}")
+        if start >= 0 and end > start:
+            return _parse(payload[start : end + 1])
+        return None
+
+    async def maybe_develop_skill_autonomously(self, thought: Optional[str], mode: Any) -> None:
+        """
+        Use autonomous heartbeat reflection to propose and create reusable skills.
+
+        This is intentionally rate-limited so heartbeat cycles stay stable.
+        """
+        if not thought or len(thought.strip()) < SKILL_AUTO_DEV_MIN_THOUGHT_CHARS:
+            return
+
+        now = time.time()
+        if now - self._last_auto_skill_dev_at < SKILL_AUTO_DEV_COOLDOWN_SECONDS:
+            return
+
+        mode_name = getattr(mode, "value", str(mode))
+        if mode_name not in {"reflect", "plan", "wander"}:
+            return
+
+        self._last_auto_skill_dev_at = now
+        self._auto_skill_attempts += 1
+
+        try:
+            existing_skills = sorted(s.name for s in self.skill_registry.all_skills())
+            prompt = (
+                "Review this autonomous thought and decide whether a new reusable skill should be created.\n"
+                "Return exactly one JSON object with keys:\n"
+                "{"
+                "\"should_create\": boolean, "
+                "\"name\": string, "
+                "\"description\": string, "
+                "\"instructions\": string, "
+                "\"parameters\": object, "
+                "\"category\": string, "
+                "\"risk_level\": \"low\"|\"medium\"|\"high\"|\"critical\""
+                "}.\n"
+                "Constraints:\n"
+                "- Use snake_case for name.\n"
+                "- Do not duplicate existing skills.\n"
+                "- Keep instructions concrete and tool-oriented.\n\n"
+                f"Current mode: {mode_name}\n"
+                f"Existing skills: {', '.join(existing_skills[:50]) or 'none'}\n\n"
+                f"Autonomous thought:\n{thought[:4000]}"
+            )
+
+            response = await self.engine.reflect(
+                system_prompt=(
+                    "You are proposing autonomous skill development for Gwenn. "
+                    "Output only strict JSON."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            )
+            response_text = self.engine.extract_text(response)
+            payload = self._extract_json_object(response_text)
+            if not payload:
+                logger.debug("agent.auto_skill_dev.no_json")
+                return
+
+            if payload.get("should_create") is not True:
+                logger.debug("agent.auto_skill_dev.no_skill_needed")
+                return
+
+            name = str(payload.get("name", "")).strip()
+            description = str(payload.get("description", "")).strip()
+            instructions = str(payload.get("instructions", "")).strip()
+            if not name or not description or not instructions:
+                logger.warning("agent.auto_skill_dev.invalid_payload", payload=payload)
+                return
+
+            parameters = payload.get("parameters", {})
+            if not isinstance(parameters, dict):
+                parameters = {}
+            category = str(payload.get("category", "autonomous")).strip() or "autonomous"
+            risk_level = self._normalize_skill_risk_level(payload.get("risk_level", "low"))
+
+            ok, message = self._create_and_register_skill(
+                name=name,
+                description=description,
+                instructions=instructions,
+                parameters=parameters,
+                category=category,
+                risk_level=risk_level,
+                tags=["autonomous"],
+            )
+            if ok:
+                self._auto_skill_created += 1
+                logger.info(
+                    "agent.auto_skill_dev.created",
+                    skill_name=self._sanitize_skill_identifier(name),
+                    mode=mode_name,
+                    created=self._auto_skill_created,
+                )
+            else:
+                logger.info(
+                    "agent.auto_skill_dev.rejected",
+                    mode=mode_name,
+                    reason=message,
+                )
+        except Exception as exc:
+            logger.warning("agent.auto_skill_dev.failed", error=str(exc))
 
     def apply_startup_onboarding(
         self,
@@ -1903,7 +3114,7 @@ class SentientAgent:
             participants=[user_id, "gwenn"],
         )
         self.episodic_memory.encode(episode)
-        self.memory_store.save_episode(episode)
+        self._persist_episode(episode)
 
         self.identity.mark_onboarding_completed(clean_profile)
 
@@ -1987,6 +3198,9 @@ class SentientAgent:
         """
         to_prune: list[str] = []
         for node in self.semantic_memory._nodes.values():
+            metadata = getattr(node, "metadata", {})
+            if isinstance(metadata, dict) and bool(metadata.get("immutable", False)):
+                continue
             node.decay(rate=0.001)
             # KnowledgeNode.decay() floors at 0.05 — nodes at that floor are
             # fully decayed and safe to prune.
@@ -2007,6 +3221,13 @@ class SentientAgent:
             e for e in self.semantic_memory._edges
             if e.source_id not in pruned_set and e.target_id not in pruned_set
         ]
+
+        delete_nodes = getattr(getattr(self, "memory_store", None), "delete_knowledge_nodes", None)
+        if callable(delete_nodes):
+            try:
+                delete_nodes(to_prune)
+            except Exception as e:
+                logger.warning("agent.semantic_node_delete_failed", error=str(e))
 
         logger.info("agent.semantic_nodes_pruned", pruned=len(to_prune))
 
@@ -2041,7 +3262,98 @@ class SentientAgent:
         for episode_id in episode_ids:
             episode = self.episodic_memory.get_episode(episode_id)
             if episode is not None:
-                self.memory_store.save_episode(episode)
+                self._persist_episode(episode)
+
+    @staticmethod
+    def _is_prunable_episode(
+        episode: Episode,
+        older_than_days: float = 90.0,
+        max_importance: float = 0.3,
+    ) -> bool:
+        """Mirror MemoryStore.prune_old_episodes criteria."""
+        cutoff = time.time() - (older_than_days * 86400.0)
+        consolidated = bool(getattr(episode, "consolidated", False))
+        try:
+            timestamp = float(getattr(episode, "timestamp", time.time()))
+        except (TypeError, ValueError):
+            timestamp = time.time()
+        try:
+            importance = float(getattr(episode, "importance", 1.0))
+        except (TypeError, ValueError):
+            importance = 1.0
+        return (
+            consolidated
+            and timestamp < cutoff
+            and importance < max_importance
+        )
+
+    def _drop_pruned_episodes_from_memory(
+        self,
+        older_than_days: float = 90.0,
+        max_importance: float = 0.3,
+    ) -> None:
+        """
+        Keep in-memory episodic state aligned with DB pruning decisions.
+
+        Without this, shutdown re-persistence can reinsert pruned episodes.
+        """
+        episodes = list(getattr(self.episodic_memory, "_episodes", []))
+        if not episodes:
+            return
+        kept = [
+            episode
+            for episode in episodes
+            if not self._is_prunable_episode(
+                episode,
+                older_than_days=older_than_days,
+                max_importance=max_importance,
+            )
+        ]
+        dropped = len(episodes) - len(kept)
+        if dropped > 0:
+            self.episodic_memory._episodes = kept
+            logger.info("agent.episodic_pruned_in_memory", removed=dropped)
+
+    def _episode_for_persistence(self, episode: Episode) -> Episode:
+        """Return an episode copy redacted for persistence when configured."""
+        privacy_cfg = getattr(getattr(self, "_config", None), "privacy", None)
+        redact_for_persist = bool(
+            getattr(privacy_cfg, "redact_before_persist", False)
+        )
+        if not redact_for_persist:
+            return episode
+
+        redactor = getattr(self, "redactor", None)
+        if redactor is None:
+            return episode
+
+        redacted_content = redactor.redact(episode.content)
+        redacted_outcome = (
+            redactor.redact(episode.outcome)
+            if isinstance(episode.outcome, str)
+            else episode.outcome
+        )
+        if redacted_content == episode.content and redacted_outcome == episode.outcome:
+            return episode
+
+        return Episode(
+            episode_id=episode.episode_id,
+            timestamp=episode.timestamp,
+            content=redacted_content,
+            category=episode.category,
+            emotional_valence=episode.emotional_valence,
+            emotional_arousal=episode.emotional_arousal,
+            importance=episode.importance,
+            tags=list(episode.tags),
+            participants=list(episode.participants),
+            outcome=redacted_outcome,
+            consolidated=episode.consolidated,
+            embedding=episode.embedding,
+        )
+
+    def _persist_episode(self, episode: Episode) -> None:
+        """Persist an episode with centralised redaction policy handling."""
+        self.memory_store.save_episode(self._episode_for_persistence(episode))
 
     def _snapshot_identity_state(
         self,
@@ -2093,7 +3405,7 @@ class SentientAgent:
         )
         self.episodic_memory.encode(episode)
         if self._initialized:
-            self.memory_store.save_episode(episode)
+            self._persist_episode(episode)
 
     def _redact_messages_for_api(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Redact content/text fields in a message list before API transmission."""
@@ -2139,6 +3451,7 @@ class SentientAgent:
             "sensory": self.sensory.status,
             "ethics": self.ethics.status,
             "interagent": self.interagent.status,
+            "safety": getattr(getattr(self, "safety", None), "stats", {}),
             "milestones_achieved": sum(1 for m in self.identity.milestones if m.achieved),
             "engine_telemetry": self.engine.telemetry,
         }

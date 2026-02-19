@@ -21,8 +21,10 @@ even under adversarial conditions.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -40,6 +42,7 @@ class SafetyCheckResult:
     reason: str = ""
     risk_level: str = "low"           # "low", "medium", "high", "blocked"
     requires_approval: bool = False
+    retry_after_seconds: float = 0.0
 
 
 @dataclass
@@ -99,11 +102,18 @@ class SafetyGuard:
 
     def __init__(self, config: SafetyConfig, tool_registry=None):
         self._config = config
-        self._budget = BudgetState()
+        self._budget = BudgetState(
+            max_input_tokens=config.max_input_tokens,
+            max_output_tokens=config.max_output_tokens,
+            max_api_calls=config.max_api_calls,
+        )
         self._iteration_count = 0
         self._last_reset = time.time()
         self._blocked_actions: list[dict[str, Any]] = []
         self._tool_registry = tool_registry  # Optional reference for risk tier checks
+        self._emergency_stop_reason: Optional[str] = None
+        self._model_calls_last_second: deque[float] = deque()
+        self._model_calls_last_minute: deque[float] = deque()
 
         # Dangerous patterns in tool inputs (checked as substrings, lowercased)
         self._dangerous_patterns = [
@@ -127,6 +137,20 @@ class SafetyGuard:
             max_iterations=config.max_tool_iterations,
             require_approval_for=config.require_approval_for,
             tool_default_policy=config.tool_default_policy,
+            max_input_tokens=config.max_input_tokens,
+            max_output_tokens=config.max_output_tokens,
+            max_api_calls=config.max_api_calls,
+            max_model_calls_per_second=config.max_model_calls_per_second,
+            max_model_calls_per_minute=config.max_model_calls_per_minute,
+        )
+
+    def _emergency_stop_check(self) -> Optional[SafetyCheckResult]:
+        if self._emergency_stop_reason is None:
+            return None
+        return SafetyCheckResult(
+            allowed=False,
+            reason=f"Emergency stop active: {self._emergency_stop_reason}",
+            risk_level="blocked",
         )
 
     def pre_check(
@@ -142,6 +166,10 @@ class SafetyGuard:
         - Budget limits
         - Message history for concerning patterns
         """
+        emergency_block = self._emergency_stop_check()
+        if emergency_block:
+            return emergency_block
+
         # Check iteration limit
         self._iteration_count += 1
         if self._iteration_count > self._config.max_tool_iterations:
@@ -177,6 +205,10 @@ class SafetyGuard:
         4. Scan inputs for dangerous patterns
         5. Apply tool-specific safety rules
         """
+        emergency_block = self._emergency_stop_check()
+        if emergency_block:
+            return emergency_block
+
         # Check explicit deny list first
         denied_tools = self._config.parse_denied_tools()
         if tool_name in denied_tools:
@@ -292,6 +324,96 @@ class SafetyGuard:
 
         return SafetyCheckResult(allowed=True)
 
+    def _prune_rate_windows(self, now: float) -> None:
+        while self._model_calls_last_second and now - self._model_calls_last_second[0] >= 1.0:
+            self._model_calls_last_second.popleft()
+        while self._model_calls_last_minute and now - self._model_calls_last_minute[0] >= 60.0:
+            self._model_calls_last_minute.popleft()
+
+    def check_model_call(self) -> SafetyCheckResult:
+        """
+        Check whether a model API call is currently allowed.
+
+        This gate enforces:
+        1. Emergency stop state
+        2. Budget headroom (token + call ceilings)
+        3. Proactive call-rate limits
+        """
+        emergency_block = self._emergency_stop_check()
+        if emergency_block:
+            return emergency_block
+
+        if self._budget.max_input_tokens > 0 and self._budget.total_input_tokens >= self._budget.max_input_tokens:
+            return SafetyCheckResult(
+                allowed=False,
+                reason=(
+                    "Input token budget reached "
+                    f"({self._budget.total_input_tokens}/{self._budget.max_input_tokens})"
+                ),
+                risk_level="blocked",
+            )
+        if self._budget.max_output_tokens > 0 and self._budget.total_output_tokens >= self._budget.max_output_tokens:
+            return SafetyCheckResult(
+                allowed=False,
+                reason=(
+                    "Output token budget reached "
+                    f"({self._budget.total_output_tokens}/{self._budget.max_output_tokens})"
+                ),
+                risk_level="blocked",
+            )
+        if self._budget.max_api_calls > 0 and self._budget.total_api_calls >= self._budget.max_api_calls:
+            return SafetyCheckResult(
+                allowed=False,
+                reason=(
+                    "API call budget reached "
+                    f"({self._budget.total_api_calls}/{self._budget.max_api_calls})"
+                ),
+                risk_level="blocked",
+            )
+
+        now = time.monotonic()
+        self._prune_rate_windows(now)
+
+        retry_after = 0.0
+        max_per_second = self._config.max_model_calls_per_second
+        max_per_minute = self._config.max_model_calls_per_minute
+
+        if max_per_second > 0 and len(self._model_calls_last_second) >= max_per_second:
+            retry_after = max(
+                retry_after,
+                1.0 - (now - self._model_calls_last_second[0]),
+            )
+        if max_per_minute > 0 and len(self._model_calls_last_minute) >= max_per_minute:
+            retry_after = max(
+                retry_after,
+                60.0 - (now - self._model_calls_last_minute[0]),
+            )
+
+        if retry_after > 0.0:
+            return SafetyCheckResult(
+                allowed=False,
+                reason="Model call rate limit reached",
+                risk_level="blocked",
+                retry_after_seconds=max(0.01, retry_after),
+            )
+
+        self._model_calls_last_second.append(now)
+        self._model_calls_last_minute.append(now)
+        return SafetyCheckResult(allowed=True)
+
+    async def wait_for_model_call_slot(self) -> None:
+        """
+        Block until a model call is allowed, or raise on hard safety blocks.
+        """
+        while True:
+            check = self.check_model_call()
+            if check.allowed:
+                return
+            if check.retry_after_seconds > 0:
+                await asyncio.sleep(check.retry_after_seconds)
+                continue
+            raise RuntimeError(f"Safety system intervened: {check.reason}")
+
     def reset_iteration_count(self) -> None:
         """Reset the iteration counter (called at the start of each agentic run)."""
         self._iteration_count = 0
@@ -299,8 +421,8 @@ class SafetyGuard:
 
     def update_budget(self, input_tokens: int, output_tokens: int) -> None:
         """Update budget tracking with token usage from an API call."""
-        self._budget.total_input_tokens += input_tokens
-        self._budget.total_output_tokens += output_tokens
+        self._budget.total_input_tokens += max(0, int(input_tokens))
+        self._budget.total_output_tokens += max(0, int(output_tokens))
         self._budget.total_api_calls += 1
 
     def emergency_stop(self, reason: str) -> None:
@@ -311,6 +433,7 @@ class SafetyGuard:
         count to maximum, preventing any further operations.
         """
         logger.critical("safety_guard.EMERGENCY_STOP", reason=reason)
+        self._emergency_stop_reason = reason
         self._iteration_count = self._config.max_tool_iterations + 1
         self._blocked_actions.append({
             "tool": "EMERGENCY_STOP",
@@ -326,6 +449,11 @@ class SafetyGuard:
             "budget": {
                 "total_tokens": self._budget.total_tokens,
                 "api_calls": self._budget.total_api_calls,
+                "max_input_tokens": self._budget.max_input_tokens,
+                "max_output_tokens": self._budget.max_output_tokens,
+                "max_api_calls": self._budget.max_api_calls,
             },
             "blocked_actions": len(self._blocked_actions),
+            "emergency_stop_active": self._emergency_stop_reason is not None,
+            "emergency_stop_reason": self._emergency_stop_reason or "",
         }

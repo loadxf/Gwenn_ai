@@ -223,6 +223,32 @@ class TestExactDimensionalValues:
         assert result.dimensions.certainty == pytest.approx(0.0)
         assert result.dimensions.goal_congruence == pytest.approx(0.10)
 
+    def test_user_message_negative_valence_hint_can_drive_negative_valence(self):
+        config = _make_config(momentum_decay=0.0, baseline_pull=0.0)
+        engine = AppraisalEngine(config)
+        state = _zero_state()
+        event = AppraisalEvent(
+            stimulus_type=StimulusType.USER_MESSAGE,
+            intensity=1.0,
+            metadata={"valence_hint": -1.0},
+        )
+        result = engine.appraise(event, state)
+        assert result.dimensions.valence < 0.0
+
+    def test_user_message_positive_valence_hint_strengthens_positive_valence(self):
+        config = _make_config(momentum_decay=0.0, baseline_pull=0.0)
+        engine = AppraisalEngine(config)
+        state = _zero_state()
+        neutral_event = AppraisalEvent(stimulus_type=StimulusType.USER_MESSAGE, intensity=1.0)
+        hinted_event = AppraisalEvent(
+            stimulus_type=StimulusType.USER_MESSAGE,
+            intensity=1.0,
+            metadata={"valence_hint": 1.0},
+        )
+        neutral_result = engine.appraise(neutral_event, state)
+        hinted_result = engine.appraise(hinted_event, state)
+        assert hinted_result.dimensions.valence > neutral_result.dimensions.valence
+
     def test_tool_success_exact_values(self):
         config = _make_config(momentum_decay=0.0, baseline_pull=0.0)
         engine = AppraisalEngine(config)

@@ -4,6 +4,8 @@ Tests for gwenn.tools.registry.ToolRegistry.
 
 from __future__ import annotations
 
+import pytest
+
 from gwenn.tools.registry import ToolDefinition, ToolRegistry
 
 
@@ -52,3 +54,38 @@ def test_get_api_tools_treats_unknown_risk_as_highest_and_excludes():
 
     assert "unknown_risk_tool" not in tool_names
 
+
+def test_register_rejects_name_collisions_unless_override():
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="dup_tool",
+            description="first",
+            input_schema={"type": "object", "properties": {}},
+            handler=None,
+            risk_level="low",
+        )
+    )
+
+    with pytest.raises(ValueError):
+        registry.register(
+            ToolDefinition(
+                name="dup_tool",
+                description="second",
+                input_schema={"type": "object", "properties": {}},
+                handler=None,
+                risk_level="low",
+            )
+        )
+
+    registry.register(
+        ToolDefinition(
+            name="dup_tool",
+            description="replacement",
+            input_schema={"type": "object", "properties": {}},
+            handler=None,
+            risk_level="medium",
+        ),
+        allow_override=True,
+    )
+    assert registry.get("dup_tool").description == "replacement"

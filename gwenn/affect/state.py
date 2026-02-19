@@ -178,7 +178,9 @@ class AffectiveState:
                 return EmotionLabel.NEUTRAL
 
         # Low arousal states
-        if v > 0.3:
+        if v > 0.5 and c < 0:
+            return EmotionLabel.AWE      # Transcendent wonder: very positive, uncertain, calm
+        elif v > 0.3:
             return EmotionLabel.CALM if c > 0 else EmotionLabel.AFFECTION
         elif v < -0.3:
             return EmotionLabel.SADNESS
@@ -210,6 +212,7 @@ class AffectiveState:
         return (
             f"Current emotional state: {intensity} {emotion} "
             f"(valence={v:.2f}, arousal={a:.2f}, "
+            f"dominance={self.dimensions.dominance:.2f}, "
             f"certainty={self.dimensions.certainty:.2f}, "
             f"goal_congruence={self.dimensions.goal_congruence:.2f}). "
             f"This emotion has persisted for {self.duration_in_current_state:.0f}s."

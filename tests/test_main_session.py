@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -85,11 +86,91 @@ def test_sigint_window_expires_and_requires_new_double_press(monkeypatch):
     assert session._shutdown_event.is_set()
 
 
+def test_request_shutdown_sets_shutdown_event_when_agent_present():
+    session = GwennSession()
+    session._agent = SimpleNamespace(safety=SimpleNamespace(emergency_stop=MagicMock()))
+
+    session._request_shutdown()
+
+    assert session._shutdown_event.is_set()
+
+
+def test_parse_slash_command_requires_leading_slash():
+    assert GwennSession._parse_slash_command("status") is None
+    assert GwennSession._parse_slash_command("/status") == ("/status", "")
+    assert GwennSession._parse_slash_command("/plan ship it") == ("/plan", "ship it")
+
+
+def test_matching_slash_commands_for_root_prefix_lists_all():
+    matches = GwennSession._matching_slash_commands("/")
+    assert "/help" in matches
+    assert "/status" in matches
+    assert "/exit" in matches
+
+
+def test_matching_slash_commands_filters_by_prefix():
+    assert GwennSession._matching_slash_commands("/st") == ["/status", "/stats"]
+    assert GwennSession._matching_slash_commands("status") == []
+
+
+def test_slash_command_completer_returns_indexed_matches(monkeypatch):
+    class _FakeReadline:
+        def __init__(self):
+            self.delims = " \t\n/-"
+            self.completer = None
+
+        def parse_and_bind(self, _spec: str) -> None:
+            return None
+
+        def get_completer_delims(self) -> str:
+            return self.delims
+
+        def set_completer_delims(self, value: str) -> None:
+            self.delims = value
+
+        def set_completer(self, fn):
+            self.completer = fn
+
+        @staticmethod
+        def get_line_buffer() -> str:
+            return "/st"
+
+        @staticmethod
+        def get_begidx() -> int:
+            return 0
+
+    fake_readline = _FakeReadline()
+    monkeypatch.setattr("gwenn.main.readline", fake_readline)
+    session = GwennSession()
+
+    assert session._slash_command_completer("/st", 0) == "/status"
+    assert session._slash_command_completer("/st", 1) == "/stats"
+    assert session._slash_command_completer("/st", 2) is None
+
+    fake_readline.get_line_buffer = lambda: "/plan task /st"
+    fake_readline.get_begidx = lambda: 11
+    assert session._slash_command_completer("/st", 0) is None
+
+
+def test_apply_output_style_to_message_variants():
+    session = GwennSession()
+
+    session._output_style = "balanced"
+    assert session._apply_output_style_to_message("hello") == "hello"
+
+    session._output_style = "brief"
+    assert "respond briefly" in session._apply_output_style_to_message("hello")
+
+    session._output_style = "detailed"
+    assert "detailed, structured depth" in session._apply_output_style_to_message("hello")
+
+
 @pytest.mark.asyncio
 async def test_prompt_startup_input_supports_multiple_calls(monkeypatch):
     session = GwennSession()
     answers = iter([" Alice ", "builder "])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    # Prompt rendering is handled separately; input() is called without args.
+    monkeypatch.setattr("builtins.input", lambda *_: next(answers))
 
     first = await session._prompt_startup_input("Name: ")
     second = await session._prompt_startup_input("Role: ")
@@ -114,6 +195,32 @@ async def test_read_input_fallback_path_supports_multiple_calls(monkeypatch):
 
     assert first == "hello"
     assert second is None
+
+
+@pytest.mark.asyncio
+async def test_read_input_renders_you_prompt_before_read():
+    session = GwennSession()
+    session._render_prompt = MagicMock()
+    session._read_input_blocking = lambda: "hello"
+
+    value = await session._read_input()
+
+    assert value == "hello"
+    session._render_prompt.assert_called_once_with("[bold green]You[/bold green]: ")
+
+
+@pytest.mark.asyncio
+async def test_read_raw_input_renders_custom_prompt(monkeypatch):
+    session = GwennSession()
+    session._render_prompt = MagicMock()
+    monkeypatch.setattr("builtins.input", lambda *_: "2")
+
+    value = await session._read_raw_input("Resume session (number): ")
+
+    assert value == "2"
+    session._render_prompt.assert_called_once_with(
+        "[dim]Resume session (number): [/dim]"
+    )
 
 
 @pytest.mark.asyncio
@@ -145,3 +252,163 @@ async def test_shutdown_continues_when_session_save_fails(monkeypatch, tmp_path)
     await session._shutdown()
 
     shutdown.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_restores_terminal_state():
+    session = GwennSession()
+    session._restore_terminal_state = MagicMock()
+
+    await session._shutdown()
+
+    session._restore_terminal_state.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_uses_spinner_status_for_agent_shutdown(monkeypatch):
+    session = GwennSession()
+    shutdown = AsyncMock()
+    session._agent = SimpleNamespace(
+        _conversation_history=[],
+        shutdown=shutdown,
+    )
+    session._restore_terminal_state = MagicMock()
+
+    class _StatusCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    status_mock = MagicMock(return_value=_StatusCtx())
+    monkeypatch.setattr("gwenn.main.console.status", status_mock)
+    monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+    monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
+
+    await session._shutdown()
+
+    shutdown.assert_awaited_once()
+    status_mock.assert_called_once_with(
+        "[cyan]Please wait: Updating Gwenn's memory. This may take a few seconds...[/cyan]",
+        spinner="dots",
+    )
+
+
+def test_restore_terminal_state_applies_saved_attrs(monkeypatch):
+    session = GwennSession()
+    fake_termios = SimpleNamespace(
+        TCSADRAIN=1,
+        tcsetattr=MagicMock(),
+    )
+    monkeypatch.setattr("gwenn.main._termios", fake_termios)
+    monkeypatch.setattr("gwenn.main.sys.stdin.fileno", lambda: 7)
+    session._stdin_term_attrs = ["saved"]
+
+    session._restore_terminal_state()
+
+    fake_termios.tcsetattr.assert_called_once_with(7, 1, ["saved"])
+
+
+@pytest.mark.asyncio
+async def test_run_channels_rolls_back_started_channels_on_partial_start(monkeypatch):
+    import gwenn.channels.discord_channel as dc_mod
+    import gwenn.channels.telegram_channel as tg_mod
+    import gwenn.config as config_mod
+
+    @dataclass
+    class _Cfg:
+        max_history_length: int = 5
+        session_ttl_seconds: float = 60.0
+
+    events: list[str] = []
+
+    class _Telegram:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def start(self):
+            events.append("telegram:start")
+
+        async def stop(self):
+            events.append("telegram:stop")
+
+    class _Discord:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def start(self):
+            events.append("discord:start")
+            raise RuntimeError("discord failed")
+
+        async def stop(self):
+            events.append("discord:stop")
+
+    monkeypatch.setattr(config_mod, "TelegramConfig", lambda: _Cfg(max_history_length=10))
+    monkeypatch.setattr(
+        config_mod,
+        "DiscordConfig",
+        lambda: _Cfg(max_history_length=20, session_ttl_seconds=300.0),
+    )
+    monkeypatch.setattr(tg_mod, "TelegramChannel", _Telegram)
+    monkeypatch.setattr(dc_mod, "DiscordChannel", _Discord)
+
+    session = GwennSession(channel_override="all")
+    with pytest.raises(RuntimeError, match="discord failed"):
+        await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="all")
+
+    assert events == ["telegram:start", "discord:start", "telegram:stop"]
+
+
+@pytest.mark.asyncio
+async def test_run_channels_stops_all_on_shutdown(monkeypatch):
+    import gwenn.channels.discord_channel as dc_mod
+    import gwenn.channels.telegram_channel as tg_mod
+    import gwenn.config as config_mod
+
+    @dataclass
+    class _Cfg:
+        max_history_length: int = 5
+        session_ttl_seconds: float = 60.0
+
+    events: list[str] = []
+
+    class _Telegram:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def start(self):
+            events.append("telegram:start")
+
+        async def stop(self):
+            events.append("telegram:stop")
+
+    class _Discord:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def start(self):
+            events.append("discord:start")
+
+        async def stop(self):
+            events.append("discord:stop")
+
+    monkeypatch.setattr(config_mod, "TelegramConfig", lambda: _Cfg(max_history_length=10))
+    monkeypatch.setattr(
+        config_mod,
+        "DiscordConfig",
+        lambda: _Cfg(max_history_length=20, session_ttl_seconds=300.0),
+    )
+    monkeypatch.setattr(tg_mod, "TelegramChannel", _Telegram)
+    monkeypatch.setattr(dc_mod, "DiscordChannel", _Discord)
+
+    session = GwennSession(channel_override="all")
+    session._shutdown_event.set()
+    await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="all")
+
+    assert events == [
+        "telegram:start",
+        "discord:start",
+        "discord:stop",
+        "telegram:stop",
+    ]

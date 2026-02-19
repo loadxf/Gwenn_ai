@@ -8,7 +8,7 @@ client.run(token) because the latter creates its own event loop and would
 conflict with the existing event loop started by gwenn/main.py.
 
 Message routing:
-  - DMs: always respond
+  - DMs: optional (controlled by config + user allowlist)
   - Guild messages: only respond when bot is @mentioned
   - Strip bot mention from message content before passing to handle_message()
 
@@ -23,10 +23,16 @@ Slash commands (registered on guild or globally):
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import structlog
 
 from gwenn.channels.base import BaseChannel
+
+if TYPE_CHECKING:
+    from gwenn.agent import SentientAgent
+    from gwenn.channels.session import SessionManager
+    from gwenn.config import DiscordConfig
 from gwenn.channels.formatting import (
     format_for_discord,
     render_heartbeat_text,
@@ -39,12 +45,21 @@ logger = structlog.get_logger(__name__)
 class DiscordChannel(BaseChannel):
     """Gwenn Discord bot adapter."""
 
-    def __init__(self, agent, sessions, config) -> None:
-        super().__init__(agent, sessions)
+    def __init__(
+        self,
+        agent: SentientAgent,
+        sessions: SessionManager,
+        config: DiscordConfig,
+    ) -> None:
+        super().__init__(
+            agent,
+            sessions,
+            user_lock_cache_size=config.user_lock_cache_size,
+        )
         self._config = config
         self._client = None
         self._task: asyncio.Task | None = None
-        self._user_locks: dict[str, asyncio.Lock] = {}
+        self._ready_event: asyncio.Event = asyncio.Event()
 
     # ------------------------------------------------------------------
     # BaseChannel interface
@@ -67,11 +82,26 @@ class DiscordChannel(BaseChannel):
         intents = discord.Intents.default()
         intents.message_content = True
 
-        self._client = _GwennDiscordClient(channel=self, intents=intents)
+        self._ready_event.clear()
+        self._client = _create_discord_client(channel=self, intents=intents)
         self._task = asyncio.create_task(
             self._client.start(self._config.bot_token),
             name="discord_client",
         )
+        # Wait for on_ready or an early task failure (bad token, network error).
+        ready_fut = asyncio.ensure_future(self._ready_event.wait())
+        done, _ = await asyncio.wait(
+            {ready_fut, self._task},
+            timeout=30.0,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        ready_fut.cancel()
+        if self._task in done:
+            # Task finished before ready — propagate the login error.
+            self._task.result()  # raises if the task failed
+        if not self._ready_event.is_set():
+            await self.stop()
+            raise TimeoutError("Discord client did not become ready within 30s")
         logger.info("discord_channel.started")
 
     async def stop(self) -> None:
@@ -93,17 +123,30 @@ class DiscordChannel(BaseChannel):
         """Send an unsolicited DM to a Discord user."""
         if self._client is None:
             return
+        uid = self._validate_platform_id(platform_user_id)
+        if uid is None:
+            return
         try:
             import discord
 
-            user = await self._client.fetch_user(int(platform_user_id))
+            user = await self._client.fetch_user(uid)
             dm = await user.create_dm()
             no_mentions = discord.AllowedMentions.none()
-            for chunk in format_for_discord(text):
+            chunks = format_for_discord(text)
+            for i, chunk in enumerate(chunks):
                 await dm.send(chunk, allowed_mentions=no_mentions)
-                await asyncio.sleep(0.05)
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(0.5)
         except Exception:
             logger.exception("discord_channel.send_error", user_id=platform_user_id)
+
+    async def send_proactive(self, text: str) -> None:
+        """Send a proactive message to explicitly configured Discord owner users via DM."""
+        owner_ids = self._id_set(self._config.owner_user_ids)
+        for uid in owner_ids:
+            if uid:
+                await self.send_message(uid, text)
+                await asyncio.sleep(0.5)
 
     # ------------------------------------------------------------------
     # Internal helpers used by _GwennDiscordClient
@@ -111,10 +154,59 @@ class DiscordChannel(BaseChannel):
 
     def _is_allowed_guild(self, guild_id: int | None) -> bool:
         """Return True if the guild is allowed (or no allowlist is configured)."""
-        allowed = self._config.allowed_guild_ids
+        allowed = self._id_set(self._config.allowed_guild_ids)
         if not allowed:
             return True
         return str(guild_id) in allowed
+
+    def _is_allowed_user(self, raw_user_id: str) -> bool:
+        allowed_users = self._id_set(self._config.allowed_user_ids)
+        return not allowed_users or raw_user_id in allowed_users
+
+    def _is_allowed_dm_user(self, raw_user_id: str) -> bool:
+        return self._config.allow_direct_messages and self._is_allowed_user(raw_user_id)
+
+    def _is_owner_user(self, raw_user_id: str) -> bool:
+        owner_ids = self._id_set(self._config.owner_user_ids)
+        if owner_ids:
+            return raw_user_id in owner_ids
+        return self._is_allowed_user(raw_user_id)
+
+    def _session_scope_mode(self) -> str:
+        return self._normalize_scope_mode(self._config.session_scope_mode, default="per_thread")
+
+    def _session_scope_key(
+        self,
+        *,
+        raw_user_id: str,
+        raw_chat_id: str | None,
+        raw_thread_id: str | None,
+    ) -> str:
+        return self.make_session_scope_key(
+            raw_user_id=raw_user_id,
+            raw_chat_id=raw_chat_id,
+            raw_thread_id=raw_thread_id,
+            scope_mode=self._session_scope_mode(),
+        )
+
+    def _session_id_for_interaction(self, interaction, raw_user_id: str) -> str:
+        import discord as _discord
+
+        channel_obj = getattr(interaction, "channel", None)
+        raw_chat_id = self._normalize_optional_id(getattr(channel_obj, "id", None))
+        raw_thread_id = None
+        if (
+            channel_obj is not None
+            and hasattr(_discord, "Thread")
+            and isinstance(channel_obj, _discord.Thread)
+        ):
+            raw_thread_id = raw_chat_id
+        scope_key = self._session_scope_key(
+            raw_user_id=raw_user_id,
+            raw_chat_id=raw_chat_id,
+            raw_thread_id=raw_thread_id,
+        )
+        return self.make_session_id(scope_key)
 
     async def _on_message(self, message) -> None:
         """Route a Discord Message to Gwenn."""
@@ -123,7 +215,25 @@ class DiscordChannel(BaseChannel):
         if self._client is None or message.author == self._client.user:
             return
 
+        raw_id = str(message.author.id)
         is_dm = isinstance(message.channel, discord.DMChannel)
+
+        if is_dm and not self._is_allowed_dm_user(raw_id):
+            no_mentions = discord.AllowedMentions.none()
+            if self._config.allow_direct_messages:
+                reason = "Sorry, I'm not available to you."
+            else:
+                reason = "Direct messages are disabled for this Gwenn bot."
+            await message.reply(
+                reason,
+                mention_author=False,
+                allowed_mentions=no_mentions,
+            )
+            return
+
+        if not is_dm and not self._is_allowed_user(raw_id):
+            return
+
         is_mentioned = self._client.user in message.mentions
 
         if not is_dm and not is_mentioned:
@@ -140,12 +250,29 @@ class DiscordChannel(BaseChannel):
             text = text.replace(f"<@!{self._client.user.id}>", "").strip()
 
         if not text:
+            # Empty content after mention-stripping may indicate the privileged
+            # MESSAGE_CONTENT intent is not enabled in the Discord Developer Portal.
+            if not is_dm:
+                logger.warning(
+                    "discord_channel.empty_content_after_strip",
+                    user_id=raw_id,
+                    hint="Ensure the MESSAGE_CONTENT privileged intent is enabled "
+                    "in the Discord Developer Portal.",
+                )
             return
 
-        raw_id = str(message.author.id)
+        if not self._check_rate_limit(raw_id):
+            return
 
         if self._agent.identity.should_run_startup_onboarding():
             no_mentions = discord.AllowedMentions.none()
+            if not self._is_owner_user(raw_id):
+                await message.reply(
+                    "Gwenn is in primary-user setup mode. Only the configured owner can run `/setup`.",
+                    mention_author=False,
+                    allowed_mentions=no_mentions,
+                )
+                return
             await message.reply(
                 "Before we begin, run `/setup` so I can tailor how I help you.\n"
                 "You can also run `/setup skip`.",
@@ -154,33 +281,64 @@ class DiscordChannel(BaseChannel):
             )
             return
 
-        lock = self._user_locks.setdefault(raw_id, asyncio.Lock())
-        async with lock:
-            async with message.channel.typing():
-                no_mentions = discord.AllowedMentions.none()
-                try:
-                    response = await self.handle_message(raw_id, text)
-                except Exception as exc:
-                    logger.error("discord_channel.respond_error", error=str(exc), exc_info=True)
-                    await message.reply(
-                        "I encountered an error processing your message. Please try again.",
-                        mention_author=False,
-                        allowed_mentions=no_mentions,
-                    )
-                    return
+        raw_chat_id = self._normalize_optional_id(getattr(message.channel, "id", None))
+        raw_thread_id = (
+            raw_chat_id
+            if hasattr(discord, "Thread") and isinstance(message.channel, discord.Thread)
+            else None
+        )
+        session_scope_key = self._session_scope_key(
+            raw_user_id=raw_id,
+            raw_chat_id=raw_chat_id,
+            raw_thread_id=raw_thread_id,
+        )
 
-                # Send chunks inside the typing() context so the indicator
-                # stays active until the last chunk is delivered.
-                chunks = format_for_discord(response)
-                try:
-                    for chunk in chunks:
+        lock = self._get_user_lock(raw_id)
+        try:
+            async with lock:
+                async with message.channel.typing():
+                    no_mentions = discord.AllowedMentions.none()
+                    try:
+                        response = await self.handle_message(
+                            raw_id,
+                            text,
+                            session_scope_key=session_scope_key,
+                        )
+                    except Exception as exc:
+                        logger.error("discord_channel.respond_error", error=str(exc), exc_info=True)
                         await message.reply(
-                            chunk,
+                            "I encountered an error processing your message. Please try again.",
                             mention_author=False,
                             allowed_mentions=no_mentions,
                         )
-                except Exception as exc:
-                    logger.error("discord_channel.send_error", error=str(exc), exc_info=True)
+                        return
+
+                    # Send chunks inside the typing() context so the indicator
+                    # stays active until the last chunk is delivered.
+                    # Only the first chunk is a reply (anchors the context);
+                    # subsequent chunks are plain channel sends to avoid a
+                    # wall of reply arrows pointing at the original message.
+                    chunks = format_for_discord(response)
+                    try:
+                        for i, chunk in enumerate(chunks):
+                            if i == 0:
+                                await message.reply(
+                                    chunk,
+                                    mention_author=False,
+                                    allowed_mentions=no_mentions,
+                                )
+                            else:
+                                await message.channel.send(
+                                    chunk,
+                                    allowed_mentions=no_mentions,
+                                )
+                            if i < len(chunks) - 1:
+                                # Brief pause between chunks to respect Discord rate limits.
+                                await asyncio.sleep(0.5)
+                    except Exception as exc:
+                        logger.error("discord_channel.send_error", error=str(exc), exc_info=True)
+        finally:
+            self._release_user_lock(raw_id)
 
     def _register_slash_commands(self, tree) -> None:
         """Register slash commands on the app_commands tree."""
@@ -188,11 +346,25 @@ class DiscordChannel(BaseChannel):
         channel = self  # capture for closures
 
         async def _ensure_allowed_interaction(interaction) -> bool:
+            raw_user_id = str(interaction.user.id)
             guild = getattr(interaction, "guild", None)
             if guild is None:
-                return True
+                if channel._is_allowed_dm_user(raw_user_id):
+                    return True
+                if channel._config.allow_direct_messages:
+                    reason = "Sorry, I'm not available to you."
+                else:
+                    reason = "Direct messages are disabled for this Gwenn bot."
+                await interaction.response.send_message(reason, ephemeral=True)
+                return False
             if channel._is_allowed_guild(getattr(guild, "id", None)):
-                return True
+                if channel._is_allowed_user(raw_user_id):
+                    return True
+                await interaction.response.send_message(
+                    "Sorry, I'm not available to you.",
+                    ephemeral=True,
+                )
+                return False
             await interaction.response.send_message(
                 "This server is not allowed for Gwenn commands.",
                 ephemeral=True,
@@ -212,9 +384,7 @@ class DiscordChannel(BaseChannel):
             if not await _ensure_allowed_interaction(interaction):
                 return
             if not channel._agent.heartbeat:
-                await interaction.response.send_message(
-                    "Heartbeat is not running.", ephemeral=True
-                )
+                await interaction.response.send_message("Heartbeat is not running.", ephemeral=True)
                 return
             hb = channel._agent.heartbeat.status
             text = render_heartbeat_text(hb, markdown_heading=True)
@@ -235,11 +405,16 @@ class DiscordChannel(BaseChannel):
             raw_id = str(interaction.user.id)
             user_id = channel.make_user_id(raw_id)
 
+            if not channel._is_owner_user(raw_id):
+                await interaction.response.send_message(
+                    "Only the configured owner can run `/setup`.",
+                    ephemeral=True,
+                )
+                return
+
             if skip:
                 channel._agent.identity.mark_onboarding_completed({})
-                await interaction.response.send_message(
-                    "First-run setup skipped.", ephemeral=True
-                )
+                await interaction.response.send_message("First-run setup skipped.", ephemeral=True)
                 return
 
             profile = {
@@ -268,8 +443,8 @@ class DiscordChannel(BaseChannel):
             if not await _ensure_allowed_interaction(interaction):
                 return
             raw_id = str(interaction.user.id)
-            user_id = channel.make_user_id(raw_id)
-            channel._sessions.clear_session(user_id)
+            session_id = channel._session_id_for_interaction(interaction, raw_id)
+            channel._sessions.clear_session(session_id)
             await interaction.response.send_message(
                 "Conversation history cleared. Fresh start!", ephemeral=True
             )
@@ -278,6 +453,10 @@ class DiscordChannel(BaseChannel):
         async def slash_help(interaction) -> None:
             if not await _ensure_allowed_interaction(interaction):
                 return
+            if channel._config.allow_direct_messages:
+                chat_hint = "DM me or @mention me in a server to chat."
+            else:
+                chat_hint = "@mention me in an allowed server to chat."
             await interaction.response.send_message(
                 "**Gwenn Commands**\n"
                 "/status — see my current cognitive state\n"
@@ -285,50 +464,48 @@ class DiscordChannel(BaseChannel):
                 "/setup — first-run profile setup\n"
                 "/reset — clear our conversation history\n"
                 "/help — this message\n\n"
-                "DM me or @mention me in a server to chat.",
+                f"{chat_hint}",
                 ephemeral=True,
             )
 
 
-class _GwennDiscordClient:
+def _create_discord_client(channel: DiscordChannel, intents, **kwargs):
     """
-    Minimal discord.Client subclass that wires events to DiscordChannel.
+    Factory that creates a discord.Client wired to *channel*.
 
-    We subclass discord.Client (not commands.Bot) to keep dependencies minimal.
-    Slash commands are handled via app_commands.CommandTree.
+    The discord import is deferred to this function so the module can be
+    imported even when discord.py is not installed.
     """
+    import discord
+    from discord import app_commands
 
-    def __new__(cls, channel: DiscordChannel, intents, **kwargs):
-        """Dynamically create the class at runtime to defer the discord import."""
-        import discord
-        from discord import app_commands
+    class _Client(discord.Client):
+        def __init__(self, gwenn_channel: DiscordChannel, **kw):
+            super().__init__(**kw)
+            self._gwenn_channel = gwenn_channel
+            self.tree = app_commands.CommandTree(self)
 
-        class _Client(discord.Client):
-            def __init__(self, gwenn_channel: DiscordChannel, **kw):
-                super().__init__(**kw)
-                self._gwenn_channel = gwenn_channel
-                self.tree = app_commands.CommandTree(self)
+        async def setup_hook(self) -> None:
+            self._gwenn_channel._register_slash_commands(self.tree)
+            sync_guild_id = self._gwenn_channel._config.sync_guild_id
+            if sync_guild_id:
+                guild = discord.Object(id=int(sync_guild_id))
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                logger.info("discord_channel.slash_sync_guild", guild_id=sync_guild_id)
+            else:
+                await self.tree.sync()
+                logger.info("discord_channel.slash_sync_global")
 
-            async def setup_hook(self) -> None:
-                self._gwenn_channel._register_slash_commands(self.tree)
-                sync_guild_id = self._gwenn_channel._config.sync_guild_id
-                if sync_guild_id:
-                    guild = discord.Object(id=int(sync_guild_id))
-                    self.tree.copy_global_to(guild=guild)
-                    await self.tree.sync(guild=guild)
-                    logger.info("discord_channel.slash_sync_guild", guild_id=sync_guild_id)
-                else:
-                    await self.tree.sync()
-                    logger.info("discord_channel.slash_sync_global")
+        async def on_ready(self) -> None:
+            self._gwenn_channel._ready_event.set()
+            logger.info(
+                "discord_channel.ready",
+                user=str(self.user),
+                guild_count=len(self.guilds),
+            )
 
-            async def on_ready(self) -> None:
-                logger.info(
-                    "discord_channel.ready",
-                    user=str(self.user),
-                    guild_count=len(self.guilds),
-                )
+        async def on_message(self, message) -> None:
+            await self._gwenn_channel._on_message(message)
 
-            async def on_message(self, message) -> None:
-                await self._gwenn_channel._on_message(message)
-
-        return _Client(gwenn_channel=channel, intents=intents, **kwargs)
+    return _Client(gwenn_channel=channel, intents=intents, **kwargs)

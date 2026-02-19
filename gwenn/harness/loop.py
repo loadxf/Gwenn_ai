@@ -28,6 +28,7 @@ scales. Complexity is added surgically when needed.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Optional
 
@@ -85,6 +86,7 @@ class AgenticLoop:
         tools: Optional[list[dict[str, Any]]] = None,
         enable_thinking: bool = False,
         on_tool_call: Optional[Any] = None,     # Callback for tool call events
+        on_tool_result: Optional[Any] = None,   # Callback for tool result events
         on_response: Optional[Any] = None,       # Callback for response events
         on_iteration: Optional[Any] = None,      # Callback for each iteration
     ) -> LoopResult:
@@ -132,8 +134,12 @@ class AgenticLoop:
             iteration += 1
             self._total_iterations += 1
 
-            if on_iteration:
-                on_iteration(iteration, self._max_iterations)
+            self._invoke_callback(
+                "on_iteration",
+                on_iteration,
+                iteration,
+                self._max_iterations,
+            )
 
             # --- Safety pre-check ---
             safety_check = self._safety.pre_check(loop_messages, tools)
@@ -164,10 +170,12 @@ class AgenticLoop:
             )
 
             # --- Update safety budget tracking ---
-            self._safety.update_budget(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-            )
+            # CognitiveEngine can account for usage centrally (covers non-loop calls too).
+            if not getattr(self._engine, "handles_usage_accounting", False):
+                self._safety.update_budget(
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                )
 
             # --- Extract thinking (if extended thinking was enabled) ---
             thought = self._engine.extract_thinking(response)
@@ -178,6 +186,8 @@ class AgenticLoop:
             if response.stop_reason == "end_turn":
                 # Claude has decided it's done — extract final response
                 final_text = self._engine.extract_text(response)
+                loop_messages.append({"role": "assistant", "content": response.content})
+                self._invoke_callback("on_response", on_response, final_text)
                 logger.info(
                     "agentic_loop.complete",
                     iterations=iteration,
@@ -191,6 +201,8 @@ class AgenticLoop:
             if not tool_calls:
                 # No tool calls and not end_turn — extract any text and finish
                 final_text = self._engine.extract_text(response)
+                loop_messages.append({"role": "assistant", "content": response.content})
+                self._invoke_callback("on_response", on_response, final_text)
                 break
 
             # Append the assistant's response to messages
@@ -202,8 +214,7 @@ class AgenticLoop:
                 self._total_tool_calls += 1
                 all_tool_calls.append(call)
 
-                if on_tool_call:
-                    on_tool_call(call)
+                self._invoke_callback("on_tool_call", on_tool_call, call)
 
                 # --- Safety check before execution ---
                 safety_result = self._safety.check_tool_call(
@@ -223,6 +234,14 @@ class AgenticLoop:
                         error=f"Blocked by safety system: {safety_result.reason}",
                     )
                     tool_results.append(result)
+                    if on_tool_result:
+                        try:
+                            on_tool_result(call, result)
+                        except Exception as callback_error:
+                            logger.warning(
+                                "agentic_loop.on_tool_result_failed",
+                                error=str(callback_error),
+                            )
                     continue
 
                 if safety_result.requires_approval:
@@ -241,6 +260,14 @@ class AgenticLoop:
                         ),
                     )
                     tool_results.append(result)
+                    if on_tool_result:
+                        try:
+                            on_tool_result(call, result)
+                        except Exception as callback_error:
+                            logger.warning(
+                                "agentic_loop.on_tool_result_failed",
+                                error=str(callback_error),
+                            )
                     continue
 
                 # Execute the tool
@@ -250,6 +277,14 @@ class AgenticLoop:
                     tool_input=call["input"],
                 )
                 tool_results.append(result)
+                if on_tool_result:
+                    try:
+                        on_tool_result(call, result)
+                    except Exception as callback_error:
+                        logger.warning(
+                            "agentic_loop.on_tool_result_failed",
+                            error=str(callback_error),
+                        )
 
                 logger.debug(
                     "agentic_loop.tool_executed",
@@ -264,7 +299,11 @@ class AgenticLoop:
                 result_content.append({
                     "type": "tool_result",
                     "tool_use_id": result.tool_use_id,
-                    "content": str(result.result) if result.success else f"Error: {result.error}",
+                    "content": (
+                        self._serialize_tool_result_content(result.result)
+                        if result.success
+                        else f"Error: {result.error}"
+                    ),
                     "is_error": not result.success,
                 })
 
@@ -305,6 +344,32 @@ class AgenticLoop:
                 self._total_iterations / max(1, self._total_runs)
             ),
         }
+
+    @staticmethod
+    def _serialize_tool_result_content(result: Any) -> str:
+        """Serialize tool output for the tool_result content field."""
+        if isinstance(result, str):
+            return result
+        if isinstance(result, (dict, list, tuple, int, float, bool)) or result is None:
+            try:
+                return json.dumps(result, ensure_ascii=True, separators=(",", ":"), default=str)
+            except (TypeError, ValueError):
+                pass
+        return str(result)
+
+    @staticmethod
+    def _invoke_callback(name: str, callback: Optional[Any], *args: Any) -> None:
+        """Run callback hooks without letting callback failures crash the loop."""
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception as callback_error:
+            logger.warning(
+                "agentic_loop.callback_failed",
+                callback=name,
+                error=str(callback_error),
+            )
 
 
 class LoopResult:

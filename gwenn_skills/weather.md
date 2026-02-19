@@ -26,12 +26,14 @@ Fetches and reports current weather for **{location}** in **{units}**.
 
 ## Steps
 
-1. Call `fetch_url` with URL: `https://wttr.in/{location}?format=3`
+1. URL-encode the location before embedding it in the URL: replace spaces with `+` and percent-encode special characters. For example, `"New York"` becomes `"New+York"`, `"São Paulo"` becomes `"S%C3%A3o+Paulo"`.
+
+2. Call `fetch_url` with URL: `https://wttr.in/<url-encoded-location>?format=3`
    - Returns a compact one-line summary, e.g. `London: ⛅️ +12°C`
    - If this fails with a 404, the location name is unrecognised — try an alternate spelling
 
-2. For richer detail (humidity, wind, feels-like), call:
-   `https://wttr.in/{location}?format=j1`
+3. For richer detail (humidity, wind, feels-like), call:
+   `https://wttr.in/<url-encoded-location>?format=j1`
    Extract from `current_condition[0]`:
    - `temp_C` → current temperature in Celsius
    - `FeelsLikeC` → apparent temperature
@@ -40,10 +42,10 @@ Fetches and reports current weather for **{location}** in **{units}**.
    - `windspeedKmph` → wind speed
    - `winddir16Point` → wind direction
 
-3. Convert to {units} if needed:
+4. Convert to {units} if needed:
    - Fahrenheit: use `calculate` with expression `round(C * 9/5 + 32, 1)`
 
-4. Present the result naturally — lead with the temperature and conditions, follow with notable details (humidity, wind) only if relevant to the question.
+5. Present the result naturally — lead with the temperature and conditions, follow with notable details (humidity, wind) only if relevant to the question.
 
 ## Output format
 

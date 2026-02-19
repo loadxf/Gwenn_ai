@@ -27,11 +27,11 @@
 }
 ---
 
-Explains the following {language} code at **{detail_level}** detail level:
+Explains the {language} code provided below at **{detail_level}** detail level.
 
-```
+<code_to_explain>
 {code}
-```
+</code_to_explain>
 
 ## Approach by detail level
 

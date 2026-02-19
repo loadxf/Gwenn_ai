@@ -16,7 +16,10 @@ The retry strategy follows industry best practices:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import secrets
+import time
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Optional, TypeVar
 
 import anthropic
@@ -106,6 +109,37 @@ def compute_delay(
     return delay
 
 
+def parse_retry_after(raw_retry_after: Any) -> Optional[float]:
+    """
+    Parse Retry-After header value (seconds or HTTP-date) into delay seconds.
+    """
+    if raw_retry_after is None:
+        return None
+
+    try:
+        delay = float(raw_retry_after)
+        if delay > 0:
+            return delay
+    except (TypeError, ValueError):
+        pass
+
+    if not isinstance(raw_retry_after, str):
+        return None
+
+    try:
+        dt = parsedate_to_datetime(raw_retry_after)
+    except (TypeError, ValueError):
+        return None
+
+    if dt.tzinfo is None:
+        return None
+
+    delay = dt.timestamp() - time.time()
+    if delay > 0:
+        return delay
+    return None
+
+
 async def with_retries(
     func: Callable,
     config: Optional[RetryConfig] = None,
@@ -161,12 +195,14 @@ async def with_retries(
             # Extract retry-after if available
             retry_after = None
             if isinstance(e, anthropic.APIStatusError):
-                retry_after_header = getattr(e, "response", None)
-                if retry_after_header:
+                status_response = getattr(e, "response", None)
+                if status_response:
                     try:
-                        headers = retry_after_header.headers
-                        retry_after = float(headers.get("retry-after", 0))
-                    except (ValueError, AttributeError):
+                        headers = getattr(status_response, "headers", None)
+                        raw_retry_after = headers.get("retry-after") if headers else None
+                        if raw_retry_after is not None:
+                            retry_after = parse_retry_after(raw_retry_after)
+                    except AttributeError:
                         pass
 
             delay = compute_delay(attempt, config, retry_after)
@@ -181,7 +217,9 @@ async def with_retries(
             )
 
             if on_retry:
-                on_retry(attempt + 1, e, delay)
+                callback_result = on_retry(attempt + 1, e, delay)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
 
             await asyncio.sleep(delay)
 

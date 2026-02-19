@@ -22,6 +22,8 @@ the essential architecture.
 
 from __future__ import annotations
 
+import math
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -176,6 +178,11 @@ class SemanticMemory:
 
         if existing_id and existing_id in self._nodes:
             node = self._nodes[existing_id]
+            # Immutable nodes (e.g. genesis facts) are never overwritten by experience
+            metadata = node.metadata if isinstance(node.metadata, dict) else {}
+            if metadata.get("immutable"):
+                logger.debug("semantic_memory.immutable_node_protected", label=label)
+                return node
             node.content = content  # Update with latest understanding
             node.category = category or node.category
             node.confidence = max(node.confidence, confidence)
@@ -393,36 +400,93 @@ class SemanticMemory:
 
         return "\n".join(lines)
 
-    def verify_provenance(self, node_id: str, episodic_memory) -> dict:
+    @staticmethod
+    def _tokenize_support_text(text: str) -> set[str]:
+        """Tokenize text for lightweight provenance support checks."""
+        if not text:
+            return set()
+        return {
+            token
+            for token in re.findall(r"[a-z0-9_]+", text.lower())
+            if len(token) >= 3
+        }
+
+    def verify_provenance(
+        self,
+        node_id: str,
+        episodic_memory,
+        min_support_overlap: float = 0.15,
+    ) -> dict:
         """
         Verify that a knowledge node's source episodes actually support it.
 
         Returns a dict with:
-          - supported: bool — whether source episodes exist and are findable
+          - supported: bool — whether source episodes support the node claim
           - source_count: int — number of source episodes linked
           - found_count: int — number of source episodes still in episodic memory
           - missing: list[str] — episode IDs that couldn't be found
+          - best_overlap: float — strongest lexical overlap score observed
+          - supporting: list[dict] — supporting episodes with overlap scores
         """
         node = self._nodes.get(node_id)
         if not node:
-            return {"supported": False, "source_count": 0, "found_count": 0, "missing": []}
+            return {
+                "supported": False,
+                "source_count": 0,
+                "found_count": 0,
+                "missing": [],
+                "best_overlap": 0.0,
+                "supporting": [],
+            }
 
         source_ids = node.source_episodes
         missing = []
         found = 0
+        supporting: list[dict[str, Any]] = []
+        best_overlap = 0.0
+        try:
+            threshold = float(min_support_overlap)
+        except (TypeError, ValueError):
+            threshold = 0.15
+        if not math.isfinite(threshold):
+            threshold = 0.15
+        threshold = max(0.0, min(1.0, threshold))
+        claim_terms = self._tokenize_support_text(f"{node.label} {node.content}")
+        has_get_episode = callable(getattr(episodic_memory, "get_episode", None))
 
         for ep_id in source_ids:
-            episodes = [e for e in episodic_memory._episodes if e.episode_id == ep_id]
-            if episodes:
-                found += 1
+            episode = None
+            if has_get_episode:
+                episode = episodic_memory.get_episode(ep_id)
             else:
+                episodes = [
+                    e for e in getattr(episodic_memory, "_episodes", [])
+                    if getattr(e, "episode_id", None) == ep_id
+                ]
+                episode = episodes[0] if episodes else None
+
+            if episode is None:
                 missing.append(ep_id)
+                continue
+
+            found += 1
+            episode_terms = self._tokenize_support_text(getattr(episode, "content", ""))
+            if claim_terms:
+                overlap = len(claim_terms & episode_terms) / len(claim_terms)
+            else:
+                overlap = 1.0 if getattr(episode, "content", "").strip() else 0.0
+            if overlap > best_overlap:
+                best_overlap = overlap
+            if overlap >= threshold:
+                supporting.append({"episode_id": ep_id, "overlap": overlap})
 
         return {
-            "supported": found > 0,
+            "supported": len(supporting) > 0,
             "source_count": len(source_ids),
             "found_count": found,
             "missing": missing,
+            "best_overlap": best_overlap,
+            "supporting": supporting,
         }
 
     @property

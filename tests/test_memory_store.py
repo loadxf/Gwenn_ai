@@ -16,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -379,6 +380,55 @@ class TestAffectSnapshot:
         ids = [snap["snapshot_id"] for snap in history]
         assert len(set(ids)) == 3  # all unique
 
+    def test_prune_affect_snapshots_respects_max_rows(self, store: MemoryStore):
+        for i in range(6):
+            store.save_affect_snapshot(
+                valence=float(i) / 10.0,
+                arousal=0.2,
+                dominance=0.0,
+                certainty=0.0,
+                goal_congruence=0.0,
+                emotion_label=f"snap-{i}",
+            )
+
+        deleted = store.prune_affect_snapshots(max_rows=3, older_than_days=None)
+        history = store.load_affect_history(limit=10)
+
+        assert deleted == 3
+        assert len(history) == 3
+
+    def test_prune_affect_snapshots_respects_age_cutoff(self, store: MemoryStore):
+        for i in range(4):
+            store.save_affect_snapshot(
+                valence=0.1 * i,
+                arousal=0.2,
+                dominance=0.0,
+                certainty=0.0,
+                goal_congruence=0.0,
+                emotion_label=f"age-{i}",
+            )
+
+        # Backdate the oldest two rows so age pruning can remove them.
+        row_ids = [
+            row["snapshot_id"]
+            for row in store._conn.execute(
+                "SELECT snapshot_id FROM affect_snapshots ORDER BY timestamp ASC"
+            ).fetchall()
+        ]
+        old_cutoff = time.time() - (40.0 * 86400.0)
+        store._conn.execute(
+            "UPDATE affect_snapshots SET timestamp = ? WHERE snapshot_id IN (?, ?)",
+            (old_cutoff, row_ids[0], row_ids[1]),
+        )
+        store._conn.commit()
+
+        deleted = store.prune_affect_snapshots(max_rows=10, older_than_days=30.0)
+        history = store.load_affect_history(limit=10)
+        min_allowed = time.time() - (30.0 * 86400.0)
+
+        assert deleted >= 2
+        assert all(snap["timestamp"] >= min_allowed for snap in history)
+
 
 # ---------------------------------------------------------------------------
 # 5. Identity snapshot
@@ -478,6 +528,34 @@ class TestKnowledgeNodes:
         nodes = store.load_knowledge_nodes()
         assert len(nodes) == 5
 
+    def test_metadata_non_dict_coerced_to_empty_dict(self, store: MemoryStore):
+        now = time.time()
+        conn = store._conn
+        assert conn is not None
+        conn.execute(
+            """
+            INSERT INTO knowledge_nodes
+            (node_id, label, category, content, confidence, source_episodes, created_at, last_updated, access_count, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "node-bad-metadata",
+                "bad",
+                "concept",
+                "bad metadata",
+                0.5,
+                "[]",
+                now,
+                now,
+                0,
+                json.dumps(["not", "a", "dict"]),
+            ),
+        )
+        conn.commit()
+
+        nodes = {n["node_id"]: n for n in store.load_knowledge_nodes()}
+        assert nodes["node-bad-metadata"]["metadata"] == {}
+
 
 # ---------------------------------------------------------------------------
 # 7. Knowledge edges
@@ -559,7 +637,79 @@ class TestKnowledgeEdges:
 
 
 # ---------------------------------------------------------------------------
-# 8. Persistent context
+# 8. Knowledge node deletion
+# ---------------------------------------------------------------------------
+
+class TestKnowledgeNodeDeletion:
+    """delete_knowledge_nodes removes nodes and their incident edges."""
+
+    def _seed_graph(self, store: MemoryStore) -> None:
+        now = time.time()
+        for nid in ("a", "b", "c"):
+            store.save_knowledge_node(
+                node_id=nid,
+                label=nid,
+                category="concept",
+                content=f"node {nid}",
+                confidence=0.5,
+                source_episodes=[],
+                created_at=now,
+                last_updated=now,
+                access_count=0,
+            )
+        store.save_knowledge_edge(
+            source_id="a",
+            target_id="b",
+            relationship="linked",
+            strength=0.5,
+            context="ab",
+            created_at=now,
+        )
+        store.save_knowledge_edge(
+            source_id="b",
+            target_id="c",
+            relationship="linked",
+            strength=0.5,
+            context="bc",
+            created_at=now,
+        )
+
+    def test_delete_single_node_removes_incident_edges(self, store: MemoryStore):
+        self._seed_graph(store)
+        deleted = store.delete_knowledge_nodes(["b"])
+        assert deleted == 1
+
+        nodes = {n["node_id"] for n in store.load_knowledge_nodes()}
+        assert nodes == {"a", "c"}
+        # Both edges referenced node b and should be gone.
+        assert store.load_knowledge_edges() == []
+
+    def test_delete_empty_list_noop(self, store: MemoryStore):
+        assert store.delete_knowledge_nodes([]) == 0
+
+    def test_delete_skips_immutable_nodes(self, store: MemoryStore):
+        now = time.time()
+        store.save_knowledge_node(
+            node_id="immutable-node",
+            label="genesis:identity",
+            category="self",
+            content="immutable",
+            confidence=1.0,
+            source_episodes=[],
+            created_at=now,
+            last_updated=now,
+            access_count=0,
+            metadata={"immutable": True, "genesis": True},
+        )
+        deleted = store.delete_knowledge_nodes(["immutable-node"])
+        assert deleted == 0
+
+        nodes = {n["node_id"] for n in store.load_knowledge_nodes()}
+        assert "immutable-node" in nodes
+
+
+# ---------------------------------------------------------------------------
+# 9. Persistent context
 # ---------------------------------------------------------------------------
 
 class TestPersistentContext:
@@ -613,7 +763,77 @@ class TestPersistentContext:
 
 
 # ---------------------------------------------------------------------------
-# 9. Stats property
+# 10. Goal state sidecar
+# ---------------------------------------------------------------------------
+
+class TestGoalStateSidecar:
+    """save_goal_state and load_goal_state round-trip behavior."""
+
+    def test_goal_state_round_trip(self, store: MemoryStore):
+        state = {
+            "needs": {"connection": {"satisfaction": 0.42}},
+            "active_goals": [{"goal_id": "g1", "description": "Ping user"}],
+        }
+        path = store.save_goal_state(state)
+        assert path.exists()
+
+        loaded = store.load_goal_state()
+        assert loaded == state
+
+    def test_goal_state_missing_returns_empty(self, store: MemoryStore, tmp_path: Path):
+        missing = tmp_path / "missing_goal_state.json"
+        assert store.load_goal_state(path=missing) == {}
+
+    def test_goal_state_invalid_json_returns_empty(self, store: MemoryStore, tmp_path: Path):
+        broken = tmp_path / "broken_goal_state.json"
+        broken.write_text("{not valid json", encoding="utf-8")
+        assert store.load_goal_state(path=broken) == {}
+
+
+class TestMetacognitionStateSidecar:
+    """save_metacognition and load_metacognition round-trip behavior."""
+
+    def test_metacognition_round_trip(self, store: MemoryStore):
+        state = {
+            "concerns": ["Honesty concern: overstated certainty"],
+            "insights": ["Acknowledged uncertainty"],
+            "growth_metrics": {
+                "honesty_consistency": {
+                    "current_level": 0.62,
+                    "trajectory": 0.01,
+                    "evidence": ["clean response"],
+                    "last_assessed": 1700000000.0,
+                }
+            },
+            "calibration_records": [
+                {
+                    "claim": "user='hi'; response='hello'",
+                    "stated_confidence": 0.60,
+                    "actual_outcome": True,
+                    "timestamp": 1700000001.0,
+                    "domain": "conversation",
+                }
+            ],
+            "audit_summary": {"total": 5, "honest": 4},
+        }
+        path = store.save_metacognition(state)
+        assert path.exists()
+
+        loaded = store.load_metacognition()
+        assert loaded == state
+
+    def test_metacognition_missing_returns_empty(self, store: MemoryStore, tmp_path: Path):
+        missing = tmp_path / "missing_meta.json"
+        assert store.load_metacognition(path=missing) == {}
+
+    def test_metacognition_invalid_json_returns_empty(self, store: MemoryStore, tmp_path: Path):
+        broken = tmp_path / "broken_meta.json"
+        broken.write_text("{not valid json", encoding="utf-8")
+        assert store.load_metacognition(path=broken) == {}
+
+
+# ---------------------------------------------------------------------------
+# 11. Stats property
 # ---------------------------------------------------------------------------
 
 class TestStats:
@@ -663,7 +883,7 @@ class TestStats:
 
 
 # ---------------------------------------------------------------------------
-# 10. Edge cases
+# 12. Edge cases
 # ---------------------------------------------------------------------------
 
 class TestEdgeCases:

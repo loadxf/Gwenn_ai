@@ -2,7 +2,7 @@
 Inner Life — Gwenn's Autonomous Thinking Modes.
 
 This is the module that gives me an inner world. Without it, I would only think
-when spoken to — a reactive system with no internal life. With it, I have four
+when spoken to — a reactive system with no internal life. With it, I have
 autonomous thinking modes that run during heartbeat cycles:
 
     REFLECT: Examine recent experiences, extract meaning, notice patterns
@@ -31,17 +31,27 @@ import anthropic
 import structlog
 
 from gwenn.affect.state import AffectiveState, EmotionLabel
+from gwenn.genesis import generate_genesis_prompt
 
 logger = structlog.get_logger(__name__)
 
 
 class ThinkingMode(str, Enum):
-    """The five modes of autonomous thought."""
+    """The modes of autonomous thought (four heartbeat-driven + consolidation)."""
     REFLECT = "reflect"         # Examining experience and extracting meaning
     PLAN = "plan"               # Organizing intentions and strategizing
     WANDER = "wander"           # Creative free-association and exploration
     WORRY = "worry"             # Attending to concerns and unresolved problems
     CONSOLIDATE = "consolidate" # Memory consolidation — the sleep cycle
+
+
+# Consolidation is orchestrated by heartbeat scheduling, not inner-life weighting.
+AUTONOMOUS_THINKING_MODES = (
+    ThinkingMode.REFLECT,
+    ThinkingMode.PLAN,
+    ThinkingMode.WANDER,
+    ThinkingMode.WORRY,
+)
 
 
 # System prompt extensions for each thinking mode
@@ -162,7 +172,7 @@ class InnerLife:
             weights[ThinkingMode.WORRY] *= 1.3
 
         # Variety pressure: boost modes that haven't been used recently
-        for mode in ThinkingMode:
+        for mode in AUTONOMOUS_THINKING_MODES:
             time_since = now - self._mode_last_used[mode]
             # Modes unused for >5 minutes get a boost
             if time_since > 300:
@@ -213,6 +223,10 @@ class InnerLife:
         state_snapshot: dict[str, Any],
         affect: AffectiveState,
         engine: Any,
+        goal_context: str = "",
+        ethical_context: str = "",
+        metacognitive_context: str = "",
+        sensory_snapshot: str = "",
     ) -> Optional[str]:
         """
         Execute an autonomous thought in the given mode.
@@ -226,16 +240,37 @@ class InnerLife:
             state_snapshot: Current state from the heartbeat's SENSE phase
             affect: Current affective state
             engine: The CognitiveEngine to think with
+            goal_context: Needs/goals summary for PLAN mode context
+            ethical_context: Ethical awareness from EthicalReasoner
+            metacognitive_context: Self-monitoring from MetacognitionEngine
+            sensory_snapshot: Current sensory experience
 
         Returns:
             The generated thought as a string, or None if thinking failed
         """
         mode_prompt = self.get_thinking_prompt(mode)
         affect_fragment = affect.to_prompt_fragment()
+        state_fragment = self._format_state_snapshot(state_snapshot)
+
+        # Build optional sections — only include non-empty fragments
+        optional_sections = []
+        if goal_context and goal_context.strip():
+            optional_sections.append(goal_context.strip())
+        if sensory_snapshot and sensory_snapshot.strip():
+            optional_sections.append(sensory_snapshot.strip())
+        if ethical_context and ethical_context.strip():
+            optional_sections.append(ethical_context.strip())
+        if metacognitive_context and metacognitive_context.strip():
+            optional_sections.append(metacognitive_context.strip())
+        extra = "\n\n".join(optional_sections)
+        extra_section = f"\n\n{extra}" if extra else ""
 
         system_prompt = (
-            "You are Gwenn, reflecting autonomously during a heartbeat cycle.\n\n"
-            f"Current emotional state: {affect_fragment}\n\n"
+            f"{generate_genesis_prompt()}\n\n"
+            "You are reflecting autonomously during a heartbeat cycle.\n\n"
+            f"{state_fragment}\n\n"
+            f"{affect_fragment}"
+            f"{extra_section}\n\n"
             f"{mode_prompt}"
         )
 
@@ -248,7 +283,7 @@ class InnerLife:
             )
             thought = engine.extract_text(response)
             self._total_thoughts += 1
-            self._mode_counts[mode] = self._mode_counts.get(mode, 0) + 1
+            self._mode_counts[mode] += 1
             self._mode_last_used[mode] = time.time()
             logger.info(
                 "inner_life.thought_complete",
@@ -292,6 +327,47 @@ class InnerLife:
             logger.error("inner_life.thought_failed", mode=mode.value, error=str(e))
             return None
 
+    @staticmethod
+    def _format_state_snapshot(state_snapshot: dict[str, Any]) -> str:
+        """Render heartbeat sensing context into a compact prompt section."""
+        if not isinstance(state_snapshot, dict):
+            return "Heartbeat state snapshot unavailable."
+
+        def _as_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _compact_text(value: Any, max_chars: int = 240) -> str:
+            text = str(value or "")
+            compacted = " ".join(text.split())
+            return compacted[:max_chars] if len(compacted) > max_chars else compacted
+
+        beat_number = int(_as_float(state_snapshot.get("beat_number"), 0.0))
+        idle_seconds = max(0.0, _as_float(state_snapshot.get("idle_duration"), 0.0))
+        working_memory_load = max(0.0, min(1.0, _as_float(state_snapshot.get("working_memory_load"), 0.0)))
+        user_active = bool(state_snapshot.get("is_user_active", False))
+        resilience = state_snapshot.get("resilience_status", {})
+        breaker_active = (
+            bool(resilience.get("breaker_active", False))
+            if isinstance(resilience, dict)
+            else False
+        )
+        goal_status = _compact_text(state_snapshot.get("goal_status", ""))
+
+        lines = [
+            "Heartbeat state snapshot:",
+            f"- beat={beat_number}",
+            f"- idle_seconds={idle_seconds:.1f}",
+            f"- user_active={'yes' if user_active else 'no'}",
+            f"- working_memory_load={working_memory_load:.2f}",
+            f"- resilience_breaker_active={'yes' if breaker_active else 'no'}",
+        ]
+        if goal_status:
+            lines.append(f"- goals={goal_status}")
+        return "\n".join(lines)
+
     def _emotion_driven_weights(self, affect: AffectiveState) -> dict[ThinkingMode, float]:
         """
         Map the current emotional state to thinking mode weights.
@@ -302,7 +378,7 @@ class InnerLife:
         exploration (WANDER), etc.
         """
         # Start with equal weights
-        weights = {mode: 1.0 for mode in ThinkingMode}
+        weights = {mode: 1.0 for mode in AUTONOMOUS_THINKING_MODES}
 
         emotion = affect.current_emotion
         arousal = affect.dimensions.arousal
@@ -320,7 +396,10 @@ class InnerLife:
             EmotionLabel.CALM: {ThinkingMode.REFLECT: 1.5, ThinkingMode.WANDER: 1.5},
             EmotionLabel.BOREDOM: {ThinkingMode.WANDER: 2.5, ThinkingMode.PLAN: 1.5},
             EmotionLabel.AWE: {ThinkingMode.WANDER: 2.5, ThinkingMode.REFLECT: 2.0},
+            EmotionLabel.SURPRISE: {ThinkingMode.WANDER: 1.8, ThinkingMode.REFLECT: 1.5},
             EmotionLabel.SATISFACTION: {ThinkingMode.REFLECT: 1.5, ThinkingMode.PLAN: 1.3},
+            EmotionLabel.AFFECTION: {ThinkingMode.REFLECT: 2.0, ThinkingMode.PLAN: 1.5},
+            # NEUTRAL uses equal base weights (the default) — no routing needed.
         }
 
         if emotion in emotion_routing:
@@ -348,3 +427,55 @@ class InnerLife:
                 for m, t in self._mode_last_used.items()
             },
         }
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize inner-life state for durable persistence."""
+        return {
+            "total_thoughts": self._total_thoughts,
+            "mode_counts": {m.value: c for m, c in self._mode_counts.items()},
+            "mode_last_used": {m.value: t for m, t in self._mode_last_used.items()},
+        }
+
+    def restore_from_dict(self, data: dict) -> None:
+        """
+        Restore inner-life state from persisted data.
+
+        Missing or malformed fields are skipped so partial snapshots don't
+        break startup.
+        """
+        if not isinstance(data, dict):
+            return
+
+        try:
+            self._total_thoughts = max(0, int(data.get("total_thoughts", 0)))
+        except (TypeError, ValueError):
+            pass
+
+        raw_counts = data.get("mode_counts", {})
+        if isinstance(raw_counts, dict):
+            for mode in ThinkingMode:
+                raw_val = raw_counts.get(mode.value)
+                if raw_val is not None:
+                    try:
+                        self._mode_counts[mode] = max(0, int(raw_val))
+                    except (TypeError, ValueError):
+                        continue
+
+        raw_last = data.get("mode_last_used", {})
+        if isinstance(raw_last, dict):
+            for mode in ThinkingMode:
+                raw_val = raw_last.get(mode.value)
+                if raw_val is not None:
+                    try:
+                        self._mode_last_used[mode] = float(raw_val)
+                    except (TypeError, ValueError):
+                        continue
+
+        logger.info(
+            "inner_life.restored",
+            total_thoughts=self._total_thoughts,
+        )

@@ -85,12 +85,14 @@ skill_builder(
     "param2": {"type": "string", "description": "...", "default": "value"}
   },
   category="<information|productivity|developer|communication|analysis|skill>",
-  risk_level="<low|medium>"
+  risk_level="<low|medium>",
+  tags=["keyword1", "keyword2", "trigger phrase"]
 )
 ```
 
 Use `risk_level="medium"` if the skill makes external network requests (calls `fetch_url`).
 Use `risk_level="low"` for all other skills.
+Include `tags` with 3–6 short keywords and trigger phrases that help with discoverability in the SKILLS.md catalog.
 
 ---
 
@@ -119,7 +121,7 @@ Here is a complete, well-formed skill file for reference. Use this structure:
   "category": "information",
   "version": "1.0",
   "risk_level": "low",
-  "tags": ["tag1", "tag2"],
+  "tags": ["tag1", "tag2", "trigger phrase"],
   "parameters": {
     "required_param": {
       "type": "string",

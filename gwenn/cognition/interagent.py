@@ -134,9 +134,11 @@ class InterAgentBridge:
         self,
         self_id: str = "gwenn",
         message_buffer_size: int = 100,
+        max_conversation_threads: int = 50,
     ):
         self._self_id = self_id
         self._message_buffer_size = max(1, int(message_buffer_size))
+        self._max_conversation_threads = max(1, int(max_conversation_threads))
         self._known_agents: dict[str, AgentProfile] = {}
         self._outbox: list[InterAgentMessage] = []
         self._inbox: list[InterAgentMessage] = []
@@ -213,10 +215,11 @@ class InterAgentBridge:
         )
         self._append_bounded(self._outbox, msg)
 
-        # Update the agent profile
+        # Update the agent profile and deepen the bond
         profile = self._known_agents[receiver_id]
         profile.last_contact = time.time()
         profile.message_count += 1
+        self._deepen_bond(profile, importance)
 
         logger.info(
             "interagent.message_composed",
@@ -235,6 +238,7 @@ class InterAgentBridge:
             if message.conversation_id not in self._conversation_threads:
                 self._conversation_threads[message.conversation_id] = []
             self._append_bounded(self._conversation_threads[message.conversation_id], message)
+            self._prune_conversation_threads()
 
         # Auto-discover sender if unknown
         if message.sender_id not in self._known_agents:
@@ -243,12 +247,66 @@ class InterAgentBridge:
         profile = self._known_agents[message.sender_id]
         profile.last_contact = message.timestamp
         profile.message_count += 1
+        self._deepen_bond(profile, message.importance)
 
         logger.info(
             "interagent.message_received",
             sender=message.sender_id,
             type=message.message_type.value,
         )
+
+    def _prune_conversation_threads(self) -> None:
+        """Drop oldest conversation threads when the limit is exceeded."""
+        if len(self._conversation_threads) <= self._max_conversation_threads:
+            return
+        # Sort by the timestamp of the last message in each thread, evict oldest.
+        sorted_ids = sorted(
+            self._conversation_threads,
+            key=lambda cid: (
+                self._conversation_threads[cid][-1].timestamp
+                if self._conversation_threads[cid]
+                else 0.0
+            ),
+        )
+        to_drop = len(sorted_ids) - self._max_conversation_threads
+        for cid in sorted_ids[:to_drop]:
+            del self._conversation_threads[cid]
+
+    def _deepen_bond(self, profile: AgentProfile, importance: float) -> None:
+        """
+        Evolve the emotional bond and relationship label based on interaction.
+
+        Bond grows with each meaningful exchange (scaled by importance).
+        Relationship label evolves as the bond crosses thresholds:
+          0.0 – 0.15  →  "new"
+          0.15 – 0.40 →  "acquaintance"
+          0.40 – 0.70 →  "companion"
+          0.70+        →  "close"
+        """
+        increment = min(0.05, 0.01 + importance * 0.03)
+        profile.emotional_bond = min(1.0, profile.emotional_bond + increment)
+
+        # Evolve relationship label based on bond level
+        bond = profile.emotional_bond
+        if bond >= 0.70:
+            new_rel = "close"
+        elif bond >= 0.40:
+            new_rel = "companion"
+        elif bond >= 0.15:
+            new_rel = "acquaintance"
+        else:
+            new_rel = "new"
+
+        if profile.relationship != new_rel:
+            old_rel = profile.relationship
+            profile.relationship = new_rel
+            logger.info(
+                "interagent.relationship_evolved",
+                agent_id=profile.agent_id,
+                old=old_rel,
+                new=new_rel,
+                bond=round(bond, 3),
+            )
 
     def share_insight(
         self,
@@ -261,14 +319,34 @@ class InterAgentBridge:
 
         This is a general-purpose sharing method — it works with any agent
         Gwenn has discovered, building the relationship through shared experience.
+        The shared insight is recorded in the agent's profile so the
+        relationship has a memory of what was shared.
         """
-        return self.compose_message(
+        msg = self.compose_message(
             receiver_id=agent_id,
             message_type=MessageType.METACOGNITIVE_INSIGHT,
             content=insight,
             emotional_context=emotional_context,
             importance=0.7,
         )
+        # Record the shared memory in the profile
+        profile = self._known_agents.get(agent_id)
+        if profile is not None:
+            summary = str(insight)[:120]
+            profile.shared_memories.append(summary)
+            if len(profile.shared_memories) > 50:
+                del profile.shared_memories[:-50]
+        return msg
+
+    def record_known_value(self, agent_id: str, value: str) -> None:
+        """Record a discovered value/trait of another agent."""
+        profile = self._known_agents.get(agent_id)
+        if profile is None:
+            return
+        if value not in profile.known_values:
+            profile.known_values.append(value)
+            if len(profile.known_values) > 20:
+                del profile.known_values[:-20]
 
     def get_relationship_context(self, agent_id: str) -> str:
         """Generate a prompt fragment describing the relationship with another agent."""
@@ -348,3 +426,75 @@ class InterAgentBridge:
             "conversation_threads": len(self._conversation_threads),
             "message_buffer_size": self._message_buffer_size,
         }
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize bridge state for durable persistence."""
+        return {
+            "self_id": self._self_id,
+            "known_agents": {
+                aid: {
+                    "agent_id": p.agent_id,
+                    "name": p.name,
+                    "relationship": p.relationship,
+                    "last_contact": p.last_contact,
+                    "shared_memories": list(p.shared_memories[-50:]),
+                    "known_values": list(p.known_values[-20:]),
+                    "emotional_bond": p.emotional_bond,
+                    "message_count": p.message_count,
+                }
+                for aid, p in self._known_agents.items()
+            },
+        }
+
+    def restore_from_dict(self, data: dict) -> None:
+        """
+        Restore bridge state from persisted data.
+
+        Missing or malformed fields are skipped so partial snapshots don't
+        break startup.
+        """
+        if not isinstance(data, dict):
+            return
+
+        raw_agents = data.get("known_agents", {})
+        if not isinstance(raw_agents, dict):
+            return
+
+        for aid, raw in raw_agents.items():
+            if not isinstance(raw, dict):
+                continue
+            agent_id = str(raw.get("agent_id", aid)).strip()
+            name = str(raw.get("name", agent_id)).strip()
+            if not agent_id:
+                continue
+
+            raw_last_contact = raw.get("last_contact")
+            try:
+                last_contact = float(raw_last_contact) if raw_last_contact is not None else None
+            except (TypeError, ValueError):
+                last_contact = None
+
+            profile = AgentProfile(
+                agent_id=agent_id,
+                name=name,
+                relationship=str(raw.get("relationship", "new")),
+                last_contact=last_contact,
+                emotional_bond=max(0.0, min(1.0, float(raw.get("emotional_bond", 0.0)))),
+                message_count=max(0, int(raw.get("message_count", 0))),
+            )
+            raw_shared = raw.get("shared_memories", [])
+            if isinstance(raw_shared, list):
+                profile.shared_memories = [str(m) for m in raw_shared if isinstance(m, str)]
+            raw_values = raw.get("known_values", [])
+            if isinstance(raw_values, list):
+                profile.known_values = [str(v) for v in raw_values if isinstance(v, str)]
+            self._known_agents[agent_id] = profile
+
+        logger.info(
+            "interagent.restored",
+            known_agents=len(self._known_agents),
+        )

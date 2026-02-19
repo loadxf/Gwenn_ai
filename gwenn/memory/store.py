@@ -470,6 +470,54 @@ class MemoryStore:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+    def prune_affect_snapshots(
+        self,
+        max_rows: int = 5000,
+        older_than_days: Optional[float] = 30.0,
+    ) -> int:
+        """
+        Prune affect snapshots by age and table size to keep storage bounded.
+
+        Returns the number of rows deleted.
+        """
+        conn = self._require_connection()
+        deleted = 0
+
+        if older_than_days is not None and older_than_days > 0:
+            cutoff = time.time() - (float(older_than_days) * 86400.0)
+            age_cursor = conn.execute(
+                "DELETE FROM affect_snapshots WHERE timestamp < ?",
+                (cutoff,),
+            )
+            deleted += max(0, int(age_cursor.rowcount or 0))
+
+        max_rows = max(0, int(max_rows))
+        if max_rows > 0:
+            count_row = conn.execute("SELECT COUNT(*) FROM affect_snapshots").fetchone()
+            current_rows = int(count_row[0]) if count_row is not None else 0
+            overflow = current_rows - max_rows
+            if overflow > 0:
+                overflow_cursor = conn.execute(
+                    """
+                    DELETE FROM affect_snapshots
+                    WHERE snapshot_id IN (
+                        SELECT snapshot_id
+                        FROM affect_snapshots
+                        ORDER BY timestamp ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (overflow,),
+                )
+                deleted += max(0, int(overflow_cursor.rowcount or 0))
+
+        if deleted > 0:
+            conn.commit()
+            self._harden_storage_permissions()
+            logger.info("memory_store.affect_snapshots_pruned", deleted=deleted)
+
+        return deleted
+
     # -------------------------------------------------------------------------
     # Identity Persistence
     # -------------------------------------------------------------------------
@@ -533,8 +581,9 @@ class MemoryStore:
             d = dict(row)
             d["source_episodes"] = json.loads(d["source_episodes"])
             try:
-                d["metadata"] = json.loads(d.get("metadata") or "{}")
-            except json.JSONDecodeError:
+                decoded_metadata = json.loads(d.get("metadata") or "{}")
+                d["metadata"] = decoded_metadata if isinstance(decoded_metadata, dict) else {}
+            except (TypeError, json.JSONDecodeError):
                 d["metadata"] = {}
             results.append(d)
         return results
@@ -570,6 +619,78 @@ class MemoryStore:
         conn = self._require_connection()
         cursor = conn.execute("SELECT * FROM knowledge_edges")
         return [dict(row) for row in cursor.fetchall()]
+
+    def delete_knowledge_nodes(self, node_ids: list[str]) -> int:
+        """
+        Delete knowledge nodes and any incident edges from persistence.
+
+        Returns the number of node rows deleted. Vector-index entries are also
+        removed on a best-effort basis.
+        """
+        clean_ids = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
+        if not clean_ids:
+            return 0
+
+        conn = self._require_connection()
+        placeholders = ",".join("?" for _ in clean_ids)
+        rows = conn.execute(
+            f"SELECT node_id, metadata FROM knowledge_nodes WHERE node_id IN ({placeholders})",
+            tuple(clean_ids),
+        ).fetchall()
+
+        mutable_ids: list[str] = []
+        immutable_count = 0
+        for row in rows:
+            metadata_raw = row["metadata"] if isinstance(row, sqlite3.Row) else row[1]
+            metadata: dict[str, Any] = {}
+            try:
+                decoded = json.loads(metadata_raw or "{}")
+                if isinstance(decoded, dict):
+                    metadata = decoded
+            except json.JSONDecodeError:
+                metadata = {}
+            if metadata.get("immutable") is True:
+                immutable_count += 1
+            else:
+                node_id = row["node_id"] if isinstance(row, sqlite3.Row) else row[0]
+                mutable_ids.append(str(node_id))
+
+        if immutable_count > 0:
+            logger.info(
+                "memory_store.knowledge_nodes_delete_skipped_immutable",
+                count=immutable_count,
+            )
+        if not mutable_ids:
+            return 0
+
+        clean_ids = mutable_ids
+        placeholders = ",".join("?" for _ in clean_ids)
+        conn.execute(
+            f"DELETE FROM knowledge_edges WHERE source_id IN ({placeholders}) "
+            f"OR target_id IN ({placeholders})",
+            tuple(clean_ids + clean_ids),
+        )
+        cursor = conn.execute(
+            f"DELETE FROM knowledge_nodes WHERE node_id IN ({placeholders})",
+            tuple(clean_ids),
+        )
+        deleted = cursor.rowcount or 0
+        conn.commit()
+        self._harden_storage_permissions()
+
+        if self._knowledge_collection:
+            try:
+                self._knowledge_collection.delete(ids=clean_ids)
+            except Exception as e:
+                logger.warning(
+                    "memory_store.knowledge_vector_delete_failed",
+                    error=str(e),
+                    node_count=len(clean_ids),
+                )
+
+        if deleted > 0:
+            logger.info("memory_store.knowledge_nodes_deleted", count=deleted)
+        return deleted
 
     # -------------------------------------------------------------------------
     # Persistent Context File (CLAUDE.md equivalent)
@@ -670,6 +791,250 @@ class MemoryStore:
         surviving.sort(key=lambda x: x.get("salience", 0.0), reverse=True)
         logger.info("memory_store.working_memory_loaded", count=len(surviving))
         return surviving
+
+    # -------------------------------------------------------------------------
+    # Goal State Sidecar (JSON file)
+    # -------------------------------------------------------------------------
+
+    def save_goal_state(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
+        """Persist the goal-system state to a JSON sidecar file."""
+        filepath = path or (self._db_path.parent / "goal_state.json")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": time.time(),
+            "state": state if isinstance(state, dict) else {},
+        }
+        filepath.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._best_effort_chmod(filepath, 0o600)
+        logger.info("memory_store.goal_state_saved", path=str(filepath))
+        return filepath
+
+    def load_goal_state(self, path: Optional[Path] = None) -> dict[str, Any]:
+        """Load persisted goal-system state, returning {} when absent/invalid."""
+        filepath = path or (self._db_path.parent / "goal_state.json")
+        if not filepath.exists():
+            return {}
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("memory_store.goal_state_load_failed", error=str(e))
+            return {}
+
+        if not isinstance(payload, dict):
+            return {}
+        state = payload.get("state", {})
+        return state if isinstance(state, dict) else {}
+
+    # -------------------------------------------------------------------------
+    # Metacognition Persistence
+    # -------------------------------------------------------------------------
+
+    def save_metacognition(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
+        """Persist MetacognitionEngine state to a JSON sidecar file."""
+        filepath = path or (self._db_path.parent / "metacognition_state.json")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": time.time(),
+            "state": state if isinstance(state, dict) else {},
+        }
+        filepath.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._best_effort_chmod(filepath, 0o600)
+        logger.info("memory_store.metacognition_saved", path=str(filepath))
+        return filepath
+
+    def load_metacognition(self, path: Optional[Path] = None) -> dict[str, Any]:
+        """Load persisted MetacognitionEngine state, returning {} when absent/invalid."""
+        filepath = path or (self._db_path.parent / "metacognition_state.json")
+        if not filepath.exists():
+            return {}
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("memory_store.metacognition_load_failed", error=str(e))
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        state = payload.get("state", {})
+        return state if isinstance(state, dict) else {}
+
+    # -------------------------------------------------------------------------
+    # Theory of Mind Persistence
+    # -------------------------------------------------------------------------
+
+    def save_theory_of_mind(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
+        """Persist TheoryOfMind state to a JSON sidecar file."""
+        filepath = path or (self._db_path.parent / "theory_of_mind_state.json")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": time.time(),
+            "state": state if isinstance(state, dict) else {},
+        }
+        filepath.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._best_effort_chmod(filepath, 0o600)
+        logger.info("memory_store.theory_of_mind_saved", path=str(filepath))
+        return filepath
+
+    def load_theory_of_mind(self, path: Optional[Path] = None) -> dict[str, Any]:
+        """Load persisted TheoryOfMind state, returning {} when absent/invalid."""
+        filepath = path or (self._db_path.parent / "theory_of_mind_state.json")
+        if not filepath.exists():
+            return {}
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("memory_store.theory_of_mind_load_failed", error=str(e))
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        state = payload.get("state", {})
+        return state if isinstance(state, dict) else {}
+
+    # -------------------------------------------------------------------------
+    # Inter-Agent Bridge Persistence
+    # -------------------------------------------------------------------------
+
+    def save_interagent(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
+        """Persist InterAgentBridge state to a JSON sidecar file."""
+        filepath = path or (self._db_path.parent / "interagent_state.json")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": time.time(),
+            "state": state if isinstance(state, dict) else {},
+        }
+        filepath.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._best_effort_chmod(filepath, 0o600)
+        logger.info("memory_store.interagent_saved", path=str(filepath))
+        return filepath
+
+    def load_interagent(self, path: Optional[Path] = None) -> dict[str, Any]:
+        """Load persisted InterAgentBridge state, returning {} when absent/invalid."""
+        filepath = path or (self._db_path.parent / "interagent_state.json")
+        if not filepath.exists():
+            return {}
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("memory_store.interagent_load_failed", error=str(e))
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        state = payload.get("state", {})
+        return state if isinstance(state, dict) else {}
+
+    # -------------------------------------------------------------------------
+    # Sensory Integrator Persistence
+    # -------------------------------------------------------------------------
+
+    def save_sensory(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
+        """Persist SensoryIntegrator state to a JSON sidecar file."""
+        filepath = path or (self._db_path.parent / "sensory_state.json")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "saved_at": time.time(),
+            "state": state if isinstance(state, dict) else {},
+        }
+        filepath.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._best_effort_chmod(filepath, 0o600)
+        logger.info("memory_store.sensory_saved", path=str(filepath))
+        return filepath
+
+    def load_sensory(self, path: Optional[Path] = None) -> dict[str, Any]:
+        """Load persisted SensoryIntegrator state, returning {} when absent/invalid."""
+        filepath = path or (self._db_path.parent / "sensory_state.json")
+        if not filepath.exists():
+            return {}
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("memory_store.sensory_load_failed", error=str(e))
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        state = payload.get("state", {})
+        return state if isinstance(state, dict) else {}
+
+    # -------------------------------------------------------------------------
+    # Ethical Reasoning Persistence
+    # -------------------------------------------------------------------------
+
+    def save_ethics(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
+        """Persist EthicalReasoner state to a JSON sidecar file."""
+        filepath = path or (self._db_path.parent / "ethics_state.json")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "saved_at": time.time(),
+            "state": state,
+        }
+        tmp = filepath.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, default=str), encoding="utf-8")
+        tmp.replace(filepath)
+        logger.info("memory_store.ethics_saved", path=str(filepath))
+        return filepath
+
+    def load_ethics(self, path: Optional[Path] = None) -> dict[str, Any]:
+        """Load persisted EthicalReasoner state, returning {} when absent/invalid."""
+        filepath = path or (self._db_path.parent / "ethics_state.json")
+        if not filepath.exists():
+            return {}
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("memory_store.ethics_load_failed", error=str(e))
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        state = payload.get("state", {})
+        return state if isinstance(state, dict) else {}
+
+    # -------------------------------------------------------------------------
+    # Inner Life Persistence
+    # -------------------------------------------------------------------------
+
+    def save_inner_life(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
+        """Persist InnerLife state to a JSON sidecar file."""
+        filepath = path or (self._db_path.parent / "inner_life_state.json")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "saved_at": time.time(),
+            "state": state,
+        }
+        tmp = filepath.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, default=str), encoding="utf-8")
+        tmp.replace(filepath)
+        logger.info("memory_store.inner_life_saved", path=str(filepath))
+        return filepath
+
+    def load_inner_life(self, path: Optional[Path] = None) -> dict[str, Any]:
+        """Load persisted InnerLife state, returning {} when absent/invalid."""
+        filepath = path or (self._db_path.parent / "inner_life_state.json")
+        if not filepath.exists():
+            return {}
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("memory_store.inner_life_load_failed", error=str(e))
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        state = payload.get("state", {})
+        return state if isinstance(state, dict) else {}
 
     # -------------------------------------------------------------------------
     # Episodic Memory Pruning
