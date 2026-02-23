@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from gwenn.config import _normalize_session_scope_mode
+from gwenn.types import UserMessage
 
 if TYPE_CHECKING:
     from gwenn.agent import SentientAgent
@@ -251,7 +252,7 @@ class BaseChannel(ABC):
     async def handle_message(
         self,
         raw_user_id: str,
-        text: str,
+        message: UserMessage | str,
         *,
         session_scope_key: str | None = None,
     ) -> str:
@@ -260,7 +261,12 @@ class BaseChannel(ABC):
 
         Fetches the per-user conversation history and passes it to respond(),
         which appends the new turn in-place.  Returns Gwenn's response string.
+
+        *message* may be a plain string (backward-compatible) or a
+        ``UserMessage`` carrying optional image data.
         """
+        if isinstance(message, str):
+            message = UserMessage(text=message)
         user_id = self.make_user_id(raw_user_id)
         if session_scope_key:
             session_id = self.make_session_id(session_scope_key)
@@ -269,7 +275,7 @@ class BaseChannel(ABC):
         history = self._sessions.get_or_create(session_id)
         async with self._get_shared_respond_lock():
             return await self._agent.respond(
-                user_message=text,
+                user_message=message,
                 user_id=user_id,
                 conversation_history=history,
             )

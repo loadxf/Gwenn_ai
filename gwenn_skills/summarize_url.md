@@ -5,7 +5,7 @@
   "category": "information",
   "version": "1.1",
   "risk_level": "medium",
-  "tags": ["summarize", "url", "article", "web page", "read", "link"],
+  "tags": ["user_command", "summarize", "url", "article", "web page", "read", "link"],
   "parameters": {
     "url": {
       "type": "string",

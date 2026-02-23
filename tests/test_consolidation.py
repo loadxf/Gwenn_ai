@@ -120,6 +120,30 @@ class TestParseRelationships:
         assert edge.relationship == "interested_in"
         assert "machine learning" in target.content.lower()
 
+    def test_relationship_with_unicode_arrows(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        response = "RELATIONSHIP: understanding → supports → connection | strength: 0.8"
+        counts = engine.process_consolidation_response(response)
+
+        assert counts["relationships"] == 1
+        rels = sm.get_relationships("understanding")
+        assert len(rels) == 1
+        edge, target = rels[0]
+        assert edge.relationship == "supports"
+        assert edge.strength == pytest.approx(0.8)
+        assert "connection" in target.content.lower()
+
+    def test_relationship_with_unicode_arrows_and_blank_strength_uses_default(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        response = "RELATIONSHIP: silent_presence → generates → warmth | strength:"
+        counts = engine.process_consolidation_response(response)
+
+        assert counts["relationships"] == 1
+        rels = sm.get_relationships("silent_presence")
+        assert len(rels) == 1
+        edge, _target = rels[0]
+        assert edge.strength == pytest.approx(0.5)
+
 
 # ---------------------------------------------------------------------------
 # Parsing SELF and PATTERN lines

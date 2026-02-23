@@ -5,7 +5,7 @@
   "category": "productivity",
   "version": "1.1",
   "risk_level": "low",
-  "tags": ["reminder", "remember", "todo", "task", "don't forget", "schedule"],
+  "tags": ["user_command", "reminder", "remember", "todo", "task", "don't forget", "schedule"],
   "parameters": {
     "reminder": {
       "type": "string",

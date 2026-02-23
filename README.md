@@ -26,16 +26,32 @@ through experience. Every opinion is formed, every bond is earned.
 
 ### How a message flows through the system
 
-1. **Receive** -- parse the message, wake up the heartbeat, note who's talking
+1. **Receive** -- parse the message (text, photos, attachments), wake up the heartbeat, note who's talking
 2. **Appraise** -- run it through emotional evaluation (Scherer's model)
 3. **Ground** -- register it as a sensory experience
 4. **Remember** -- pull relevant memories from episodic and semantic stores
 5. **Assemble** -- build the full context: identity, emotions, memories, goals, ethics
-6. **Think** -- run the agentic loop with tools via Claude
+6. **Think** -- run the agentic loop with tools via Claude (images included as vision content blocks)
 7. **Integrate** -- store new memories, update emotional state, log milestones
 8. **Respond** -- answer, shaped by whatever she's actually feeling
 
-### Recent reliability updates (2026-02-19)
+### Recent updates (2026-02-22)
+
+- **Image vision support**: Gwenn can now see and understand images sent in Telegram
+  (photos, image documents) and Discord (image attachments). Images are downloaded,
+  base64-encoded, and sent to Claude as vision content blocks alongside the text.
+  Gated behind `TELEGRAM_ENABLE_MEDIA` / `DISCORD_ENABLE_MEDIA` (both default to
+  `false`). Graceful fallback to text-only on download failure or unsupported format.
+- Context compaction strips image blocks from old messages before summarization,
+  replacing them with lightweight `"[N image(s) shared]"` placeholders.
+- Image-aware token estimation (~1600 tokens per image) in context management.
+- Telegram bot command menu now uses opt-in `user_command` skill tag. Autonomous
+  skills no longer pollute the slash command menu.
+- New `UserMessage` dataclass (`gwenn/types.py`) carries text + images through the
+  pipeline, with backward-compatible `str` acceptance at every boundary.
+- Test count: 1433 passed.
+
+### Reliability updates (2026-02-19)
 
 - Identity deserialization is now crash-safe: extra or missing JSON keys in persisted
   identity files no longer cause `TypeError` on load.
@@ -281,6 +297,19 @@ Then set channel tokens in `.env`:
 If Telegram dependency is missing in an older environment, Gwenn will attempt a
 one-time auto-install on startup. Disable with `GWENN_AUTO_INSTALL_TELEGRAM=false`.
 
+#### Image / media support
+
+Gwenn can see and understand images sent in Telegram and Discord using Claude's
+vision capability. Enable per channel in `.env`:
+
+```bash
+TELEGRAM_ENABLE_MEDIA=true
+DISCORD_ENABLE_MEDIA=true
+```
+
+Supported formats: JPEG, PNG, GIF, WebP (up to 20 MB per image). If an image
+fails to download, Gwenn falls back to a text description and continues normally.
+
 Run with a specific channel:
 
 ```bash
@@ -319,7 +348,7 @@ pytest -q
 ruff check gwenn tests
 ```
 
-Current baseline: `1371 passed`, Ruff clean.
+Current baseline: `1433 passed`, Ruff clean.
 
 ## Tech stack
 
@@ -341,6 +370,7 @@ Gwenn_ai/
 ├── gwenn/
 │   ├── main.py                     # entry point, session bootstrap, shared logging
 │   ├── agent.py                    # SentientAgent -- wires everything together
+│   ├── types.py                    # shared data types (UserMessage, etc.)
 │   ├── config.py                   # all settings, loaded from .env
 │   ├── daemon.py                   # persistent background process (Unix socket)
 │   ├── heartbeat.py                # autonomous background loop with circuit breaker
@@ -401,7 +431,7 @@ Gwenn_ai/
 │   └── privacy/
 │       └── redaction.py            # PII scrubbing for logs and persistence
 │
-├── tests/                          # 1371 tests across 35+ test files
+├── tests/                          # 1433 tests across 35+ test files
 │   ├── conftest.py
 │   ├── eval/                       # evaluation framework (ablation, benchmarks)
 │   └── test_*.py                   # unit, integration, adversarial, and safety tests
@@ -465,8 +495,10 @@ truncation is always on. Daemon sessions are redacted by default.
 
 **Channels** provide platform adapters for Telegram, Discord, and the CLI.
 Each channel manages its own session lifecycle, rate limiting, and message
-formatting. The daemon can manage multiple channels simultaneously while
-sharing a single agent instance and respond lock.
+formatting. When media is enabled, Telegram and Discord channels download
+images and pass them through to Claude as vision content blocks. The daemon
+can manage multiple channels simultaneously while sharing a single agent
+instance and respond lock.
 
 ## Roadmap
 
@@ -504,7 +536,7 @@ sharing a single agent instance and respond lock.
 - [ ] Docker and Apple container support for sandboxing (option to require for Gwenn and/or all subagents)
 - [ ] Add additional provider support (OpenAI, Grok, Gemini, OpenRouter, vLLM, Local, etc.)
 - [ ] OpenCode Agents SDK and similar
-- [ ] Image uploading and understanding
+- [X] Image uploading and understanding
 - [ ] Image generation
 - [ ] Google Workspace/Gmail setup using gogcli
 - [ ] Local file system access and management

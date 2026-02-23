@@ -249,7 +249,7 @@ class TestOnStart:
         assert sessions.get_or_create("telegram_user:12345") == []
         update.message.reply_text.assert_called_once()
         text = update.message.reply_text.call_args[0][0]
-        assert "/cancel" in text
+        assert "/help" in text
 
     @pytest.mark.asyncio
     async def test_start_blocked_for_non_allowlisted_user(self):
@@ -428,7 +428,9 @@ class TestOnMessage:
 
         agent.respond.assert_called_once()
         call_kwargs = agent.respond.call_args.kwargs
-        assert call_kwargs["user_message"] == "What are you thinking?"
+        from gwenn.types import UserMessage
+        assert isinstance(call_kwargs["user_message"], UserMessage)
+        assert call_kwargs["user_message"].text == "What are you thinking?"
         assert call_kwargs["user_id"] == "telegram_55"
         update.message.reply_text.assert_called()
 
@@ -595,8 +597,10 @@ class TestMediaHandlers:
 
         agent.respond.assert_called_once()
         call_kwargs = agent.respond.call_args.kwargs
-        assert "[The user sent a photo" in call_kwargs["user_message"]
-        assert "Check this out" in call_kwargs["user_message"]
+        um = call_kwargs["user_message"]
+        # Download fails on mock objects — falls back to text-only description.
+        assert "[The user sent a photo" in um.text
+        assert "Check this out" in um.text
 
     @pytest.mark.asyncio
     async def test_photo_handler_no_caption(self):
@@ -610,7 +614,7 @@ class TestMediaHandlers:
 
         agent.respond.assert_called_once()
         call_kwargs = agent.respond.call_args.kwargs
-        assert "[The user sent a photo]" in call_kwargs["user_message"]
+        assert "[The user sent a photo]" in call_kwargs["user_message"].text
 
     @pytest.mark.asyncio
     async def test_document_handler_includes_filename(self):
@@ -626,7 +630,7 @@ class TestMediaHandlers:
 
         agent.respond.assert_called_once()
         call_kwargs = agent.respond.call_args.kwargs
-        assert "report.pdf" in call_kwargs["user_message"]
+        assert "report.pdf" in call_kwargs["user_message"].text
 
     @pytest.mark.asyncio
     async def test_voice_handler_routes_to_agent(self):
@@ -638,7 +642,7 @@ class TestMediaHandlers:
 
         agent.respond.assert_called_once()
         call_kwargs = agent.respond.call_args.kwargs
-        assert "voice" in call_kwargs["user_message"].lower()
+        assert "voice" in call_kwargs["user_message"].text.lower()
 
     @pytest.mark.asyncio
     async def test_media_blocked_for_non_allowed(self):

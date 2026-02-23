@@ -208,7 +208,9 @@ class TestOnMessage:
         await ch._on_message(msg)
         agent.respond.assert_called_once()
         call_kwargs = agent.respond.call_args.kwargs
-        assert call_kwargs["user_message"] == "hi gwenn"
+        from gwenn.types import UserMessage
+        assert isinstance(call_kwargs["user_message"], UserMessage)
+        assert call_kwargs["user_message"].text == "hi gwenn"
 
     @pytest.mark.asyncio
     async def test_dm_blocked_when_dms_disabled(self):
@@ -332,8 +334,8 @@ class TestOnMessage:
 
         await ch._on_message(msg)
         call_kwargs = agent.respond.call_args.kwargs
-        assert "<@999>" not in call_kwargs["user_message"]
-        assert "what is the weather?" in call_kwargs["user_message"]
+        assert "<@999>" not in call_kwargs["user_message"].text
+        assert "what is the weather?" in call_kwargs["user_message"].text
 
     @pytest.mark.asyncio
     async def test_error_sends_error_reply(self):

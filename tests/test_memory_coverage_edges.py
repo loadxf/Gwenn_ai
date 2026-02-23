@@ -568,6 +568,184 @@ def test_memory_store_file_and_payload_error_paths(
 
 
 # ---------------------------------------------------------------------------
+# Sync embedding methods (batch skip-existing)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_episode_embeddings_skips_existing(tmp_path: Path) -> None:
+    """sync_episode_embeddings should only upsert episodes not already in ChromaDB."""
+    store = MemoryStore(tmp_path / "sync.db")
+    store.initialize()
+
+    class TrackingCollection:
+        def __init__(self, existing_ids: list[str]):
+            self._existing = existing_ids
+            self.upserted_ids: list[str] = []
+
+        def get(self, ids, include):
+            return {"ids": [i for i in ids if i in self._existing]}
+
+        def upsert(self, ids, documents, metadatas):
+            self.upserted_ids.extend(ids)
+
+    coll = TrackingCollection(existing_ids=["ep-1", "ep-2"])
+    store._episodes_collection = coll
+
+    episodes = [
+        Episode(episode_id="ep-1", content="existing 1"),
+        Episode(episode_id="ep-2", content="existing 2"),
+        Episode(episode_id="ep-3", content="new one"),
+    ]
+    inserted = store.sync_episode_embeddings(episodes)
+    assert inserted == 1
+    assert coll.upserted_ids == ["ep-3"]
+
+
+def test_sync_episode_embeddings_fallback_on_get_failure(tmp_path: Path) -> None:
+    """When get() fails, sync should fall back to upserting all items."""
+    store = MemoryStore(tmp_path / "sync-fallback.db")
+    store.initialize()
+
+    class FailGetCollection:
+        def __init__(self):
+            self.upserted_ids: list[str] = []
+
+        def get(self, ids, include):
+            raise RuntimeError("get failed")
+
+        def upsert(self, ids, documents, metadatas):
+            self.upserted_ids.extend(ids)
+
+    coll = FailGetCollection()
+    store._episodes_collection = coll
+
+    episodes = [
+        Episode(episode_id="ep-1", content="a"),
+        Episode(episode_id="ep-2", content="b"),
+    ]
+    inserted = store.sync_episode_embeddings(episodes)
+    assert inserted == 2
+    assert set(coll.upserted_ids) == {"ep-1", "ep-2"}
+
+
+def test_sync_episode_embeddings_empty_and_no_collection(tmp_path: Path) -> None:
+    """sync should return 0 for empty lists and when collection is None."""
+    store = MemoryStore(tmp_path / "sync-empty.db")
+    store.initialize()
+    assert store.sync_episode_embeddings([]) == 0
+
+    store._episodes_collection = None
+    assert store.sync_episode_embeddings([Episode(episode_id="x", content="x")]) == 0
+
+
+def test_sync_episode_embeddings_upsert_failure(tmp_path: Path) -> None:
+    """When upsert() fails, sync should return 0."""
+    store = MemoryStore(tmp_path / "sync-upsert-fail.db")
+    store.initialize()
+
+    class FailUpsertCollection:
+        def get(self, ids, include):
+            return {"ids": []}
+
+        def upsert(self, **kwargs):
+            raise RuntimeError("upsert failed")
+
+    store._episodes_collection = FailUpsertCollection()
+    result = store.sync_episode_embeddings([Episode(episode_id="ep-1", content="a")])
+    assert result == 0
+
+
+def test_sync_knowledge_embeddings_skips_existing(tmp_path: Path) -> None:
+    """sync_knowledge_embeddings should only upsert nodes not already in ChromaDB."""
+    store = MemoryStore(tmp_path / "sync-know.db")
+    store.initialize()
+
+    class TrackingCollection:
+        def __init__(self, existing_ids: list[str]):
+            self._existing = existing_ids
+            self.upserted_ids: list[str] = []
+
+        def get(self, ids, include):
+            return {"ids": [i for i in ids if i in self._existing]}
+
+        def upsert(self, ids, documents, metadatas):
+            self.upserted_ids.extend(ids)
+
+    coll = TrackingCollection(existing_ids=["n-1"])
+    store._knowledge_collection = coll
+
+    nodes = [
+        {"node_id": "n-1", "label": "Existing", "category": "fact",
+         "content": "old", "confidence": 0.9, "last_updated": 1.0},
+        {"node_id": "n-2", "label": "New", "category": "concept",
+         "content": "new", "confidence": 0.8, "last_updated": 2.0},
+    ]
+    inserted = store.sync_knowledge_embeddings(nodes)
+    assert inserted == 1
+    assert coll.upserted_ids == ["n-2"]
+
+
+def test_sync_knowledge_embeddings_fallback_on_get_failure(tmp_path: Path) -> None:
+    """When get() fails, sync should fall back to upserting all nodes."""
+    store = MemoryStore(tmp_path / "sync-know-fallback.db")
+    store.initialize()
+
+    class FailGetCollection:
+        def __init__(self):
+            self.upserted_ids: list[str] = []
+
+        def get(self, ids, include):
+            raise RuntimeError("get failed")
+
+        def upsert(self, ids, documents, metadatas):
+            self.upserted_ids.extend(ids)
+
+    coll = FailGetCollection()
+    store._knowledge_collection = coll
+
+    nodes = [
+        {"node_id": "n-1", "label": "A", "category": "fact",
+         "content": "a", "confidence": 0.5, "last_updated": 1.0},
+    ]
+    inserted = store.sync_knowledge_embeddings(nodes)
+    assert inserted == 1
+    assert coll.upserted_ids == ["n-1"]
+
+
+def test_sync_knowledge_embeddings_empty_and_no_collection(tmp_path: Path) -> None:
+    """sync should return 0 for empty lists and when collection is None."""
+    store = MemoryStore(tmp_path / "sync-know-empty.db")
+    store.initialize()
+    assert store.sync_knowledge_embeddings([]) == 0
+
+    store._knowledge_collection = None
+    assert store.sync_knowledge_embeddings(
+        [{"node_id": "x", "label": "X", "category": "c",
+          "content": "x", "confidence": 0.5, "last_updated": 1.0}]
+    ) == 0
+
+
+def test_sync_knowledge_embeddings_upsert_failure(tmp_path: Path) -> None:
+    """When upsert() fails, sync should return 0."""
+    store = MemoryStore(tmp_path / "sync-know-upsert-fail.db")
+    store.initialize()
+
+    class FailUpsertCollection:
+        def get(self, ids, include):
+            return {"ids": []}
+
+        def upsert(self, **kwargs):
+            raise RuntimeError("upsert failed")
+
+    store._knowledge_collection = FailUpsertCollection()
+    result = store.sync_knowledge_embeddings(
+        [{"node_id": "n-1", "label": "A", "category": "c",
+          "content": "a", "confidence": 0.5, "last_updated": 1.0}]
+    )
+    assert result == 0
+
+
+# ---------------------------------------------------------------------------
 # Working memory edge coverage
 # ---------------------------------------------------------------------------
 

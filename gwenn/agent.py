@@ -48,6 +48,7 @@ from gwenn.cognition.metacognition import HonestyAuditResult, MetacognitionEngin
 from gwenn.cognition.sensory import SensoryIntegrator
 from gwenn.cognition.theory_of_mind import TheoryOfMind
 from gwenn.config import GwennConfig
+from gwenn.types import UserMessage
 from gwenn.harness.context import ContextManager
 from gwenn.harness.loop import AgenticLoop
 from gwenn.harness.safety import SafetyGuard
@@ -334,10 +335,11 @@ class SentientAgent:
         )
         for ep in ordered_startup_episodes:
             self.episodic_memory.encode(ep)
-            self.memory_store.upsert_episode_embedding(ep)
+        self.memory_store.sync_episode_embeddings(ordered_startup_episodes)
 
         # Reload semantic memory (knowledge graph) from persistent storage
         stored_nodes = self.memory_store.load_knowledge_nodes()
+        knowledge_sync_batch: list[dict] = []
         for node_data in stored_nodes:
             node = KnowledgeNode(
                 node_id=node_data["node_id"],
@@ -353,14 +355,15 @@ class SentientAgent:
             )
             self.semantic_memory._nodes[node.node_id] = node
             self.semantic_memory._label_index[node.label.lower()] = node.node_id
-            self.memory_store.upsert_knowledge_embedding(
-                node_id=node.node_id,
-                label=node.label,
-                category=node.category,
-                content=node.content,
-                confidence=node.confidence,
-                last_updated=node.last_updated,
-            )
+            knowledge_sync_batch.append({
+                "node_id": node.node_id,
+                "label": node.label,
+                "category": node.category,
+                "content": node.content,
+                "confidence": node.confidence,
+                "last_updated": node.last_updated,
+            })
+        self.memory_store.sync_knowledge_embeddings(knowledge_sync_batch)
 
         stored_edges = self.memory_store.load_knowledge_edges()
         for edge_data in stored_edges:
@@ -682,10 +685,13 @@ class SentientAgent:
                 episodes_to_persist = self.episodic_memory.retrieve_recent(
                     n=max(1, int(episode_count))
                 )
+            persisted_episodes: list[Episode] = []
             for ep in episodes_to_persist:
                 if self._is_prunable_episode(ep):
                     continue
-                self._persist_episode(ep)
+                self._persist_episode(ep, skip_vector=True)
+                persisted_episodes.append(ep)
+            self.memory_store.sync_episode_embeddings(persisted_episodes)
 
             # Persist semantic memory (knowledge graph) to disk
             self._persist_semantic_memory()
@@ -842,7 +848,7 @@ class SentientAgent:
 
     async def respond(
         self,
-        user_message: str,
+        user_message: UserMessage | str,
         user_id: str = "default_user",
         conversation_history: list[dict[str, Any]] | None = None,
     ) -> str:
@@ -861,7 +867,8 @@ class SentientAgent:
         7. RESPOND: Return the final text to the user
 
         Args:
-            user_message: What the human said.
+            user_message: What the human said — a plain string or a
+                ``UserMessage`` with optional image data.
             user_id: Identifier for the human (for relationship tracking).
             conversation_history: Optional external history list. When provided
                 (e.g. from a channel SessionManager), this list is used instead
@@ -874,12 +881,17 @@ class SentientAgent:
         if not self._initialized:
             raise RuntimeError("Agent must be initialized before responding")
 
+        # Normalize to UserMessage so downstream code can rely on a single type.
+        if isinstance(user_message, str):
+            user_message = UserMessage(text=user_message)
+        text = user_message.text
+
         response_start = time.time()
         self._current_user_id = user_id
         _history = conversation_history if conversation_history is not None else self._conversation_history
 
         # ---- Step 1: RECEIVE ----
-        logger.info("agent.message_received", user_id=user_id, length=len(user_message))
+        logger.info("agent.message_received", user_id=user_id, length=len(text))
         if self.heartbeat is not None:
             self.heartbeat.notify_user_activity()
         self.identity.update_relationship(user_id)
@@ -888,41 +900,41 @@ class SentientAgent:
         # ---- Step 1.5: CALIBRATION FEEDBACK ----
         # Each new user message provides implicit feedback on the previous response.
         # If the user is correcting us, record a negative outcome; otherwise positive.
-        self._resolve_calibration_outcome(user_message)
+        self._resolve_calibration_outcome(text)
 
         # ---- Step 2: APPRAISE ----
         # Emotionally evaluate the incoming message
         message_appraisal = AppraisalEvent(
             stimulus_type=StimulusType.USER_MESSAGE,
-            intensity=self._estimate_message_intensity(user_message),
-            content=user_message[:500],
+            intensity=self._estimate_message_intensity(text),
+            content=text[:500],
             metadata={
                 "user_id": user_id,
-                "valence_hint": self._estimate_message_valence(user_message),
+                "valence_hint": self._estimate_message_valence(text),
             },
         )
         self.process_appraisal(message_appraisal)
 
         # ---- Step 2.5: GROUND ----
         # Create sensory percepts for this social interaction
-        self.sensory.ground_social(user_id, user_message)
+        self.sensory.ground_social(user_id, text)
         self.sensory.ground_temporal(event_description="user_message_received")
 
         # ---- Step 2.7: ETHICAL CHECK ----
         # Detect if the message has ethical dimensions that need reasoning
-        ethical_dimensions = self.ethics.detect_ethical_dimensions(user_message)
+        ethical_dimensions = self.ethics.detect_ethical_dimensions(text)
 
         # ---- Step 3: REMEMBER ----
         # Query episodic memory for relevant past experiences
         relevant_episodes = self.episodic_memory.retrieve(
-            query=user_message,
+            query=text,
             top_k=5,
             mood_valence=self.affect_state.dimensions.valence,
         )
 
         # Query semantic memory for relevant knowledge
         relevant_knowledge = self.semantic_memory.query(
-            search_text=user_message,
+            search_text=text,
             top_k=3,
         )
 
@@ -939,7 +951,7 @@ class SentientAgent:
         # Update working memory with current context
         wm_item = WorkingMemoryItem(
             item_id=self.working_memory.generate_id("msg"),
-            content=f"User ({user_id}) said: {user_message[:200]}",
+            content=f"User ({user_id}) said: {text[:200]}",
             category="user_message",
             salience=0.9,  # User messages are high salience
             emotional_valence=self.affect_state.dimensions.valence,
@@ -957,7 +969,7 @@ class SentientAgent:
         # Add user message to conversation history
         _history.append({
             "role": "user",
-            "content": user_message,
+            "content": user_message.to_api_content(),
         })
         self._trim_history(_history)
 
@@ -1028,7 +1040,7 @@ class SentientAgent:
 
         # ---- Step 6: INTEGRATE ----
         await self._integrate_exchange(
-            user_message, response_text, user_id,
+            text, response_text, user_id,
             had_relevant_memories=bool(relevant_episodes),
             ethical_dimensions=ethical_dimensions,
         )
@@ -3519,6 +3531,7 @@ class SentientAgent:
         """Persist the semantic graph to SQLite and vector index."""
         redact = self._should_redact_for_persist()
         redactor = getattr(self, "redactor", None) if redact else None
+        knowledge_sync_batch: list[dict] = []
         for node in self.semantic_memory._nodes.values():
             label = node.label
             content = node.content
@@ -3536,7 +3549,17 @@ class SentientAgent:
                 last_updated=node.last_updated,
                 access_count=node.access_count,
                 metadata=getattr(node, "metadata", {}),
+                skip_vector=True,
             )
+            knowledge_sync_batch.append({
+                "node_id": node.node_id,
+                "label": label,
+                "category": node.category,
+                "content": content,
+                "confidence": node.confidence,
+                "last_updated": node.last_updated,
+            })
+        self.memory_store.sync_knowledge_embeddings(knowledge_sync_batch)
         self.memory_store.clear_knowledge_edges()
         for edge in self.semantic_memory._edges:
             context = edge.context
@@ -3664,9 +3687,13 @@ class SentientAgent:
             embedding=episode.embedding,
         )
 
-    def _persist_episode(self, episode: Episode) -> None:
+    def _persist_episode(
+        self, episode: Episode, *, skip_vector: bool = False,
+    ) -> None:
         """Persist an episode with centralised redaction policy handling."""
-        self.memory_store.save_episode(self._episode_for_persistence(episode))
+        self.memory_store.save_episode(
+            self._episode_for_persistence(episode), skip_vector=skip_vector,
+        )
 
     def _snapshot_identity_state(
         self,

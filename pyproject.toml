@@ -26,12 +26,15 @@ dependencies = [
     "structlog>=23.2.0",           # Structured logging for observability
     "rich>=13.7.0",                # Terminal UI for heartbeat display
     "python-telegram-bot[rate-limiter]>=22.0",  # Telegram channel support (default)
+    "discord.py>=2.3.0",                        # Discord channel support (default)
+    "opencv-python-headless>=4.9",              # Video frame extraction (~56MB, no GUI deps)
 ]
 
 [project.optional-dependencies]
 telegram = ["python-telegram-bot[rate-limiter]>=22.0"]
 discord = ["discord.py>=2.3.0"]
 channels = ["python-telegram-bot[rate-limiter]>=22.0", "discord.py>=2.3.0"]
+groq = ["groq>=0.11.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",

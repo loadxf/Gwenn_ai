@@ -81,6 +81,11 @@ class GwennDaemon:
                 socket=str(self._socket_path),
                 pid=os.getpid(),
             )
+            print(
+                f"Gwenn daemon running  pid={os.getpid()}  "
+                f"socket={self._socket_path}",
+                flush=True,
+            )
             # Wait for shutdown signal
             await self._shutdown_event.wait()
         finally:
@@ -101,7 +106,11 @@ class GwennDaemon:
                 # If we get here, a daemon is already running
                 logger.error("daemon.already_running", pid=existing_pid)
                 sys.exit(1)
-            except (ValueError, ProcessLookupError, PermissionError):
+            except PermissionError:
+                # Process is alive but owned by another user — treat as running
+                logger.error("daemon.already_running", pid=existing_pid)
+                sys.exit(1)
+            except (ValueError, ProcessLookupError):
                 # Stale PID file — clean it up
                 logger.info("daemon.stale_pid_file_removed", path=str(self._pid_file))
                 try:
@@ -121,6 +130,7 @@ class GwennDaemon:
             logger.error("daemon.agent_init_failed", error=str(e))
             sys.exit(1)
 
+        print("Gwenn daemon starting ...", flush=True)
         await self._agent.initialize()
         await self._agent.start()
         logger.info("daemon.agent_started")
@@ -517,6 +527,7 @@ class GwennDaemon:
                 logger.warning("daemon.cleanup_unlink_failed", path=str(path), error=str(e))
 
         logger.info("daemon.stopped")
+        print("Gwenn daemon stopped.", flush=True)
 
     def _request_shutdown(self, reason: str) -> None:
         """Trigger daemon shutdown and activate the agent kill switch."""

@@ -27,6 +27,7 @@ them well" becomes the semantic facts: "Alice is interested in Python" and
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from typing import Any, Optional
 
@@ -37,6 +38,8 @@ from gwenn.memory.episodic import EpisodicMemory
 from gwenn.memory.semantic import SemanticMemory
 
 logger = structlog.get_logger(__name__)
+
+_RELATIONSHIP_ARROW_SPLIT_RE = re.compile(r"\s*(?:->|→)\s*")
 
 
 # The prompt template used to extract knowledge from episodes.
@@ -326,27 +329,35 @@ class ConsolidationEngine:
     def _process_relationship(self, line: str) -> bool:
         """Parse and store a RELATIONSHIP line. Returns True if successfully parsed."""
         # Format: RELATIONSHIP: [source] -> [rel_type] -> [target] | strength: [0-1]
+        # Also accepts Unicode arrows (→), which models sometimes emit.
         raw = line[14:].strip()
         if not raw:
             return False
 
         parts = [part.strip() for part in raw.split("|")]
-        rel_parts = [part.strip() for part in parts[0].split("->")]
+        rel_parts = [part.strip() for part in _RELATIONSHIP_ARROW_SPLIT_RE.split(parts[0], maxsplit=2)]
         if len(rel_parts) < 3:
             logger.warning("consolidation.relationship_malformed", line=line[:80])
             return False
 
         source = rel_parts[0].strip()
         relationship = rel_parts[1].strip()
-        target = "->".join(rel_parts[2:]).strip()
+        target = rel_parts[2].strip()
         if not source or not relationship or not target:
             logger.warning("consolidation.relationship_empty_part", line=line[:80])
             return False
 
         strength = 0.5
         for part in parts[1:]:
-            if part.lower().startswith("strength:"):
-                strength = self._clamp01(part.split(":", 1)[1].strip(), default=0.5)
+            lowered = part.lower()
+            if lowered.startswith("strength:"):
+                raw_strength = part.split(":", 1)[1].strip()
+                if raw_strength:
+                    strength = self._clamp01(raw_strength, default=0.5)
+            elif lowered.startswith("strength :"):
+                raw_strength = part.split(":", 1)[1].strip()
+                if raw_strength:
+                    strength = self._clamp01(raw_strength, default=0.5)
 
         # Ensure both endpoint nodes exist (tagged as placeholders for later enrichment)
         source_node = self._semantic.store_knowledge(

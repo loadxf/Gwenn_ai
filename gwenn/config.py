@@ -58,6 +58,26 @@ def _coerce_str_list(value: object) -> list[str]:
 StrList = Annotated[list[str], BeforeValidator(_coerce_str_list)]
 
 
+def _load_oauth_credentials() -> tuple[Optional[str], float]:
+    """Read OAuth token and expiry from ~/.claude/.credentials.json.
+
+    Returns (token, expires_at_epoch_seconds) or (None, 0.0).
+    """
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    if not creds_path.exists():
+        return None, 0.0
+    try:
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+        oauth = data.get("claudeAiOauth", {})
+        token = oauth.get("accessToken")
+        expires_at_ms = oauth.get("expiresAt", 0)
+        if token and expires_at_ms:
+            return token, expires_at_ms / 1000.0
+    except Exception as e:
+        logger.debug("config.oauth_credentials_unreadable", path=str(creds_path), error=str(e))
+    return None, 0.0
+
+
 def _load_claude_code_credentials() -> Optional[str]:
     """Read the Claude Code OAuth access token from ~/.claude/.credentials.json."""
     creds_path = Path.home() / ".claude" / ".credentials.json"
@@ -391,6 +411,63 @@ class TheoryOfMindConfig(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class GroqConfig(BaseSettings):
+    """Configuration for Groq Whisper audio transcription (optional, free tier)."""
+
+    api_key: Optional[str] = Field(None, alias="GROQ_API_KEY")
+    whisper_model: str = Field("whisper-large-v3-turbo", alias="GWENN_WHISPER_MODEL")
+    max_audio_bytes: int = Field(25 * 1024 * 1024, alias="GWENN_GROQ_MAX_AUDIO_BYTES")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @property
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+
+class OrchestrationConfig(BaseSettings):
+    """Configuration for the subagent orchestration system."""
+
+    enabled: bool = Field(True, alias="GWENN_ORCHESTRATION_ENABLED")
+    max_concurrent_subagents: int = Field(5, alias="GWENN_MAX_CONCURRENT_SUBAGENTS")
+    default_timeout: float = Field(120.0, alias="GWENN_SUBAGENT_TIMEOUT")
+    default_max_iterations: int = Field(10, alias="GWENN_SUBAGENT_MAX_ITERATIONS")
+    max_nesting_depth: int = Field(3, alias="GWENN_SUBAGENT_MAX_DEPTH")
+    subagent_model: str = Field("", alias="GWENN_SUBAGENT_MODEL")
+    max_total_api_calls: int = Field(100, alias="GWENN_MAX_SUBAGENT_API_CALLS")
+    max_active_swarms: int = Field(3, alias="GWENN_MAX_ACTIVE_SWARMS")
+    max_concurrent_api_calls: int = Field(3, alias="GWENN_MAX_CONCURRENT_API_CALLS")
+    default_tools: StrList = Field(default_factory=list, alias="GWENN_SUBAGENT_DEFAULT_TOOLS")
+    default_runtime: str = Field("docker", alias="GWENN_SUBAGENT_RUNTIME")
+    # Docker settings
+    docker_image: str = Field("gwenn-subagent:latest", alias="GWENN_SUBAGENT_DOCKER_IMAGE")
+    docker_network: str = Field("none", alias="GWENN_SUBAGENT_DOCKER_NETWORK")
+    docker_memory_limit: str = Field("256m", alias="GWENN_SUBAGENT_DOCKER_MEMORY")
+    docker_cpu_limit: float = Field(0.5, alias="GWENN_SUBAGENT_DOCKER_CPU")
+    # Autonomous spawning (heartbeat)
+    autonomous_spawn_enabled: bool = Field(True, alias="GWENN_AUTONOMOUS_SPAWN_ENABLED")
+    autonomous_spawn_cooldown: float = Field(300.0, alias="GWENN_AUTONOMOUS_SPAWN_COOLDOWN")
+    autonomous_spawn_max_per_hour: int = Field(10, alias="GWENN_AUTONOMOUS_SPAWN_MAX_HOURLY")
+
+    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
+
+    @model_validator(mode="after")
+    def normalize_limits(self) -> "OrchestrationConfig":
+        self.max_concurrent_subagents = max(1, int(self.max_concurrent_subagents))
+        self.default_timeout = max(1.0, float(self.default_timeout))
+        self.default_max_iterations = max(1, int(self.default_max_iterations))
+        self.max_nesting_depth = max(1, min(10, int(self.max_nesting_depth)))
+        self.max_total_api_calls = max(1, int(self.max_total_api_calls))
+        self.max_active_swarms = max(1, int(self.max_active_swarms))
+        self.max_concurrent_api_calls = max(1, int(self.max_concurrent_api_calls))
+        self.docker_cpu_limit = max(0.1, float(self.docker_cpu_limit))
+        self.autonomous_spawn_cooldown = max(0.0, float(self.autonomous_spawn_cooldown))
+        self.autonomous_spawn_max_per_hour = max(0, int(self.autonomous_spawn_max_per_hour))
+        if self.default_runtime not in {"docker", "in_process"}:
+            self.default_runtime = "docker"
+        return self
+
+
 class PrivacyConfig(BaseSettings):
     """Configuration for PII redaction and privacy protection."""
 
@@ -471,6 +548,8 @@ class DiscordConfig(BaseSettings):
     # Bound in-memory per-user lock cache to avoid unbounded growth.
     user_lock_cache_size: int = Field(512, alias="DISCORD_USER_LOCK_CACHE_SIZE")
     sync_guild_id: str | None = Field(None, alias="DISCORD_SYNC_GUILD_ID")
+    # Enable image attachment downloading (requires Claude vision).
+    enable_media: bool = Field(False, alias="DISCORD_ENABLE_MEDIA")
 
     model_config = {
         "env_file": ".env",
@@ -572,6 +651,12 @@ class GwennConfig:
 
         # Privacy config
         self.privacy = PrivacyConfig()
+
+        # Orchestration config (subagent spawning & coordination)
+        self.orchestration = OrchestrationConfig()
+
+        # Groq Whisper transcription (optional)
+        self.groq = GroqConfig()
 
         # Channel config (channel mode; Telegram/Discord configs loaded lazily)
         self.channel = ChannelConfig()

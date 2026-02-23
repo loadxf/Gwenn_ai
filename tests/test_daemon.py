@@ -46,8 +46,8 @@ def store(sessions_dir: Path) -> SessionStore:
 
 class TestDaemonConfig:
     def test_defaults(self, tmp_path: Path) -> None:
-        """DaemonConfig should have sensible defaults."""
-        cfg = DaemonConfig()
+        """DaemonConfig should have sensible defaults (isolated from .env)."""
+        cfg = DaemonConfig(_env_file=None)
         assert cfg.channels == "cli"
         assert cfg.max_connections == 10
         assert cfg.session_max_count == 20
@@ -56,7 +56,7 @@ class TestDaemonConfig:
         assert cfg.redact_session_content is True
 
     def test_get_channel_list_single(self) -> None:
-        cfg = DaemonConfig()
+        cfg = DaemonConfig(_env_file=None)
         assert cfg.get_channel_list() == ["cli"]
 
     def test_get_channel_list_multiple(self, monkeypatch: pytest.MonkeyPatch) -> None:

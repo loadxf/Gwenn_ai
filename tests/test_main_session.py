@@ -188,7 +188,7 @@ async def test_read_input_fallback_path_supports_multiple_calls(monkeypatch):
 
     monkeypatch.setattr("gwenn.main.sys.stdin.fileno", _raise_oserror)
     reads = iter(["hello", None])
-    session._read_input_blocking = lambda: next(reads)
+    monkeypatch.setattr("builtins.input", lambda *_a, **_kw: next(reads))
 
     first = await session._read_input()
     second = await session._read_input()
@@ -198,29 +198,41 @@ async def test_read_input_fallback_path_supports_multiple_calls(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_read_input_renders_you_prompt_before_read():
+async def test_read_input_passes_prompt_to_input(monkeypatch):
     session = GwennSession()
-    session._render_prompt = MagicMock()
-    session._read_input_blocking = lambda: "hello"
+    captured_prompts: list[str] = []
+
+    def _fake_input(prompt=""):
+        captured_prompts.append(prompt)
+        return "hello"
+
+    monkeypatch.setattr("builtins.input", _fake_input)
 
     value = await session._read_input()
 
     assert value == "hello"
-    session._render_prompt.assert_called_once_with("[bold green]You[/bold green]: ")
+    assert len(captured_prompts) == 1
+    # The prompt should contain "You" and ": " (with ANSI color codes)
+    assert "You" in captured_prompts[0]
+    assert ": " in captured_prompts[0]
 
 
 @pytest.mark.asyncio
-async def test_read_raw_input_renders_custom_prompt(monkeypatch):
+async def test_read_raw_input_passes_prompt_to_input(monkeypatch):
     session = GwennSession()
-    session._render_prompt = MagicMock()
-    monkeypatch.setattr("builtins.input", lambda *_: "2")
+    captured_prompts: list[str] = []
+
+    def _fake_input(prompt=""):
+        captured_prompts.append(prompt)
+        return "2"
+
+    monkeypatch.setattr("builtins.input", _fake_input)
 
     value = await session._read_raw_input("Resume session (number): ")
 
     assert value == "2"
-    session._render_prompt.assert_called_once_with(
-        "[dim]Resume session (number): [/dim]"
-    )
+    assert len(captured_prompts) == 1
+    assert "Resume session (number): " in captured_prompts[0]
 
 
 @pytest.mark.asyncio

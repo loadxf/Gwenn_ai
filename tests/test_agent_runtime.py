@@ -92,7 +92,7 @@ class _MemoryStoreRecorder:
     def save_affect_snapshot(self, **kwargs) -> None:
         self._events.append("save_affect")
 
-    def save_episode(self, episode) -> None:
+    def save_episode(self, episode, **kwargs) -> None:
         self._events.append("save_episode")
 
     def save_knowledge_node(self, **kwargs) -> None:
@@ -106,6 +106,12 @@ class _MemoryStoreRecorder:
 
     def save_working_memory(self, items: list) -> None:
         self._events.append("save_working_memory")
+
+    def sync_episode_embeddings(self, episodes) -> int:
+        return 0
+
+    def sync_knowledge_embeddings(self, nodes) -> int:
+        return 0
 
     def prune_old_episodes(self, **kwargs) -> int:
         self._events.append("prune_old_episodes")
@@ -126,7 +132,7 @@ class _MemoryStoreOnboardingStub:
     def save_persistent_context(self, content: str) -> None:
         self.context = content
 
-    def save_episode(self, episode) -> None:
+    def save_episode(self, episode, **kwargs) -> None:
         self.saved_episode = episode
 
 
@@ -581,7 +587,7 @@ def test_persist_episode_redacts_before_persist_when_enabled():
     captured: dict[str, object] = {}
 
     class _Store:
-        def save_episode(self, episode) -> None:
+        def save_episode(self, episode, **kwargs) -> None:
             captured["episode"] = episode
 
     agent = object.__new__(SentientAgent)
@@ -620,7 +626,7 @@ async def test_shutdown_skips_prunable_episodes():
         def save_affect_snapshot(self, **kwargs):
             return None
 
-        def save_episode(self, episode):
+        def save_episode(self, episode, **kwargs):
             saved_ids.append(episode.episode_id)
 
         def save_knowledge_node(self, **kwargs):
@@ -634,6 +640,12 @@ async def test_shutdown_skips_prunable_episodes():
 
         def save_working_memory(self, items: list) -> None:
             return None
+
+        def sync_episode_embeddings(self, episodes) -> int:
+            return 0
+
+        def sync_knowledge_embeddings(self, nodes) -> int:
+            return 0
 
         def prune_old_episodes(self, **kwargs) -> int:
             return 0
@@ -717,7 +729,7 @@ async def test_shutdown_persists_goal_state_when_supported():
         def save_affect_snapshot(self, **kwargs):
             return None
 
-        def save_episode(self, episode):
+        def save_episode(self, episode, **kwargs):
             return None
 
         def save_knowledge_node(self, **kwargs):
@@ -734,6 +746,12 @@ async def test_shutdown_persists_goal_state_when_supported():
 
         def save_goal_state(self, payload: dict) -> None:
             events.append(f"goal:{payload.get('marker')}")
+
+        def sync_episode_embeddings(self, episodes) -> int:
+            return 0
+
+        def sync_knowledge_embeddings(self, nodes) -> int:
+            return 0
 
         def close(self):
             return None
@@ -1140,8 +1158,11 @@ async def test_consolidate_memories_persists_semantic_and_episode_flags():
         def save_knowledge_edge(self, **kwargs):
             events.append("save_knowledge_edge")
 
-        def save_episode(self, _episode):
+        def save_episode(self, _episode, **kwargs):
             events.append("save_episode")
+
+        def sync_knowledge_embeddings(self, nodes) -> int:
+            return 0
 
         def prune_old_episodes(self, **kwargs) -> int:
             return 0
@@ -1247,7 +1268,7 @@ async def test_consolidate_memories_persists_episode_flags_when_semantic_flush_d
             return {"facts": 1, "relationships": 0, "self_knowledge": 0, "patterns": 0}
 
     class _Store:
-        def save_episode(self, _episode):
+        def save_episode(self, _episode, **kwargs):
             events.append("save_episode")
 
         def save_knowledge_node(self, **kwargs):
@@ -1292,7 +1313,7 @@ async def test_shutdown_persists_identity_snapshot_when_supported():
         def save_affect_snapshot(self, **kwargs):
             events.append("save_affect")
 
-        def save_episode(self, _episode):
+        def save_episode(self, _episode, **kwargs):
             events.append("save_episode")
 
         def save_knowledge_node(self, **kwargs):
@@ -1309,6 +1330,12 @@ async def test_shutdown_persists_identity_snapshot_when_supported():
 
         def save_working_memory(self, items: list) -> None:
             pass
+
+        def sync_episode_embeddings(self, episodes) -> int:
+            return 0
+
+        def sync_knowledge_embeddings(self, nodes) -> int:
+            return 0
 
         def close(self):
             events.append("close")
@@ -1367,7 +1394,7 @@ async def test_consolidate_memories_persists_identity_emotional_insights():
     events: list[str] = []
 
     class _Store:
-        def save_episode(self, _episode):
+        def save_episode(self, _episode, **kwargs):
             events.append("save_episode")
 
         def save_identity_snapshot(self, **kwargs):
@@ -1728,7 +1755,7 @@ def test_capture_evicted_working_memory_records_episode():
     agent = object.__new__(SentientAgent)
     agent._initialized = True
     agent.episodic_memory = SimpleNamespace(encode=lambda ep: encoded.append(ep))
-    agent.memory_store = SimpleNamespace(save_episode=lambda ep: persisted.append(ep))
+    agent.memory_store = SimpleNamespace(save_episode=lambda ep, **kw: persisted.append(ep))
 
     item = WorkingMemoryItem(
         item_id="wm-1",
@@ -1888,6 +1915,9 @@ def test_persist_semantic_memory_redacts_when_enabled():
         def save_knowledge_edge(self, **kwargs) -> None:
             saved_edges.append(kwargs)
 
+        def sync_knowledge_embeddings(self, nodes) -> int:
+            return 0
+
     node = SimpleNamespace(
         node_id="n1",
         label="User alice@example.com",
@@ -1937,7 +1967,7 @@ async def test_persist_working_memory_redacts_when_enabled():
         def save_affect_snapshot(self, **kwargs):
             return None
 
-        def save_episode(self, episode):
+        def save_episode(self, episode, **kwargs):
             return None
 
         def save_knowledge_node(self, **kwargs):
@@ -1951,6 +1981,12 @@ async def test_persist_working_memory_redacts_when_enabled():
 
         def save_working_memory(self, items: list) -> None:
             saved_items.append(items)
+
+        def sync_episode_embeddings(self, episodes) -> int:
+            return 0
+
+        def sync_knowledge_embeddings(self, nodes) -> int:
+            return 0
 
         def close(self):
             return None
@@ -2006,7 +2042,7 @@ async def test_persist_goal_state_redacts_when_enabled():
         def save_affect_snapshot(self, **kwargs):
             return None
 
-        def save_episode(self, episode):
+        def save_episode(self, episode, **kwargs):
             return None
 
         def save_knowledge_node(self, **kwargs):
@@ -2023,6 +2059,12 @@ async def test_persist_goal_state_redacts_when_enabled():
 
         def save_goal_state(self, payload: dict) -> None:
             saved_goals.append(payload)
+
+        def sync_episode_embeddings(self, episodes) -> int:
+            return 0
+
+        def sync_knowledge_embeddings(self, nodes) -> int:
+            return 0
 
         def close(self):
             return None
@@ -2085,7 +2127,7 @@ def test_note_to_self_redacts_context_when_enabled():
         def save_persistent_context(self, content: str) -> None:
             saved_context.append(content)
 
-        def save_episode(self, episode) -> None:
+        def save_episode(self, episode, **kwargs) -> None:
             pass
 
     agent = object.__new__(SentientAgent)

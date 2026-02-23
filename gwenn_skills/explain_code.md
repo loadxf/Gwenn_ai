@@ -5,7 +5,7 @@
   "category": "developer",
   "version": "1.1",
   "risk_level": "low",
-  "tags": ["explain", "code", "understand", "walk through", "how does this work", "break down"],
+  "tags": ["user_command", "explain", "code", "understand", "walk through", "how does this work", "break down"],
   "parameters": {
     "code": {
       "type": "string",

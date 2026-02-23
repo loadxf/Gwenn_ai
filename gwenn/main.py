@@ -331,8 +331,8 @@ class GwennSession:
 
         return Panel(
             Group(*body),
-            title=Text("GWENN.ai", style="bold cyan", justify="center"),
-            subtitle="Created by Justin & Jayden McKibben - A father/son duo | https://gwenn.ai",
+            title=Text("Gwenn.ai Terminal", style="bold cyan", justify="center"),
+            subtitle="Created by Jayden & Dad - A father/son team | https://gwenn.ai",
             border_style="cyan",
         )
 
@@ -529,8 +529,8 @@ class GwennSession:
         if sys.stdout.isatty():
             daemon_state = self._build_startup_state()
             daemon_state["steps"] = [
-                {"key": "fabric", "label": "Loading Gwenn's neural fabric", "state": "pending"},
-                {"key": "connect", "label": "Connecting to Gwenn's daemon", "state": "pending"},
+                {"key": "fabric", "label": "Loading Gwenn's AI", "state": "pending"},
+                {"key": "connect", "label": "Connecting to Gwenn's brain", "state": "pending"},
             ]
             daemon_live = Live(
                 self._render_startup_panel(daemon_state),
@@ -630,8 +630,10 @@ class GwennSession:
     async def _read_raw_input(self, prompt: str) -> Optional[str]:
         """Read one line with a custom prompt (used for /resume session selection)."""
         try:
-            self._render_prompt(f"[dim]{prompt}[/dim]")
-            return await self._run_blocking_call(self._read_line_blocking)
+            input_prompt = self._make_input_prompt(prompt, "", ansi_color="2")
+            return await self._run_blocking_call(
+                lambda: self._read_line_blocking(input_prompt),
+            )
         except (EOFError, KeyboardInterrupt):
             return None
 
@@ -699,8 +701,10 @@ class GwennSession:
     async def _prompt_startup_input(self, prompt: str) -> str:
         """Prompt for one startup onboarding field without blocking heartbeat."""
         try:
-            self._render_prompt(f"[cyan]{prompt}[/cyan]")
-            response = await self._run_blocking_call(self._read_line_blocking)
+            input_prompt = self._make_input_prompt(prompt, "", ansi_color="36")
+            response = await self._run_blocking_call(
+                lambda: self._read_line_blocking(input_prompt),
+            )
         except (EOFError, KeyboardInterrupt):
             return ""
         if response is None:
@@ -1439,9 +1443,9 @@ class GwennSession:
         """
         if self._shutdown_event.is_set():
             return None
-        self._render_prompt("[bold green]You[/bold green]: ")
+        prompt = self._make_input_prompt("You", ": ", ansi_color="1;32")
         read_task = asyncio.create_task(
-            self._run_blocking_call(self._read_input_blocking),
+            self._run_blocking_call(lambda: self._read_line_blocking(prompt)),
             name="gwenn-read-input",
         )
         shutdown_wait = asyncio.create_task(
@@ -1469,22 +1473,39 @@ class GwennSession:
             shutdown_wait.cancel()
             await asyncio.gather(read_task, shutdown_wait, return_exceptions=True)
 
-    def _read_input_blocking(self) -> Optional[str]:
-        """Read one CLI line in blocking mode (readline-enabled when available)."""
-        return self._read_line_blocking()
-
     @staticmethod
-    def _read_line_blocking() -> Optional[str]:
-        """Read one terminal line without rendering the prompt."""
+    def _read_line_blocking(prompt: str = "") -> Optional[str]:
+        """Read one terminal line, passing *prompt* to ``input()`` directly.
+
+        Passing the prompt to ``input()`` lets the terminal's line editor
+        (readline on Unix, the native console on Windows) know the actual
+        cursor column.  This prevents line-wrapping miscalculations that
+        cause overlapping text and broken backspace on wrapped lines —
+        especially noticeable on Windows PowerShell.
+        """
         try:
-            return input()
+            return input(prompt)
         except EOFError:
             return None
 
     @staticmethod
-    def _render_prompt(prompt_markup: str) -> None:
-        """Render a prompt in the main thread before waiting on blocking input."""
-        console.print(prompt_markup, end="", markup=True, highlight=False)
+    def _make_input_prompt(text: str, suffix: str = "", *, ansi_color: str = "") -> str:
+        """Build a terminal prompt string safe for ``input()``.
+
+        On Unix with readline, ANSI escape sequences are wrapped in
+        ``\\001``/``\\002`` markers so readline doesn't count them toward
+        the visible prompt width.  On Windows (no readline) the raw ANSI
+        codes are emitted directly — modern PowerShell renders them fine.
+        """
+        if not ansi_color:
+            return f"{text}{suffix}"
+        start = f"\033[{ansi_color}m"
+        reset = "\033[0m"
+        if readline is not None:
+            # Readline invisible-character markers
+            start = f"\001{start}\002"
+            reset = f"\001{reset}\002"
+        return f"{start}{text}{reset}{suffix}"
 
     @staticmethod
     def _sanitize_terminal_input(line: str) -> str:

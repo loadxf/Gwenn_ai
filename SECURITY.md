@@ -60,6 +60,11 @@ details. Key components:
   are disconnected after 3 consecutive auth failures to prevent brute-force.
 - **Session privacy defaults** — daemon session previews are disabled by default
   and session content redaction defaults to enabled.
+- **Media handling** — image downloads from Telegram/Discord are size-capped
+  (20 MB), format-restricted (JPEG/PNG/GIF/WebP), and gated behind opt-in config
+  flags (`TELEGRAM_ENABLE_MEDIA`, `DISCORD_ENABLE_MEDIA`). Image content blocks
+  are preserved through redaction (no base64 corruption) and stripped from old
+  messages during context compaction.
 - **Data-at-rest hardening** — memory and session persistence applies restrictive
   file permissions on supported filesystems.
 - **Identity deserialization safety** — crash-safe loading that gracefully

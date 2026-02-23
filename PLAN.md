@@ -3,7 +3,7 @@
 This plan addresses all findings from `deep-research.md` — bugs, missing wiring,
 architectural gaps, and recommended improvements — organized by priority.
 
-**Last updated:** 2026-02-19
+**Last updated:** 2026-02-22
 
 ---
 
@@ -200,7 +200,7 @@ retrieval optional with a config flag and falling back to keyword overlap.
 
 ### 3.1 Build Core Unit Tests -- DONE
 
-**Status:** Resolved. 35+ test files with 1371 tests covering all core subsystems:
+**Status:** Resolved. 35+ test files with 1433 tests covering all core subsystems:
 - `tests/test_episodic_memory.py` — Retrieve scoring, mood-congruent retrieval
 - `tests/test_working_memory.py` — Slot management, eviction, decay
 - `tests/test_consolidation.py` — FACT/RELATIONSHIP/SELF/PATTERN parsing, malformed lines

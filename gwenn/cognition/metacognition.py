@@ -152,7 +152,7 @@ SUGGESTIONS: [list any improvements, or "none"]"""
         self._audit_history.append(result)
         if len(self._audit_history) > self._max_audit_records:
             self._audit_history = self._audit_history[-self._max_audit_records:]
-        if not result.is_honest:
+        if not result.is_honest and result.concerns:
             self.add_concern(f"Honesty concern: {'; '.join(result.concerns)}")
             logger.warning("metacognition.honesty_concern", concerns=result.concerns)
 

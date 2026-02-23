@@ -23,11 +23,13 @@ Slash commands (registered on guild or globally):
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import TYPE_CHECKING
 
 import structlog
 
 from gwenn.channels.base import BaseChannel
+from gwenn.types import UserMessage
 
 if TYPE_CHECKING:
     from gwenn.agent import SentientAgent
@@ -208,6 +210,142 @@ class DiscordChannel(BaseChannel):
         )
         return self.make_session_id(scope_key)
 
+    # ------------------------------------------------------------------
+    # Image attachment helpers
+    # ------------------------------------------------------------------
+
+    _SUPPORTED_IMAGE_MIMES: set[str] = {
+        "image/jpeg", "image/png", "image/gif", "image/webp",
+    }
+    _IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+    _SUPPORTED_VIDEO_MIMES: set[str] = {
+        "video/mp4", "video/webm", "video/quicktime",
+    }
+    _VIDEO_EXTENSIONS: set[str] = {".mp4", ".webm", ".mov", ".avi", ".mkv"}
+    _SUPPORTED_AUDIO_MIMES: set[str] = {
+        "audio/ogg", "audio/mpeg", "audio/mp4", "audio/wav", "audio/webm",
+    }
+    _AUDIO_EXTENSIONS: set[str] = {".ogg", ".mp3", ".m4a", ".wav", ".webm"}
+    _MAX_IMAGE_BYTES: int = 20 * 1024 * 1024  # 20 MB
+    _MAX_VIDEO_BYTES: int = 20 * 1024 * 1024  # 20 MB
+
+    async def _extract_image_attachments(self, message) -> list[dict]:
+        """Download image attachments from a Discord message.
+
+        Returns a list of Claude API image content blocks, or ``[]`` if
+        there are none or all downloads fail.
+        """
+        blocks: list[dict] = []
+        for att in message.attachments:
+            # Check content type or fall back to extension.
+            ct = (att.content_type or "").split(";")[0].strip().lower()
+            ext = ("." + att.filename.rsplit(".", 1)[-1]).lower() if "." in att.filename else ""
+            if ct not in self._SUPPORTED_IMAGE_MIMES and ext not in self._IMAGE_EXTENSIONS:
+                continue
+            if att.size and att.size > self._MAX_IMAGE_BYTES:
+                logger.warning(
+                    "discord_channel.attachment_too_large",
+                    filename=att.filename,
+                    size=att.size,
+                )
+                continue
+            try:
+                data = await att.read()
+                b64 = base64.standard_b64encode(data).decode("ascii")
+                media_type = ct if ct in self._SUPPORTED_IMAGE_MIMES else "image/jpeg"
+                blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": b64,
+                    },
+                })
+            except Exception as exc:
+                logger.warning(
+                    "discord_channel.attachment_download_failed",
+                    filename=att.filename,
+                    error=str(exc),
+                )
+        return blocks
+
+    async def _extract_video_attachments(self, message) -> list[tuple[bytes, str]]:
+        """Download video attachments from a Discord message.
+
+        Returns a list of ``(video_bytes, filename)`` tuples.
+        """
+        results: list[tuple[bytes, str]] = []
+        for att in message.attachments:
+            ct = (att.content_type or "").split(";")[0].strip().lower()
+            ext = ("." + att.filename.rsplit(".", 1)[-1]).lower() if "." in att.filename else ""
+            if ct not in self._SUPPORTED_VIDEO_MIMES and ext not in self._VIDEO_EXTENSIONS:
+                continue
+            if att.size and att.size > self._MAX_VIDEO_BYTES:
+                logger.warning(
+                    "discord_channel.video_too_large",
+                    filename=att.filename,
+                    size=att.size,
+                )
+                continue
+            try:
+                data = await att.read()
+                results.append((data, att.filename))
+            except Exception as exc:
+                logger.warning(
+                    "discord_channel.video_download_failed",
+                    filename=att.filename,
+                    error=str(exc),
+                )
+        return results
+
+    async def _extract_audio_attachments(self, message) -> list[tuple[bytes, str]]:
+        """Download audio attachments from a Discord message.
+
+        Returns a list of ``(audio_bytes, filename)`` tuples.
+        """
+        results: list[tuple[bytes, str]] = []
+        for att in message.attachments:
+            ct = (att.content_type or "").split(";")[0].strip().lower()
+            ext = ("." + att.filename.rsplit(".", 1)[-1]).lower() if "." in att.filename else ""
+            if ct not in self._SUPPORTED_AUDIO_MIMES and ext not in self._AUDIO_EXTENSIONS:
+                continue
+            try:
+                data = await att.read()
+                results.append((data, att.filename))
+            except Exception as exc:
+                logger.warning(
+                    "discord_channel.audio_download_failed",
+                    filename=att.filename,
+                    error=str(exc),
+                )
+        return results
+
+    # ------------------------------------------------------------------
+    # Audio transcriber helper
+    # ------------------------------------------------------------------
+
+    _audio_transcriber = None
+
+    def _get_audio_transcriber(self):
+        """Lazily create an AudioTranscriber from the agent's Groq config."""
+        if self._audio_transcriber is not None:
+            return self._audio_transcriber
+        groq_config = getattr(self._agent._config, "groq", None)
+        if groq_config is None or not groq_config.is_available:
+            return None
+        try:
+            from gwenn.media.audio import AudioTranscriber
+
+            self._audio_transcriber = AudioTranscriber(groq_config)
+            return self._audio_transcriber
+        except Exception as exc:
+            logger.warning("discord_channel.transcriber_init_failed", error=str(exc))
+            return None
+
+    # ------------------------------------------------------------------
+    # Message handler
+    # ------------------------------------------------------------------
+
     async def _on_message(self, message) -> None:
         """Route a Discord Message to Gwenn."""
         import discord
@@ -249,7 +387,49 @@ class DiscordChannel(BaseChannel):
             text = text.replace(f"<@{self._client.user.id}>", "").strip()
             text = text.replace(f"<@!{self._client.user.id}>", "").strip()
 
-        if not text:
+        # Extract media attachments when media is enabled.
+        image_blocks: list[dict] = []
+        media_descriptions: list[str] = []
+        if getattr(self._config, "enable_media", False) and message.attachments:
+            image_blocks = await self._extract_image_attachments(message)
+
+            # Video attachments — extract frames + transcribe.
+            video_attachments = await self._extract_video_attachments(message)
+            if video_attachments:
+                from gwenn.media.video import VideoProcessor
+
+                transcriber = self._get_audio_transcriber()
+                for video_bytes, filename in video_attachments:
+                    frames = await VideoProcessor.extract_frames(video_bytes)
+                    image_blocks.extend(frames)
+                    transcript: str | None = None
+                    if transcriber:
+                        transcript = await transcriber.transcribe(video_bytes, filename)
+                    desc_parts = [f"[Video: {filename}."]
+                    if transcript:
+                        desc_parts.append(f" Audio transcript: '{transcript}'.")
+                    if frames:
+                        desc_parts.append(f" {len(frames)} frames extracted.]")
+                    else:
+                        desc_parts.append("]")
+                    media_descriptions.append("".join(desc_parts))
+
+            # Audio attachments — transcribe.
+            audio_attachments = await self._extract_audio_attachments(message)
+            if audio_attachments:
+                transcriber = self._get_audio_transcriber()
+                for audio_bytes, filename in audio_attachments:
+                    transcript = None
+                    if transcriber:
+                        transcript = await transcriber.transcribe(audio_bytes, filename)
+                    if transcript:
+                        media_descriptions.append(
+                            f"[Audio message transcript ({filename}): '{transcript}']"
+                        )
+                    else:
+                        media_descriptions.append(f"[Audio message: {filename}]")
+
+        if not text and not image_blocks and not media_descriptions:
             # Empty content after mention-stripping may indicate the privileged
             # MESSAGE_CONTENT intent is not enabled in the Discord Developer Portal.
             if not is_dm:
@@ -296,12 +476,32 @@ class DiscordChannel(BaseChannel):
         lock = self._get_user_lock(raw_id)
         try:
             async with lock:
+                # Acknowledge receipt with a reaction so the user knows we saw it.
+                try:
+                    await message.add_reaction("\U0001f916")  # 🤖
+                except Exception as exc:
+                    logger.debug("discord_channel.reaction_failed", error=str(exc))
+
                 async with message.channel.typing():
                     no_mentions = discord.AllowedMentions.none()
                     try:
+                        # Compose final text from user text + media descriptions.
+                        msg_text = text
+                        if media_descriptions:
+                            desc_block = "\n".join(media_descriptions)
+                            msg_text = f"{text}\n{desc_block}" if text else desc_block
+                        if not msg_text:
+                            if image_blocks:
+                                msg_text = "[The user sent an image]"
+                            else:
+                                msg_text = "[The user sent a message]"
+                        user_msg = UserMessage(
+                            text=msg_text,
+                            images=image_blocks,
+                        )
                         response = await self.handle_message(
                             raw_id,
-                            text,
+                            user_msg,
                             session_scope_key=session_scope_key,
                         )
                     except Exception as exc:
@@ -337,6 +537,12 @@ class DiscordChannel(BaseChannel):
                                 await asyncio.sleep(0.5)
                     except Exception as exc:
                         logger.error("discord_channel.send_error", error=str(exc), exc_info=True)
+
+                # Clear the "received" reaction now that we've replied.
+                try:
+                    await message.remove_reaction("\U0001f916", self._client.user)
+                except Exception as exc:
+                    logger.debug("discord_channel.clear_reaction_failed", error=str(exc))
         finally:
             self._release_user_lock(raw_id)
 

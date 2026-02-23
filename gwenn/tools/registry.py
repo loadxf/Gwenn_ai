@@ -209,6 +209,42 @@ class ToolRegistry:
             for tool in self._tools.values()
         ]
 
+    def get_tools_by_name(
+        self,
+        names: list[str],
+        max_risk: str = "high",
+    ) -> list[dict[str, Any]]:
+        """Return API-format tool definitions filtered by name and max risk level.
+
+        Used by the orchestrator to build restricted tool sets for subagents.
+        Tools with risk level above max_risk are excluded. CRITICAL risk tools
+        are never returned.
+        """
+        risk_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        max_risk_level = risk_order.get(max_risk, 2)
+
+        tools = []
+        for name in names:
+            tool = self._tools.get(name)
+            if tool is None or not tool.enabled:
+                continue
+            tool_risk = risk_order.get(tool.risk_level, 3)
+            if tool_risk > max_risk_level:
+                continue
+            # Never give subagents CRITICAL risk tools
+            if tool.risk_level == "critical":
+                continue
+            tools.append(tool.to_api_format())
+        return tools
+
+    def get_definitions_by_name(self, names: list[str]) -> list["ToolDefinition"]:
+        """Return ToolDefinition objects matching the given names."""
+        return [
+            self._tools[name]
+            for name in names
+            if name in self._tools and self._tools[name].enabled
+        ]
+
     @property
     def count(self) -> int:
         return len(self._tools)

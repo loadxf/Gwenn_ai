@@ -5,7 +5,7 @@
   "category": "information",
   "version": "1.1",
   "risk_level": "medium",
-  "tags": ["weather", "forecast", "temperature", "climate"],
+  "tags": ["user_command", "weather", "forecast", "temperature", "climate"],
   "parameters": {
     "location": {
       "type": "string",

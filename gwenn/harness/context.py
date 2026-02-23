@@ -57,6 +57,9 @@ class ContextManager:
         """
         return int(len(text) / self._config.chars_per_token)
 
+    # Approximate token cost of a single image block in the Claude API.
+    _IMAGE_TOKEN_ESTIMATE: int = 1600
+
     def estimate_message_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Estimate total tokens across all messages."""
         total = 0
@@ -68,8 +71,11 @@ class ContextManager:
                 # Handle structured content blocks
                 for block in content:
                     if isinstance(block, dict):
-                        text = block.get("text", "") or block.get("content", "")
-                        total += self.estimate_tokens(str(text))
+                        if block.get("type") == "image":
+                            total += self._IMAGE_TOKEN_ESTIMATE
+                        else:
+                            text = block.get("text", "") or block.get("content", "")
+                            total += self.estimate_tokens(str(text))
                     else:
                         total += self.estimate_tokens(str(block))
             total += 10  # Overhead per message for role, formatting
@@ -102,6 +108,36 @@ class ContextManager:
             return True
         return False
 
+    @staticmethod
+    def _strip_image_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Replace image content blocks with lightweight text placeholders.
+
+        Used before summarizing old messages during compaction so the
+        summarisation call doesn't include heavy base64 payloads.
+        """
+        stripped: list[dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                stripped.append(msg)
+                continue
+            new_blocks: list[dict[str, Any]] = []
+            image_count = 0
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image":
+                    image_count += 1
+                else:
+                    new_blocks.append(block)
+            if image_count:
+                label = "1 image" if image_count == 1 else f"{image_count} images"
+                new_blocks.insert(0, {"type": "text", "text": f"[{label} shared]"})
+            copy = dict(msg)
+            copy["content"] = new_blocks if len(new_blocks) > 1 else (
+                new_blocks[0].get("text", "") if new_blocks else ""
+            )
+            stripped.append(copy)
+        return stripped
+
     async def compact(
         self,
         engine: Any,  # CognitiveEngine — avoided circular import
@@ -129,6 +165,9 @@ class ContextManager:
         keep_recent = 4
         old_messages = messages[:-keep_recent]
         recent_messages = messages[-keep_recent:]
+
+        # Strip image blocks from old messages before summarising.
+        old_messages = self._strip_image_blocks(old_messages)
 
         # Ask the engine to summarize the older messages
         compaction_prompt = (

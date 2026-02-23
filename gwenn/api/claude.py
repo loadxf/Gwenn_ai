@@ -21,7 +21,7 @@ from typing import Any, Callable, Optional
 import anthropic
 import structlog
 
-from gwenn.config import ClaudeConfig
+from gwenn.config import ClaudeConfig, _load_oauth_credentials
 
 logger = structlog.get_logger(__name__)
 
@@ -51,17 +51,20 @@ class CognitiveEngine:
         try:
             self._auth_method = "api_key" if config.api_key else "oauth"
 
+            # OAuth token expiry tracking (epoch seconds; 0 = unknown/not-oauth)
+            self._oauth_expires_at: float = 0.0
+            self._oauth_refresh_buffer: float = 300.0  # refresh 5 min before expiry
+
             if config.api_key:
                 # Prefer API keys when both are present: they're the stable path
                 # for Anthropic Messages API and avoid OAuth endpoint
                 # incompatibilities.
                 self._async_client = anthropic.AsyncAnthropic(api_key=config.api_key)
             else:
-                oauth_kwargs: dict[str, Any] = {"auth_token": config.auth_token}
-                oauth_headers = self._oauth_default_headers(config.auth_token)
-                if oauth_headers:
-                    oauth_kwargs["default_headers"] = oauth_headers
-                self._async_client = anthropic.AsyncAnthropic(**oauth_kwargs)
+                self._async_client = self._build_oauth_client(config.auth_token)
+                # Read expiry from credentials file
+                _, expires_at = _load_oauth_credentials()
+                self._oauth_expires_at = expires_at
             self._model = config.model
             self._max_tokens = config.max_tokens
             self._request_timeout_seconds = float(config.request_timeout_seconds)
@@ -116,6 +119,50 @@ class CognitiveEngine:
         if auth_token and auth_token.startswith(CLAUDE_CODE_OAUTH_PREFIX):
             return {"anthropic-beta": CLAUDE_CODE_OAUTH_BETA_HEADER}
         return None
+
+    def _build_oauth_client(self, token: Optional[str]) -> anthropic.AsyncAnthropic:
+        """Create an AsyncAnthropic client configured for OAuth authentication."""
+        oauth_kwargs: dict[str, Any] = {"auth_token": token}
+        oauth_headers = self._oauth_default_headers(token)
+        if oauth_headers:
+            oauth_kwargs["default_headers"] = oauth_headers
+        return anthropic.AsyncAnthropic(**oauth_kwargs)
+
+    def _maybe_refresh_oauth(self, *, force: bool = False) -> bool:
+        """Re-read OAuth credentials from disk if the token is near expiry.
+
+        Args:
+            force: Bypass the time check (used after a 401 error).
+
+        Returns:
+            True if the client was rebuilt with a fresh token.
+        """
+        if self._auth_method != "oauth":
+            return False
+
+        if not force and (
+            self._oauth_expires_at == 0.0
+            or time.time() <= self._oauth_expires_at - self._oauth_refresh_buffer
+        ):
+            return False
+
+        token, expires_at = _load_oauth_credentials()
+        if not token:
+            logger.warning("cognitive_engine.oauth_refresh_failed", reason="no_token_on_disk")
+            return False
+
+        # Only rebuild if we got a different (presumably fresher) expiry
+        if not force and expires_at <= self._oauth_expires_at:
+            return False
+
+        self._async_client = self._build_oauth_client(token)
+        self._oauth_expires_at = expires_at
+        logger.info(
+            "cognitive_engine.oauth_token_refreshed",
+            expires_at=expires_at,
+            forced=force,
+        )
+        return True
 
     def _verify_base_url_dns(self) -> None:
         """Warn early when the configured API host cannot be resolved."""
@@ -192,6 +239,9 @@ class CognitiveEngine:
         if isinstance(value, list):
             return [self._redact_payload_value(item) for item in value]
         if isinstance(value, dict):
+            # Skip image blocks — redacting base64 data would corrupt them.
+            if value.get("type") == "image":
+                return value
             return {k: self._redact_payload_value(v) for k, v in value.items()}
         return value
 
@@ -267,6 +317,9 @@ class CognitiveEngine:
             # Anthropic API validation for this model/auth path.
             kwargs["thinking"] = {"type": "adaptive"}
 
+        # Proactive OAuth refresh — re-read token before it expires
+        self._maybe_refresh_oauth()
+
         # Make the API call — the actual moment of cognition
         # Deferred import: gwenn.harness.__init__ → loop → gwenn.api.claude (circular).
         from gwenn.harness.retry import RetryConfig, with_retries
@@ -293,6 +346,18 @@ class CognitiveEngine:
                 config=retry_config,
                 on_retry=None,
             )
+        except anthropic.AuthenticationError as e:
+            # Reactive safety net: token may have expired between proactive
+            # check and actual API call (clock skew, slow credential write).
+            logger.warning("cognitive_engine.auth_error_attempting_refresh", error=str(e))
+            if self._maybe_refresh_oauth(force=True):
+                response = await with_retries(
+                    _create,
+                    config=retry_config,
+                    on_retry=None,
+                )
+            else:
+                raise
         except anthropic.APIConnectionError as e:
             base_url = getattr(self._async_client, "base_url", None)
             logger.error(

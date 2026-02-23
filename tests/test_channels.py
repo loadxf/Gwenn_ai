@@ -286,7 +286,11 @@ class TestBaseChannelHandleMessage:
         assert response == "Hello from Gwenn"
         mock_agent.respond.assert_called_once()
         call_kwargs = mock_agent.respond.call_args
-        assert call_kwargs.kwargs["user_message"] == "Hi Gwenn"
+        um = call_kwargs.kwargs["user_message"]
+        from gwenn.types import UserMessage
+        assert isinstance(um, UserMessage)
+        assert um.text == "Hi Gwenn"
+        assert um.images == []
         assert call_kwargs.kwargs["user_id"] == "test_42"
         # The history passed must be the session's list (namespaced with user: prefix)
         assert call_kwargs.kwargs["conversation_history"] is sessions.get_or_create("test_user:42")
@@ -371,7 +375,8 @@ class TestBaseChannelHandleMessage:
                 self.max_active = max(self.max_active, self.active)
                 await asyncio.sleep(0.01)
                 self.active -= 1
-                return f"echo:{user_message}"
+                text = user_message.text if hasattr(user_message, "text") else user_message
+                return f"echo:{text}"
 
         agent = _Agent()
         sessions = SessionManager()

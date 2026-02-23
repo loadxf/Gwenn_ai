@@ -16,6 +16,7 @@ The store handles:
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import math
 import sqlite3
@@ -223,7 +224,29 @@ class MemoryStore:
         try:
             self._vector_db_path.mkdir(parents=True, exist_ok=True)
             self._best_effort_chmod(self._vector_db_path, 0o700)
-            self._vector_client = chromadb.PersistentClient(path=str(self._vector_db_path))
+
+            # Use a threaded timeout to avoid hanging indefinitely when
+            # another process holds the ChromaDB SQLite lock.
+            def _open_client() -> Any:
+                return chromadb.PersistentClient(path=str(self._vector_db_path))
+
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(_open_client)
+            try:
+                self._vector_client = future.result(timeout=10)
+            except concurrent.futures.TimeoutError:
+                # shutdown(wait=False) so we don't block on the stuck thread
+                pool.shutdown(wait=False)
+                logger.warning(
+                    "memory_store.vector_lock_timeout",
+                    msg="ChromaDB lock held by another process; "
+                        "disabling vector search for this session",
+                )
+                self._enable_vector_search = False
+                return
+            finally:
+                pool.shutdown(wait=False)
+
             self._episodes_collection = self._vector_client.get_or_create_collection(
                 name="gwenn_episodes"
             )
@@ -338,6 +361,127 @@ class MemoryStore:
                 error=str(e),
             )
 
+    def sync_episode_embeddings(self, episodes: list[Episode]) -> int:
+        """Batch-sync episode embeddings, skipping items already in ChromaDB.
+
+        Uses ``collection.get(ids=..., include=[])`` to discover which IDs
+        already exist (a fast SQLite SELECT with no embedding computation),
+        then upserts only the missing ones in a single batched call.
+
+        Returns the number of newly inserted episodes.
+        """
+        if not self._episodes_collection or not episodes:
+            return 0
+
+        all_ids = [ep.episode_id for ep in episodes]
+        try:
+            existing = self._episodes_collection.get(ids=all_ids, include=[])
+            existing_ids = set(existing.get("ids") or [])
+        except Exception as e:
+            logger.warning(
+                "memory_store.episode_sync_get_failed",
+                error=str(e),
+                msg="falling back to full upsert",
+            )
+            existing_ids = set()
+
+        new_episodes = [ep for ep in episodes if ep.episode_id not in existing_ids]
+        if not new_episodes:
+            logger.info(
+                "memory_store.episode_sync_skipped",
+                total=len(episodes),
+                msg="all episodes already indexed",
+            )
+            return 0
+
+        try:
+            self._episodes_collection.upsert(
+                ids=[ep.episode_id for ep in new_episodes],
+                documents=[self._episode_document(ep) for ep in new_episodes],
+                metadatas=[{
+                    "category": ep.category or "general",
+                    "importance": float(ep.importance),
+                    "timestamp": float(ep.timestamp),
+                    "consolidated": int(bool(ep.consolidated)),
+                } for ep in new_episodes],
+            )
+        except Exception as e:
+            logger.warning(
+                "memory_store.episode_sync_upsert_failed",
+                error=str(e),
+                count=len(new_episodes),
+            )
+            return 0
+
+        logger.info(
+            "memory_store.episode_sync_complete",
+            total=len(episodes),
+            new=len(new_episodes),
+            skipped=len(episodes) - len(new_episodes),
+        )
+        return len(new_episodes)
+
+    def sync_knowledge_embeddings(self, nodes: list[dict]) -> int:
+        """Batch-sync knowledge node embeddings, skipping items already in ChromaDB.
+
+        Each dict must contain: ``node_id``, ``label``, ``category``, ``content``,
+        ``confidence``, ``last_updated``.
+
+        Returns the number of newly inserted nodes.
+        """
+        if not self._knowledge_collection or not nodes:
+            return 0
+
+        all_ids = [n["node_id"] for n in nodes]
+        try:
+            existing = self._knowledge_collection.get(ids=all_ids, include=[])
+            existing_ids = set(existing.get("ids") or [])
+        except Exception as e:
+            logger.warning(
+                "memory_store.knowledge_sync_get_failed",
+                error=str(e),
+                msg="falling back to full upsert",
+            )
+            existing_ids = set()
+
+        new_nodes = [n for n in nodes if n["node_id"] not in existing_ids]
+        if not new_nodes:
+            logger.info(
+                "memory_store.knowledge_sync_skipped",
+                total=len(nodes),
+                msg="all knowledge nodes already indexed",
+            )
+            return 0
+
+        try:
+            self._knowledge_collection.upsert(
+                ids=[n["node_id"] for n in new_nodes],
+                documents=[
+                    f"{n['label']}\n{n['content']}".strip() for n in new_nodes
+                ],
+                metadatas=[{
+                    "label": n["label"],
+                    "category": n.get("category") or "concept",
+                    "confidence": float(n["confidence"]),
+                    "last_updated": float(n["last_updated"]),
+                } for n in new_nodes],
+            )
+        except Exception as e:
+            logger.warning(
+                "memory_store.knowledge_sync_upsert_failed",
+                error=str(e),
+                count=len(new_nodes),
+            )
+            return 0
+
+        logger.info(
+            "memory_store.knowledge_sync_complete",
+            total=len(nodes),
+            new=len(new_nodes),
+            skipped=len(nodes) - len(new_nodes),
+        )
+        return len(new_nodes)
+
     def query_knowledge_embeddings(
         self,
         query_text: str,
@@ -371,8 +515,12 @@ class MemoryStore:
     # Episodic Memory Persistence
     # -------------------------------------------------------------------------
 
-    def save_episode(self, episode: Episode) -> None:
-        """Persist a single episode to the database."""
+    def save_episode(self, episode: Episode, *, skip_vector: bool = False) -> None:
+        """Persist a single episode to the database.
+
+        Pass ``skip_vector=True`` to skip the per-item ChromaDB upsert (useful
+        when the caller will batch-sync embeddings after a bulk save).
+        """
         conn = self._require_connection()
         data = episode.to_dict()
         conn.execute(
@@ -395,7 +543,8 @@ class MemoryStore:
             ),
         )
         conn.commit()
-        self.upsert_episode_embedding(episode)
+        if not skip_vector:
+            self.upsert_episode_embedding(episode)
 
     def save_episodes_batch(self, episodes: list[Episode]) -> int:
         """Persist multiple episodes in a single transaction.
@@ -585,8 +734,13 @@ class MemoryStore:
                             content: str, confidence: float,
                             source_episodes: list[str],
                             created_at: float, last_updated: float,
-                            access_count: int, metadata: Optional[dict[str, Any]] = None) -> None:
-        """Persist a single knowledge node to the database."""
+                            access_count: int, metadata: Optional[dict[str, Any]] = None,
+                            *, skip_vector: bool = False) -> None:
+        """Persist a single knowledge node to the database.
+
+        Pass ``skip_vector=True`` to skip the per-item ChromaDB upsert (useful
+        when the caller will batch-sync embeddings after a bulk save).
+        """
         conn = self._require_connection()
         conn.execute(
             """INSERT OR REPLACE INTO knowledge_nodes
@@ -598,14 +752,15 @@ class MemoryStore:
              json.dumps(metadata or {})),
         )
         conn.commit()
-        self.upsert_knowledge_embedding(
-            node_id=node_id,
-            label=label,
-            category=category,
-            content=content,
-            confidence=confidence,
-            last_updated=last_updated,
-        )
+        if not skip_vector:
+            self.upsert_knowledge_embedding(
+                node_id=node_id,
+                label=label,
+                category=category,
+                content=content,
+                confidence=confidence,
+                last_updated=last_updated,
+            )
 
     def load_knowledge_nodes(self) -> list[dict]:
         """Load all knowledge nodes from the database."""

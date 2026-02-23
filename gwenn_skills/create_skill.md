@@ -5,7 +5,7 @@
   "category": "skills",
   "version": "1.0",
   "risk_level": "low",
-  "tags": ["create skill", "new skill", "add capability", "skill builder", "learn"],
+  "tags": ["user_command", "create skill", "new skill", "add capability", "skill builder", "learn"],
   "parameters": {
     "goal": {
       "type": "string",

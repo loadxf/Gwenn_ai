@@ -5,7 +5,7 @@
   "category": "information",
   "version": "1.1",
   "risk_level": "medium",
-  "tags": ["news", "headlines", "current events", "breaking news"],
+  "tags": ["user_command", "news", "headlines", "current events", "breaking news"],
   "parameters": {
     "topic": {
       "type": "string",
