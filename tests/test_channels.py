@@ -25,6 +25,7 @@ from gwenn.channels.formatting import (
     render_heartbeat_text,
     render_status_text,
     split_message,
+    strip_html_tags,
 )
 from gwenn.channels.session import SessionManager
 
@@ -451,6 +452,54 @@ class TestMarkdownToTelegramHtml:
         result = markdown_to_telegram_html("```\n\n```")
         assert "<pre" in result
 
+    def test_strikethrough_conversion(self):
+        result = markdown_to_telegram_html("This is ~~deleted~~ text")
+        assert "<s>deleted</s>" in result
+
+    def test_blockquote_conversion(self):
+        result = markdown_to_telegram_html("> This is a quote\n> Second line")
+        assert "<blockquote>" in result
+        assert "This is a quote" in result
+        assert "Second line" in result
+        assert "</blockquote>" in result
+
+    def test_blockquote_strips_prefix(self):
+        result = markdown_to_telegram_html("> Hello world")
+        assert "<blockquote>" in result
+        # Should not contain the '> ' prefix inside the blockquote
+        assert "> Hello" not in result.replace("<blockquote>", "")
+
+    def test_mixed_blockquote_and_normal(self):
+        result = markdown_to_telegram_html("Normal text\n\n> Quoted\n\nMore text")
+        assert "<blockquote>" in result
+        assert "Normal text" in result
+        assert "More text" in result
+
+
+# ============================================================================
+# strip_html_tags tests (#10)
+# ============================================================================
+
+
+class TestStripHtmlTags:
+    def test_strips_simple_tags(self):
+        assert strip_html_tags("<b>bold</b>") == "bold"
+
+    def test_strips_nested_tags(self):
+        assert strip_html_tags("<b><i>nested</i></b>") == "nested"
+
+    def test_preserves_plain_text(self):
+        assert strip_html_tags("no tags here") == "no tags here"
+
+    def test_strips_pre_with_language(self):
+        assert strip_html_tags('<pre language="python">code</pre>') == "code"
+
+    def test_empty_string(self):
+        assert strip_html_tags("") == ""
+
+    def test_preserves_entities(self):
+        assert strip_html_tags("a &amp; b") == "a &amp; b"
+
 
 # ============================================================================
 # format_for_telegram chunk size test
@@ -803,6 +852,64 @@ class TestStartupFunctions:
         # Good channel should have been rolled back
         assert good.stopped is True
         assert good not in mock_agent._platform_channels
+
+    @pytest.mark.asyncio
+    async def test_start_channels_skips_import_error_when_enabled(self):
+        from gwenn.channels.startup import start_channels
+
+        mock_agent = AsyncMock()
+        mock_agent._respond_lock = asyncio.Lock()
+        mock_agent._platform_channels = []
+        mock_agent.register_channel = lambda ch: mock_agent._platform_channels.append(ch)
+        mock_agent.unregister_channel = lambda ch: (
+            mock_agent._platform_channels.remove(ch)
+            if ch in mock_agent._platform_channels
+            else None
+        )
+
+        sessions = SessionManager()
+
+        from gwenn.channels.base import BaseChannel
+
+        class MissingDependencyChannel(BaseChannel):
+            channel_name = "missing"
+
+            async def start(self):
+                raise ImportError("optional dependency not installed")
+
+            async def stop(self):
+                pass
+
+            async def send_message(self, uid, text):
+                pass
+
+        class GoodChannel(BaseChannel):
+            channel_name = "good"
+            started = False
+
+            async def start(self):
+                self.started = True
+
+            async def stop(self):
+                pass
+
+            async def send_message(self, uid, text):
+                pass
+
+        missing = MissingDependencyChannel(mock_agent, sessions)
+        good = GoodChannel(mock_agent, sessions)
+
+        started = await start_channels(
+            mock_agent,
+            sessions,
+            [missing, good],
+            continue_on_import_error=True,
+        )
+
+        assert started == [good]
+        assert good.started is True
+        assert missing not in mock_agent._platform_channels
+        assert good in mock_agent._platform_channels
 
 
 # ============================================================================

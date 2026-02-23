@@ -33,6 +33,7 @@ from gwenn.affect.appraisal import AppraisalEvent, StimulusType
 from gwenn.cognition.goals import NeedType
 from gwenn.cognition.inner_life import ThinkingMode
 from gwenn.config import HeartbeatConfig
+from gwenn.memory.episodic import Episode  # noqa: F401, F811 — used at runtime in _integrate
 
 if TYPE_CHECKING:
     from gwenn.agent import SentientAgent
@@ -88,6 +89,7 @@ class Heartbeat:
         self._last_user_activity_mono: float = time.monotonic()
         self._consecutive_failures = 0
         self._circuit_open_until: Optional[float] = None
+        self._circuit_open_count = 0  # cumulative opens (drives exponential backoff)
         self._last_error: Optional[str] = None
 
         # Consolidation scheduling
@@ -109,6 +111,7 @@ class Heartbeat:
 
         self._consecutive_failures = 0
         self._circuit_open_until = None
+        self._circuit_open_count = 0
         self._last_error = None
         self._running = True
         self._task = asyncio.create_task(self._loop())
@@ -136,7 +139,8 @@ class Heartbeat:
     async def _loop(self) -> None:
         """The eternal heartbeat loop."""
         _MAX_CONSECUTIVE = 10
-        _CIRCUIT_OPEN_SECONDS = 60.0
+        _CIRCUIT_BASE_SECONDS = 60.0
+        _CIRCUIT_MAX_SECONDS = 900.0  # 15 min cap
 
         while self._running:
             if self._circuit_open_until is not None:
@@ -149,6 +153,7 @@ class Heartbeat:
             try:
                 await self._beat()
                 self._consecutive_failures = 0
+                self._circuit_open_count = 0  # reset backoff on success
                 self._last_error = None
             except asyncio.CancelledError:
                 break
@@ -162,11 +167,18 @@ class Heartbeat:
                     exc_info=True,
                 )
                 if self._consecutive_failures >= _MAX_CONSECUTIVE:
-                    self._circuit_open_until = time.monotonic() + _CIRCUIT_OPEN_SECONDS
+                    # Exponential backoff: 60s → 120s → 240s → … capped at 15 min
+                    backoff = min(
+                        _CIRCUIT_BASE_SECONDS * (2 ** self._circuit_open_count),
+                        _CIRCUIT_MAX_SECONDS,
+                    )
+                    self._circuit_open_count += 1
+                    self._circuit_open_until = time.monotonic() + backoff
                     logger.critical(
                         "heartbeat.circuit_open",
                         failures=self._consecutive_failures,
-                        cool_down_seconds=_CIRCUIT_OPEN_SECONDS,
+                        cool_down_seconds=backoff,
+                        open_count=self._circuit_open_count,
                     )
                     self._consecutive_failures = 0
 
@@ -212,6 +224,16 @@ class Heartbeat:
         self._schedule(state_snapshot)
         self._agent.identity.total_heartbeats += 1
 
+        # Periodically decay stale Theory-of-Mind beliefs so long idle
+        # periods in daemon mode don't leave ancient inferences intact.
+        if self._beat_count % 10 == 0:
+            try:
+                tom = self._agent.theory_of_mind
+                for model in tom._user_models.values():
+                    model.decay_stale_beliefs()
+            except Exception:
+                pass
+
         elapsed = time.monotonic() - beat_start
         logger.debug(
             "heartbeat.beat_complete",
@@ -237,13 +259,35 @@ class Heartbeat:
 
         # Keep temporal grounding fresh during autonomous idle loops, not only
         # on user-message boundaries.
-        sensory = getattr(self._agent, "sensory", None)
-        ground_temporal = getattr(sensory, "ground_temporal", None) if sensory else None
-        if callable(ground_temporal):
-            try:
-                ground_temporal(event_description="heartbeat_cycle")
-            except Exception as e:
-                logger.debug("heartbeat.temporal_grounding_failed", error=str(e))
+        sensory = self._agent.sensory
+        try:
+            sensory.ground_temporal(event_description="heartbeat_cycle")
+        except Exception as e:
+            logger.debug("heartbeat.temporal_grounding_failed", error=str(e))
+
+        # Ground environmental percepts so the sensory system tracks system state.
+        try:
+            wm_load = self._agent.working_memory.load_factor
+            sensory.ground_environmental(
+                "heartbeat_beat", self._beat_count,
+                f"Beat #{self._beat_count} of autonomous cognition",
+            )
+            sensory.ground_environmental(
+                "working_memory_load", wm_load,
+                f"Working memory is {'heavy' if wm_load > 0.7 else 'moderate' if wm_load > 0.4 else 'light'} ({wm_load:.0%} full)",
+            )
+            if idle_duration < 120:
+                sensory.ground_environmental(
+                    "user_presence", True,
+                    "A user is present and engaged",
+                )
+            else:
+                sensory.ground_environmental(
+                    "user_presence", False,
+                    f"No user activity for {idle_duration:.0f}s — alone with my thoughts",
+                )
+        except Exception as e:
+            logger.debug("heartbeat.environmental_grounding_failed", error=str(e))
 
         return {
             "timestamp": now,
@@ -277,41 +321,33 @@ class Heartbeat:
             return ThinkingMode.CONSOLIDATE
 
         # Keep intrinsic motivations "alive": decay needs and generate goals each beat.
-        goal_update = getattr(self._agent.goal_system, "update", None)
-        if callable(goal_update):
-            try:
-                goal_update()
-            except Exception as e:
-                logger.warning("heartbeat.goal_update_failed", error=str(e))
+        try:
+            self._agent.goal_system.update()
+        except Exception as e:
+            logger.warning("heartbeat.goal_update_failed", error=str(e))
 
-        selector = getattr(self._agent.inner_life, "select_mode", None)
-        if callable(selector):
-            get_highest_priority_goal = getattr(
-                self._agent.goal_system, "get_highest_priority_goal", None
+        highest_goal = self._agent.goal_system.get_highest_priority_goal()
+        has_active_goals = highest_goal is not None
+
+        resilience_status = state.get("resilience_status", {})
+        has_unresolved_concerns = bool(state.get("valence", 0.0) < -0.2)
+        if isinstance(resilience_status, dict):
+            has_unresolved_concerns = has_unresolved_concerns or bool(
+                resilience_status.get("breaker_active", False)
             )
-            has_active_goals = (
-                bool(get_highest_priority_goal()) if callable(get_highest_priority_goal) else False
+
+        try:
+            selected_mode = self._agent.inner_life.select_mode(
+                affect_state=self._agent.affect_state,
+                has_active_goals=has_active_goals,
+                has_unresolved_concerns=has_unresolved_concerns,
             )
-
-            resilience_status = state.get("resilience_status", {})
-            has_unresolved_concerns = bool(state.get("valence", 0.0) < -0.2)
-            if isinstance(resilience_status, dict):
-                has_unresolved_concerns = has_unresolved_concerns or bool(
-                    resilience_status.get("breaker_active", False)
-                )
-
-            try:
-                selected_mode = selector(
-                    affect_state=self._agent.affect_state,
-                    has_active_goals=has_active_goals,
-                    has_unresolved_concerns=has_unresolved_concerns,
-                )
-                if selected_mode == ThinkingMode.CONSOLIDATE:
-                    logger.warning("heartbeat.selector_returned_consolidate_ignored")
-                    return ThinkingMode.REFLECT
-                return selected_mode
-            except Exception as e:
-                logger.warning("heartbeat.mode_selection_failed", error=str(e))
+            if selected_mode == ThinkingMode.CONSOLIDATE:
+                logger.warning("heartbeat.selector_returned_consolidate_ignored")
+                return ThinkingMode.REFLECT
+            return selected_mode
+        except Exception as e:
+            logger.warning("heartbeat.mode_selection_failed", error=str(e))
 
         # Fallback path when inner-life selector isn't available.
         arousal = state["arousal"]
@@ -351,35 +387,24 @@ class Heartbeat:
             + "\n"
             + self._agent.goal_system.get_goals_summary()
         )
-        # Gather optional cognitive context — each getter is safe if the
-        # subsystem isn't present (getattr returns None, empty string on fail).
+        # Gather cognitive context from always-present subsystems.
         ethical_ctx = ""
-        _get_ethical = getattr(getattr(self._agent, "ethics", None), "get_ethical_context", None)
-        if callable(_get_ethical):
-            try:
-                ethical_ctx = _get_ethical()
-            except Exception:
-                pass
+        try:
+            ethical_ctx = self._agent.ethics.get_ethical_context()
+        except Exception:
+            pass
 
         meta_ctx = ""
-        _get_meta = getattr(
-            getattr(self._agent, "metacognition", None),
-            "get_metacognitive_context",
-            None,
-        )
-        if callable(_get_meta):
-            try:
-                meta_ctx = _get_meta()
-            except Exception:
-                pass
+        try:
+            meta_ctx = self._agent.metacognition.get_metacognitive_context()
+        except Exception:
+            pass
 
         sensory_ctx = ""
-        _get_sensory = getattr(getattr(self._agent, "sensory", None), "get_sensory_snapshot", None)
-        if callable(_get_sensory):
-            try:
-                sensory_ctx = _get_sensory()
-            except Exception:
-                pass
+        try:
+            sensory_ctx = self._agent.sensory.get_sensory_snapshot()
+        except Exception:
+            pass
 
         thought = await self._agent.inner_life.autonomous_thought(
             mode=mode,
@@ -398,6 +423,19 @@ class Heartbeat:
                 "first_autonomous_thought",
                 "Generated an autonomous thought during heartbeat.",
             )
+            # Lightweight ethical screening of autonomous thoughts (WANDER/PLAN).
+            # Doesn't block or modify — just logs if ethical dimensions are detected.
+            if mode in (ThinkingMode.WANDER, ThinkingMode.PLAN):
+                try:
+                    dims = self._agent.ethics.detect_ethical_dimensions(thought)
+                    if dims:
+                        logger.info(
+                            "heartbeat.ethical_dimensions_in_thought",
+                            mode=mode.value,
+                            dimensions=[d.value for d in dims],
+                        )
+                except Exception:
+                    pass
         return thought
 
     async def _integrate(self, mode: ThinkingMode, thought: Optional[str]) -> None:
@@ -434,9 +472,7 @@ class Heartbeat:
             return
 
         # Let Gwenn evolve capabilities during autonomous cognition.
-        develop_skill = getattr(self._agent, "maybe_develop_skill_autonomously", None)
-        if callable(develop_skill):
-            await develop_skill(thought, mode)
+        await self._agent.maybe_develop_skill_autonomously(thought, mode)
 
         # Appraise the thought itself
         if mode == ThinkingMode.REFLECT:
@@ -466,6 +502,17 @@ class Heartbeat:
                 stimulus_type=StimulusType.SELF_REFLECTION,
                 intensity=0.2,
             )
+            # Heuristically resolve metacognitive concerns that the worry thought addressed.
+            if thought:
+                thought_lower = thought.lower()
+                concern_keywords = ["honesty", "calibrat", "trust", "error", "mistake",
+                                    "uncertain", "confiden", "growth", "aware"]
+                for keyword in concern_keywords:
+                    if keyword in thought_lower:
+                        try:
+                            self._agent.metacognition.resolve_concern(keyword)
+                        except Exception:
+                            pass
         else:
             event = AppraisalEvent(
                 stimulus_type=StimulusType.SELF_REFLECTION,
@@ -500,11 +547,7 @@ class Heartbeat:
             )
             self._agent.episodic_memory.encode(episode)
             # Persist immediately so autonomous cognition isn't lost on crashes.
-            persist_episode = getattr(self._agent, "_persist_episode", None)
-            if callable(persist_episode):
-                persist_episode(episode)
-            else:
-                self._agent.memory_store.save_episode(episode)
+            self._agent._persist_episode(episode)
 
             # Share significant thoughts with channel owners when proactive
             # messaging is enabled.  Only broadcast thoughts that are
@@ -514,12 +557,10 @@ class Heartbeat:
                 and len(thought) > 120
                 and episode.importance >= 0.45
             ):
-                broadcast = getattr(self._agent, "broadcast_to_channels", None)
-                if callable(broadcast):
-                    try:
-                        await broadcast(thought)
-                    except Exception:
-                        logger.debug("heartbeat.broadcast_failed", exc_info=True)
+                try:
+                    await self._agent.broadcast_to_channels(thought)
+                except Exception:
+                    logger.debug("heartbeat.broadcast_failed", exc_info=True)
 
         # Periodically run a full metacognitive audit via the cognitive engine.
         # This uses generate_audit_prompt to produce a rich self-audit rather than
@@ -531,20 +572,17 @@ class Heartbeat:
                 await self._run_full_metacognitive_audit(thought)
 
         # Process any pending inter-agent messages that arrived in the inbox.
-        bridge = getattr(self._agent, "interagent", None)
-        get_pending = getattr(bridge, "get_pending_messages", None) if bridge else None
-        if callable(get_pending):
-            try:
-                pending = get_pending()
-                for msg in pending:
-                    self._agent.process_appraisal(
-                        AppraisalEvent(
-                            stimulus_type=StimulusType.SOCIAL_CONNECTION,
-                            intensity=min(1.0, msg.importance),
-                        )
+        try:
+            pending = self._agent.interagent.get_pending_messages()
+            for msg in pending:
+                self._agent.process_appraisal(
+                    AppraisalEvent(
+                        stimulus_type=StimulusType.SOCIAL_CONNECTION,
+                        intensity=min(1.0, msg.importance),
                     )
-            except Exception as e:
-                logger.debug("heartbeat.interagent_inbox_failed", error=str(e))
+                )
+        except Exception as e:
+            logger.debug("heartbeat.interagent_inbox_failed", error=str(e))
 
     def _schedule(self, state: dict[str, Any]) -> None:
         """
@@ -587,20 +625,14 @@ class Heartbeat:
         this produces a structured prompt and sends it to the engine for deep
         self-examination.  Runs infrequently to avoid excessive API cost.
         """
-        meta = getattr(self._agent, "metacognition", None)
-        engine = getattr(self._agent, "engine", None)
-        if meta is None or engine is None:
-            return
-
-        gen_prompt = getattr(meta, "generate_audit_prompt", None)
-        if not callable(gen_prompt):
-            return
+        meta = self._agent.metacognition
+        engine = self._agent.engine
 
         try:
             from gwenn.genesis import generate_genesis_prompt
             from gwenn.cognition.metacognition import HonestyAuditResult
 
-            audit_prompt = gen_prompt(recent_output)
+            audit_prompt = meta.generate_audit_prompt(recent_output)
             system_prompt = (
                 f"{generate_genesis_prompt()}\n\n"
                 "You are performing a metacognitive honesty audit on your own output.\n"
@@ -631,16 +663,14 @@ class Heartbeat:
                     if suggestion_text and suggestion_text.lower() != "none":
                         suggestions.append(suggestion_text)
 
-            record_audit = getattr(meta, "record_audit_result", None)
-            if callable(record_audit):
-                record_audit(
-                    HonestyAuditResult(
-                        content_summary=recent_output[:200],
-                        is_honest=is_honest,
-                        concerns=concerns,
-                        suggestions=suggestions,
-                    )
+            meta.record_audit_result(
+                HonestyAuditResult(
+                    content_summary=recent_output[:200],
+                    is_honest=is_honest,
+                    concerns=concerns,
+                    suggestions=suggestions,
                 )
+            )
 
             logger.info(
                 "heartbeat.full_audit_complete",
@@ -667,6 +697,7 @@ class Heartbeat:
             "beats_since_consolidation": self._beats_since_consolidation,
             "consecutive_failures": self._consecutive_failures,
             "circuit_open": circuit_recovery_in > 0.0,
+            "circuit_open_count": self._circuit_open_count,
             "circuit_recovery_in": round(circuit_recovery_in, 1),
             "last_error": self._last_error,
         }

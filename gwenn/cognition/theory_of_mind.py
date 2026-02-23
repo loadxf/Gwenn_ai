@@ -136,10 +136,10 @@ class UserModel:
                 source=source or "observed",
             )
 
-    _MAX_TOPICS = 50
+    _MAX_TOPICS: int = 50
 
     # Beliefs not confirmed within this many days start losing confidence.
-    _BELIEF_STALENESS_DAYS = 30.0
+    _BELIEF_STALENESS_DAYS: float = 30.0
     # Maximum confidence drop per decay pass (prevents catastrophic loss).
     _BELIEF_MAX_DECAY = 0.15
 
@@ -200,7 +200,15 @@ class TheoryOfMind:
     - Communication adaptation recommendations
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        belief_staleness_days: float = 30.0,
+        max_topics_per_user: int = 50,
+        max_user_models: int = 500,
+    ):
+        self._belief_staleness_days = max(1.0, float(belief_staleness_days))
+        self._max_topics_per_user = max(1, int(max_topics_per_user))
+        self._max_user_models = max(1, int(max_user_models))
         self._user_models: dict[str, UserModel] = {}
         self._current_user_id: Optional[str] = None
 
@@ -209,7 +217,10 @@ class TheoryOfMind:
     def get_or_create_user(self, user_id: str) -> UserModel:
         """Get existing user model or create a new one."""
         if user_id not in self._user_models:
-            self._user_models[user_id] = UserModel(user_id=user_id)
+            model = UserModel(user_id=user_id)
+            model._BELIEF_STALENESS_DAYS = self._belief_staleness_days
+            model._MAX_TOPICS = self._max_topics_per_user
+            self._user_models[user_id] = model
             logger.info("theory_of_mind.new_user", user_id=user_id)
         return self._user_models[user_id]
 
@@ -218,6 +229,18 @@ class TheoryOfMind:
         self._current_user_id = user_id
         user = self.get_or_create_user(user_id)
         user.record_interaction()
+
+        # LRU eviction: keep at most _MAX_USER_MODELS entries.
+        if len(self._user_models) > self._max_user_models:
+            sorted_ids = sorted(
+                self._user_models,
+                key=lambda uid: self._user_models[uid].last_interaction,
+            )
+            to_evict = len(sorted_ids) - self._max_user_models
+            for uid in sorted_ids[:to_evict]:
+                if uid != user_id:
+                    del self._user_models[uid]
+
         return user
 
     @property
@@ -390,7 +413,7 @@ class TheoryOfMind:
                 "first_interaction": model.first_interaction,
                 "last_interaction": model.last_interaction,
                 "rapport_level": model.rapport_level,
-                "topics_discussed": list(model.topics_discussed[-50:]),
+                "topics_discussed": list(model.topics_discussed[-model._MAX_TOPICS:]),
             }
         return {
             "current_user_id": self._current_user_id,
@@ -422,6 +445,8 @@ class TheoryOfMind:
                 continue
 
             model = UserModel(user_id=user_id)
+            model._BELIEF_STALENESS_DAYS = self._belief_staleness_days
+            model._MAX_TOPICS = self._max_topics_per_user
             model.display_name = raw.get("display_name")
 
             raw_kb = raw.get("knowledge_beliefs", {})
@@ -463,7 +488,7 @@ class TheoryOfMind:
 
             raw_topics = raw.get("topics_discussed", [])
             if isinstance(raw_topics, list):
-                model.topics_discussed = [str(t) for t in raw_topics if isinstance(t, str)][-50:]
+                model.topics_discussed = [str(t) for t in raw_topics if isinstance(t, str)][-self._max_topics_per_user:]
 
             self._user_models[user_id] = model
 

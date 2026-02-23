@@ -27,6 +27,8 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+DEFAULT_DECAY_RATE = 0.02
+
 
 @dataclass
 class WorkingMemoryItem:
@@ -70,7 +72,7 @@ class WorkingMemoryItem:
         self.salience = min(1.0, self.salience + salience_boost)
         self.access_count += 1
 
-    def decay(self, rate: float = 0.02) -> None:
+    def decay(self, rate: float = DEFAULT_DECAY_RATE) -> None:
         """Apply temporal decay to salience. Items fade if not refreshed."""
         elapsed = time.time() - self.last_refreshed
         decay_amount = rate * (elapsed / 60.0)  # Decay per minute
@@ -166,7 +168,7 @@ class WorkingMemory:
         )
         return None
 
-    def decay_all(self, rate: float = 0.02) -> list[WorkingMemoryItem]:
+    def decay_all(self, rate: float = DEFAULT_DECAY_RATE) -> list[WorkingMemoryItem]:
         """
         Apply salience decay to all items. Remove items that decay to zero.
         Returns list of items that were removed due to decay.
@@ -196,8 +198,11 @@ class WorkingMemory:
         return item
 
     def clear(self) -> list[WorkingMemoryItem]:
-        """Clear all items, returning them for optional episodic capture."""
+        """Clear all items, firing eviction callback for episodic capture."""
         evicted = list(self._items.values())
+        for item in evicted:
+            if self._eviction_callback:
+                self._eviction_callback(item)
         self._items.clear()
         return evicted
 
@@ -262,8 +267,10 @@ class WorkingMemory:
                     "category": item.category,
                     "salience": item.salience,
                     "entered_at": item.entered_at,
+                    "last_refreshed": item.last_refreshed,
                     "emotional_valence": item.emotional_valence,
                     "access_count": item.access_count,
+                    "metadata": item.metadata,
                 }
                 for item in self._items.values()
             ],

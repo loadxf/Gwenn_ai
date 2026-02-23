@@ -25,13 +25,16 @@ from __future__ import annotations
 import secrets
 import time
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import anthropic
 import structlog
 
 from gwenn.affect.state import AffectiveState, EmotionLabel
 from gwenn.genesis import generate_genesis_prompt
+
+if TYPE_CHECKING:
+    from gwenn.api.claude import CognitiveEngine
 
 logger = structlog.get_logger(__name__)
 
@@ -125,7 +128,13 @@ class InnerLife:
     InnerLife just decides WHAT to think about.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        variety_pressure_seconds: float = 300.0,
+        variety_boost_max: float = 2.0,
+    ):
+        self._variety_pressure_seconds = max(1.0, float(variety_pressure_seconds))
+        self._variety_boost_max = max(1.0, float(variety_boost_max))
         # Track when each mode was last used to ensure variety
         self._mode_last_used: dict[ThinkingMode, float] = {
             mode: 0.0 for mode in ThinkingMode
@@ -172,11 +181,12 @@ class InnerLife:
             weights[ThinkingMode.WORRY] *= 1.3
 
         # Variety pressure: boost modes that haven't been used recently
+        vp = self._variety_pressure_seconds
+        vmax = self._variety_boost_max
         for mode in AUTONOMOUS_THINKING_MODES:
             time_since = now - self._mode_last_used[mode]
-            # Modes unused for >5 minutes get a boost
-            if time_since > 300:
-                variety_boost = min(2.0, 1.0 + time_since / 600)
+            if time_since > vp:
+                variety_boost = min(vmax, 1.0 + time_since / (vp * 2))
                 weights[mode] *= variety_boost
 
         # Normalize weights to probabilities
@@ -222,7 +232,7 @@ class InnerLife:
         mode: ThinkingMode,
         state_snapshot: dict[str, Any],
         affect: AffectiveState,
-        engine: Any,
+        engine: CognitiveEngine,
         goal_context: str = "",
         ethical_context: str = "",
         metacognitive_context: str = "",

@@ -181,7 +181,17 @@ class BaseChannel(ABC):
         if last is not None and (now - last) < self._rate_limit_interval:
             return False
         self._user_last_message[raw_user_id] = now
+        self._evict_stale_rate_entries(now)
         return True
+
+    def _evict_stale_rate_entries(self, now: float) -> None:
+        """Remove rate-limit entries older than the interval to prevent unbounded growth."""
+        if len(self._user_last_message) <= self._user_lock_cache_size:
+            return
+        cutoff = now - self._rate_limit_interval * 10
+        stale = [uid for uid, ts in self._user_last_message.items() if ts < cutoff]
+        for uid in stale:
+            del self._user_last_message[uid]
 
     def _get_user_lock(self, raw_user_id: str) -> asyncio.Lock:
         """Return (or create) the per-user asyncio lock and refresh its LRU timestamp."""

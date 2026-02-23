@@ -47,6 +47,18 @@ def _make_agent():
     )
 
 
+def _make_sensory_stub():
+    return SimpleNamespace(
+        ground_temporal=lambda event_description="": None,
+        ground_environmental=lambda key, value, description: None,
+        get_sensory_snapshot=lambda: "",
+    )
+
+
+async def _noop_async(*args, **kwargs):
+    pass
+
+
 def _make_agent_for_full_beat():
     affect = SimpleNamespace(
         dimensions=SimpleNamespace(arousal=0.2, valence=0.0),
@@ -60,12 +72,17 @@ def _make_agent_for_full_beat():
         identity=_IdentityStub(),
         working_memory=SimpleNamespace(load_factor=0.0),
         goal_system=_make_goal_system_stub(),
+        sensory=_make_sensory_stub(),
         resilience=SimpleNamespace(status="ok"),
         consolidator=SimpleNamespace(should_consolidate=lambda: False),
         decay_working_memory=lambda: None,
         process_appraisal=lambda event: None,
         episodic_memory=SimpleNamespace(encode=lambda ep: None),
         memory_store=SimpleNamespace(save_episode=lambda ep: None),
+        maybe_develop_skill_autonomously=_noop_async,
+        metacognition=SimpleNamespace(resolve_concern=lambda s: False),
+        ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
+        interagent=SimpleNamespace(get_pending_messages=lambda: []),
     )
 
 
@@ -141,13 +158,23 @@ async def test_integrate_persists_autonomous_thought_episode():
     affect_state = SimpleNamespace(
         dimensions=SimpleNamespace(valence=0.1, arousal=0.4),
     )
+    async def _noop_develop(thought, mode):
+        pass
+
+    memory_store = SimpleNamespace(save_episode=lambda ep: saved.append(ep))
     agent = SimpleNamespace(
         affect_state=affect_state,
         episodic_memory=SimpleNamespace(encode=lambda ep: encoded.append(ep)),
-        memory_store=SimpleNamespace(save_episode=lambda ep: saved.append(ep)),
+        memory_store=memory_store,
+        _persist_episode=lambda ep: memory_store.save_episode(ep),
         process_appraisal=lambda event: appraisals.append(event),
         decay_working_memory=lambda: decayed.__setitem__("called", True),
         goal_system=_make_goal_system_stub(),
+        sensory=_make_sensory_stub(),
+        maybe_develop_skill_autonomously=_noop_develop,
+        metacognition=SimpleNamespace(resolve_concern=lambda s: False),
+        ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
+        interagent=SimpleNamespace(get_pending_messages=lambda: []),
     )
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 
@@ -174,10 +201,15 @@ async def test_integrate_calls_autonomous_skill_development_hook():
         affect_state=affect_state,
         episodic_memory=SimpleNamespace(encode=lambda ep: None),
         memory_store=SimpleNamespace(save_episode=lambda ep: None),
+        _persist_episode=lambda ep: None,
         process_appraisal=lambda event: None,
         decay_working_memory=lambda: None,
         maybe_develop_skill_autonomously=_develop,
         goal_system=_make_goal_system_stub(),
+        sensory=_make_sensory_stub(),
+        metacognition=SimpleNamespace(resolve_concern=lambda s: False),
+        ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
+        interagent=SimpleNamespace(get_pending_messages=lambda: []),
     )
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 
@@ -222,7 +254,12 @@ async def test_consolidation_mode_does_not_stick_when_no_work():
         affect_state=affect,
         identity=_IdentityStub(),
         working_memory=SimpleNamespace(load_factor=0.0),
-        goal_system=SimpleNamespace(get_goals_summary=lambda: ""),
+        goal_system=SimpleNamespace(
+            get_goals_summary=lambda: "",
+            update=lambda: None,
+            get_highest_priority_goal=lambda: None,
+        ),
+        sensory=_make_sensory_stub(),
         resilience=SimpleNamespace(status="ok"),
         consolidator=consolidator,
         decay_working_memory=lambda: None,
@@ -272,6 +309,7 @@ def test_orient_uses_inner_life_selector_and_updates_goals():
             get_goals_summary=lambda: "",
             get_highest_priority_goal=lambda: object(),
         ),
+        sensory=_make_sensory_stub(),
         resilience=SimpleNamespace(status={"breaker_active": True}),
         consolidator=SimpleNamespace(should_consolidate=lambda: False),
         decay_working_memory=lambda: None,
@@ -312,6 +350,7 @@ def test_orient_ignores_selector_consolidate_when_not_due():
             get_goals_summary=lambda: "",
             get_highest_priority_goal=lambda: None,
         ),
+        sensory=_make_sensory_stub(),
         resilience=SimpleNamespace(status={"breaker_active": False}),
         consolidator=SimpleNamespace(should_consolidate=lambda: False),
         decay_working_memory=lambda: None,
@@ -341,9 +380,7 @@ def test_sense_uses_monotonic_for_idle_duration(monkeypatch):
 def test_sense_triggers_temporal_grounding_when_available():
     calls: list[str] = []
     agent = _make_agent_for_full_beat()
-    agent.sensory = SimpleNamespace(
-        ground_temporal=lambda event_description: calls.append(event_description),
-    )
+    agent.sensory.ground_temporal = lambda event_description="": calls.append(event_description)
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 
     heartbeat._sense()

@@ -31,16 +31,9 @@ from typing import Any, Callable, Optional
 
 import structlog
 
+from gwenn.memory._utils import clamp01 as _clamp01
+
 logger = structlog.get_logger(__name__)
-
-
-def _clamp01(value: float, default: float = 0.5) -> float:
-    """Clamp potentially noisy model-provided scores into [0, 1]."""
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return default
-    return max(0.0, min(1.0, numeric))
 
 
 @dataclass
@@ -52,7 +45,7 @@ class KnowledgeNode:
     appears in many episodic memories with consistent content becomes high-confidence
     knowledge. A node from a single episode remains tentative.
     """
-    node_id: str = field(default_factory=lambda: str(uuid.uuid4())[:12])
+    node_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     label: str = ""                     # Human-readable label ("user_alice", "python", etc.)
     category: str = "concept"           # "person", "concept", "fact", "preference", "self"
     content: str = ""                   # The actual knowledge content
@@ -122,6 +115,7 @@ class SemanticMemory:
     ):
         self._nodes: dict[str, KnowledgeNode] = {}
         self._edges: list[KnowledgeEdge] = []
+        self._edge_ids: set[str] = set()  # Dedup index keyed by edge_id
         self._label_index: dict[str, str] = {}  # label -> node_id for fast lookup
         self._retrieval_mode = retrieval_mode.strip().lower()
         self._embedding_top_k = max(1, int(embedding_top_k))
@@ -144,6 +138,17 @@ class SemanticMemory:
             self._retrieval_mode = "keyword"
 
         logger.info("semantic_memory.initialized", retrieval_mode=self._retrieval_mode)
+
+    def clear(self) -> None:
+        """Remove all in-memory nodes, edges, and indexes.
+
+        Used during re-initialization to reload from persisted state.
+        """
+        self._nodes.clear()
+        self._edges.clear()
+        self._edge_ids.clear()
+        self._label_index.clear()
+        logger.info("semantic_memory.cleared")
 
     def set_vector_search(
         self,
@@ -239,7 +244,21 @@ class SemanticMemory:
             strength=strength,
             context=context,
         )
+
+        if edge.edge_id in self._edge_ids:
+            # Update existing edge strength instead of duplicating
+            for existing in self._edges:
+                if existing.edge_id == edge.edge_id:
+                    existing.strength = max(existing.strength, strength)
+                    if context:
+                        existing.context = context
+                    logger.debug(
+                        "semantic_memory.relationship_reinforced",
+                        edge_id=edge.edge_id,
+                    )
+                    return existing
         self._edges.append(edge)
+        self._edge_ids.add(edge.edge_id)
 
         logger.debug(
             "semantic_memory.relationship_added",
@@ -362,18 +381,31 @@ class SemanticMemory:
             return top
         return [node for node, _ in top]
 
-    def get_relationships(self, label: str) -> list[tuple[KnowledgeEdge, KnowledgeNode]]:
-        """Get all relationships from a given node, with their target nodes."""
+    def get_relationships(
+        self,
+        label: str,
+        direction: str = "outgoing",
+    ) -> list[tuple[KnowledgeEdge, KnowledgeNode]]:
+        """Get relationships for a node.
+
+        Args:
+            label: The node label to look up.
+            direction: ``"outgoing"`` (default), ``"incoming"``, or ``"both"``.
+        """
         node_id = self._label_index.get(label.lower())
         if not node_id:
             return []
 
         results = []
         for edge in self._edges:
-            if edge.source_id == node_id:
+            if direction in ("outgoing", "both") and edge.source_id == node_id:
                 target = self._nodes.get(edge.target_id)
                 if target:
                     results.append((edge, target))
+            if direction in ("incoming", "both") and edge.target_id == node_id:
+                source = self._nodes.get(edge.source_id)
+                if source:
+                    results.append((edge, source))
         return results
 
     def get_context_for(self, topic: str, max_items: int = 5) -> str:
@@ -458,12 +490,6 @@ class SemanticMemory:
             episode = None
             if has_get_episode:
                 episode = episodic_memory.get_episode(ep_id)
-            else:
-                episodes = [
-                    e for e in getattr(episodic_memory, "_episodes", [])
-                    if getattr(e, "episode_id", None) == ep_id
-                ]
-                episode = episodes[0] if episodes else None
 
             if episode is None:
                 missing.append(ep_id)

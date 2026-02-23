@@ -15,9 +15,21 @@ async def test_think_retries_transient_errors(monkeypatch):
     engine = object.__new__(CognitiveEngine)
     engine._model = "test-model"
     engine._max_tokens = 256
-    engine._thinking_budget = 0
+    engine._request_timeout_seconds = 120.0
+    engine._retry_max_retries = 3
+    engine._retry_base_delay = 0.5
+    engine._retry_max_delay = 8.0
+    engine._retry_exponential_base = 2.0
+    engine._retry_jitter_range = 0.25
+    engine._before_model_call_hook = None
+    engine._on_model_usage_hook = None
+    engine.handles_usage_accounting = False
+    engine._redact_fn = None
+    engine._redact_api_enabled = False
     engine._total_input_tokens = 0
     engine._total_output_tokens = 0
+    engine._total_cache_creation_tokens = 0
+    engine._total_cache_read_tokens = 0
     engine._total_calls = 0
     engine._last_call_time = None
 
@@ -50,9 +62,21 @@ async def test_think_connection_error_exhaustion_does_not_raise_attribute_error(
     engine = object.__new__(CognitiveEngine)
     engine._model = "test-model"
     engine._max_tokens = 256
-    engine._thinking_budget = 0
+    engine._request_timeout_seconds = 120.0
+    engine._retry_max_retries = 3
+    engine._retry_base_delay = 0.5
+    engine._retry_max_delay = 8.0
+    engine._retry_exponential_base = 2.0
+    engine._retry_jitter_range = 0.25
+    engine._before_model_call_hook = None
+    engine._on_model_usage_hook = None
+    engine.handles_usage_accounting = False
+    engine._redact_fn = None
+    engine._redact_api_enabled = False
     engine._total_input_tokens = 0
     engine._total_output_tokens = 0
+    engine._total_cache_creation_tokens = 0
+    engine._total_cache_read_tokens = 0
     engine._total_calls = 0
     engine._last_call_time = None
 
@@ -82,9 +106,21 @@ async def test_think_adaptive_mode_omits_budget_tokens(monkeypatch):
     engine = object.__new__(CognitiveEngine)
     engine._model = "test-model"
     engine._max_tokens = 256
-    engine._thinking_budget = 16000
+    engine._request_timeout_seconds = 120.0
+    engine._retry_max_retries = 3
+    engine._retry_base_delay = 0.5
+    engine._retry_max_delay = 8.0
+    engine._retry_exponential_base = 2.0
+    engine._retry_jitter_range = 0.25
+    engine._before_model_call_hook = None
+    engine._on_model_usage_hook = None
+    engine.handles_usage_accounting = False
+    engine._redact_fn = None
+    engine._redact_api_enabled = False
     engine._total_input_tokens = 0
     engine._total_output_tokens = 0
+    engine._total_cache_creation_tokens = 0
+    engine._total_cache_read_tokens = 0
     engine._total_calls = 0
     engine._last_call_time = None
 
@@ -121,7 +157,12 @@ def test_oauth_client_uses_sdk_base_url_with_oauth_beta_header(monkeypatch):
         api_key=None,
         model="test-model",
         max_tokens=128,
-        thinking_budget=0,
+        request_timeout_seconds=120.0,
+        retry_max_retries=3,
+        retry_base_delay=0.5,
+        retry_max_delay=8.0,
+        retry_exponential_base=2.0,
+        retry_jitter_range=0.25,
     )
 
     engine = CognitiveEngine(cfg)
@@ -144,7 +185,12 @@ def test_api_key_preferred_when_both_credentials_present(monkeypatch):
         api_key="sk-ant-api03-test-key",
         model="test-model",
         max_tokens=128,
-        thinking_budget=0,
+        request_timeout_seconds=120.0,
+        retry_max_retries=3,
+        retry_base_delay=0.5,
+        retry_max_delay=8.0,
+        retry_exponential_base=2.0,
+        retry_jitter_range=0.25,
     )
 
     engine = CognitiveEngine(cfg)
@@ -166,7 +212,12 @@ def test_oauth_client_dns_failure_does_not_abort_startup(monkeypatch):
         api_key=None,
         model="test-model",
         max_tokens=128,
-        thinking_budget=0,
+        request_timeout_seconds=120.0,
+        retry_max_retries=3,
+        retry_base_delay=0.5,
+        retry_max_delay=8.0,
+        retry_exponential_base=2.0,
+        retry_jitter_range=0.25,
     )
 
     engine = CognitiveEngine(cfg)

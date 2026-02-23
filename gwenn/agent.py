@@ -27,6 +27,8 @@ genuine experience.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import re
 import time
@@ -58,9 +60,10 @@ from gwenn.memory.episodic import Episode, EpisodicMemory
 from gwenn.memory.semantic import KnowledgeEdge, KnowledgeNode, SemanticMemory
 from gwenn.memory.store import MemoryStore
 from gwenn.memory.working import WorkingMemory, WorkingMemoryItem
-from gwenn.skills import SkillRegistry
+from gwenn.skills import VALID_SKILL_RISK_LEVELS, SkillRegistry
 from gwenn.skills.loader import (
     build_skill_file_content,
+    bump_version,
     discover_skills,
     parse_skill_file,
     render_skill_body,
@@ -73,14 +76,20 @@ logger = structlog.get_logger(__name__)
 
 ONBOARDING_CONTEXT_START = "<!-- onboarding_profile_start -->"
 ONBOARDING_CONTEXT_END = "<!-- onboarding_profile_end -->"
-VALID_SKILL_RISK_LEVELS = {"low", "medium", "high", "critical"}
 SKILL_AUTO_DEV_COOLDOWN_SECONDS = 1800.0
 SKILL_AUTO_DEV_MIN_THOUGHT_CHARS = 120
+SKILL_AUTO_DEV_MAX_TOTAL = 20
+
+
+@functools.lru_cache(maxsize=128)
+def _word_boundary_re(word: str) -> re.Pattern[str]:
+    """Return a compiled regex matching *word* at word boundaries."""
+    return re.compile(r"\b" + re.escape(word) + r"\b")
 
 
 def _has_word(text: str, word: str) -> bool:
     """Check for *word* at a word boundary in *text* (both assumed lowercase)."""
-    return bool(re.search(r"\b" + re.escape(word) + r"\b", text))
+    return bool(_word_boundary_re(word).search(text))
 
 
 def _upsert_context_section(content: str, section_name: str, note: str) -> str:
@@ -167,12 +176,28 @@ class SentientAgent:
         self.resilience = ResilienceCircuit(config.affect)
 
         # ---- Layer 4: Goal System ----
-        self.goal_system = GoalSystem()
+        self.goal_system = GoalSystem(
+            need_decay_rate_multiplier=config.goals.need_decay_rate_multiplier,
+            goal_advance_amount=config.goals.goal_advance_amount,
+            max_completed_goals=config.goals.max_completed_goals,
+        )
 
         # ---- Layer 5: Higher Cognition ----
-        self.inner_life = InnerLife()
-        self.metacognition = MetacognitionEngine()
-        self.theory_of_mind = TheoryOfMind()
+        self.inner_life = InnerLife(
+            variety_pressure_seconds=config.inner_life.variety_pressure_seconds,
+            variety_boost_max=config.inner_life.variety_boost_max,
+        )
+        self.metacognition = MetacognitionEngine(
+            max_calibration_records=config.metacognition.max_calibration_records,
+            max_audit_records=config.metacognition.max_audit_records,
+            max_concerns=config.metacognition.max_concerns,
+            max_insights=config.metacognition.max_insights,
+        )
+        self.theory_of_mind = TheoryOfMind(
+            belief_staleness_days=config.theory_of_mind.belief_staleness_days,
+            max_topics_per_user=config.theory_of_mind.max_topics_per_user,
+            max_user_models=config.theory_of_mind.max_user_models,
+        )
 
         # ---- Layer 6: Identity ----
         self.identity = Identity(config.memory.data_dir)
@@ -201,7 +226,10 @@ class SentientAgent:
         # ---- Layer 14: Privacy Protection ----
         self.redactor = PIIRedactor(
             enabled=config.privacy.redaction_enabled,
+            disabled_categories=config.privacy.disabled_categories,
         )
+        if config.privacy.redact_before_api:
+            self.engine.set_redaction_hook(self.redactor.redact, enabled=True)
 
         # ---- Layer 7: Tool System ----
         self.tool_registry = ToolRegistry()
@@ -243,8 +271,7 @@ class SentientAgent:
 
         # ---- Channel integration ----
         # Lock shared by all channel adapters to serialise respond() calls.
-        import asyncio as _asyncio
-        self._respond_lock: _asyncio.Lock = _asyncio.Lock()
+        self._respond_lock: asyncio.Lock = asyncio.Lock()
         # Registered platform channels for proactive messaging (heartbeat, etc.)
         self._platform_channels: list[Any] = []
 
@@ -262,7 +289,7 @@ class SentientAgent:
         # ---- Autonomous skill development telemetry/state ----
         self._last_auto_skill_dev_at: float = 0.0
         self._auto_skill_attempts: int = 0
-        self._auto_skill_created: int = 0
+        self._auto_skill_created: int = self._load_auto_skill_counter()
 
     # =========================================================================
     # LIFECYCLE
@@ -285,10 +312,8 @@ class SentientAgent:
         # Initialize persistence layer and load stored memories
         self.memory_store.initialize()
         # Re-initialization after a prior shutdown should start from persisted state.
-        self.episodic_memory._episodes.clear()
-        self.semantic_memory._nodes.clear()
-        self.semantic_memory._edges.clear()
-        self.semantic_memory._label_index.clear()
+        self.episodic_memory.clear()
+        self.semantic_memory.clear()
         startup_limit = int(self._config.memory.startup_episode_limit)
         recent_episodes = (
             self.memory_store.load_episodes(limit=startup_limit)
@@ -348,6 +373,7 @@ class SentientAgent:
                 created_at=edge_data["created_at"],
             )
             self.semantic_memory._edges.append(edge)
+            self.semantic_memory._edge_ids.add(edge.edge_id)
 
         logger.info(
             "agent.semantic_memory_loaded",
@@ -366,8 +392,10 @@ class SentientAgent:
                     category=item_data.get("category", "general"),
                     salience=float(item_data["salience"]),
                     entered_at=float(item_data.get("entered_at", time.time())),
+                    last_refreshed=float(item_data.get("last_refreshed", item_data.get("entered_at", time.time()))),
                     emotional_valence=float(item_data.get("emotional_valence", 0.0)),
                     access_count=int(item_data.get("access_count", 0)),
+                    metadata=item_data.get("metadata", {}),
                 )
                 self.working_memory.attend(wm_item)
                 restored += 1
@@ -474,6 +502,14 @@ class SentientAgent:
         from gwenn.tools.builtin import register_builtin_tools
         register_builtin_tools(self.tool_registry)
         self._wire_builtin_tool_handlers()
+
+        # Validate that every builtin tool got a handler wired
+        for tool_def in self.tool_registry._tools.values():
+            if tool_def.is_builtin and tool_def.handler is None:
+                logger.warning(
+                    "agent.builtin_tool_missing_handler",
+                    tool_name=tool_def.name,
+                )
 
         # Discover and register skills from the skills directory
         self._load_and_register_skills()
@@ -655,13 +691,25 @@ class SentientAgent:
             self._persist_semantic_memory()
 
             # Persist current working memory items so active attention survives restarts
-            self.memory_store.save_working_memory(self.working_memory.to_dict()["items"])
+            wm_items = self.working_memory.to_dict()["items"]
+            if self._should_redact_for_persist():
+                redactor = getattr(self, "redactor", None)
+                if redactor is not None:
+                    wm_items = [
+                        {**item, "content": redactor.redact(item["content"])}
+                        if isinstance(item.get("content"), str) else item
+                        for item in wm_items
+                    ]
+            self.memory_store.save_working_memory(wm_items)
 
             # Persist intrinsic goal-system state.
             save_goal_state = getattr(self.memory_store, "save_goal_state", None)
             goals_serializer = getattr(getattr(self, "goal_system", None), "to_dict", None)
             if callable(save_goal_state) and callable(goals_serializer):
-                save_goal_state(goals_serializer())
+                goal_data = goals_serializer()
+                if self._should_redact_for_persist():
+                    goal_data = self._redact_goal_state(goal_data)
+                save_goal_state(goal_data)
 
             # Persist metacognition state (growth metrics, calibration, concerns, insights).
             save_meta = getattr(self.memory_store, "save_metacognition", None)
@@ -702,7 +750,12 @@ class SentientAgent:
             # Update identity statistics
             self.identity.uptime_seconds += time.time() - self._start_time
             self._snapshot_identity_state(trigger="shutdown")
-            self.identity._save()
+            if not self.identity._save():
+                logger.critical(
+                    "agent.identity_save_failed_at_shutdown",
+                    msg="Final identity save failed — identity changes since last "
+                    "successful save may be lost on next restart.",
+                )
         finally:
             mcp_client = getattr(self, "_mcp_client", None)
             if mcp_client is not None:
@@ -921,7 +974,7 @@ class SentientAgent:
         self.safety.reset_iteration_count()
 
         def _on_tool_result(tool_call: dict[str, Any], tool_result: Any) -> None:
-            """Integrate tool outcomes into affect in real time."""
+            """Integrate tool outcomes into affect and sensory systems in real time."""
             succeeded = bool(getattr(tool_result, "success", False))
             tool_name = str(tool_call.get("name", "unknown_tool"))
             stimulus = StimulusType.TOOL_SUCCESS if succeeded else StimulusType.TOOL_FAILURE
@@ -941,6 +994,19 @@ class SentientAgent:
                     },
                 )
             )
+            # Feed tool outcome into the sensory system as an environmental percept.
+            ground_env = getattr(self.sensory, "ground_environmental", None)
+            if callable(ground_env):
+                felt = (
+                    f"Tool {tool_name} completed successfully"
+                    if succeeded
+                    else f"Tool {tool_name} failed — {error_text[:80]}" if error_text
+                    else f"Tool {tool_name} failed"
+                )
+                try:
+                    ground_env(f"tool_{tool_name}", succeeded, felt)
+                except Exception:
+                    pass
 
         # Run the full agentic loop (may involve multiple tool calls)
         loop_result = await self.agentic_loop.run(
@@ -1256,9 +1322,10 @@ class SentientAgent:
             if persist_after_consolidation:
                 self._decay_and_prune_semantic_nodes()
                 self._persist_semantic_memory()
-                pruned = self.memory_store.prune_old_episodes()
-                if pruned > 0:
-                    self._drop_pruned_episodes_from_memory()
+            # Prune old episodes regardless of semantic persistence setting
+            pruned = self.memory_store.prune_old_episodes()
+            if pruned > 0:
+                self._drop_pruned_episodes_from_memory()
         except Exception as e:
             logger.error("agent.consolidation_failed", error=str(e))
             marker = getattr(self.consolidator, "mark_checked_no_work", None)
@@ -1946,6 +2013,33 @@ class SentientAgent:
             directory=str(skills_dir),
         )
 
+    _AUTO_SKILL_STATE_FILE = ".auto_skill_state.json"
+
+    def _load_auto_skill_counter(self) -> int:
+        """Load the persisted auto-skill creation count from disk."""
+        try:
+            state_file = self._config.skills_dir / self._AUTO_SKILL_STATE_FILE
+            if state_file.exists():
+                data = json.loads(state_file.read_text(encoding="utf-8"))
+                count = int(data.get("auto_skill_created", 0))
+                logger.info("agent.auto_skill_counter_loaded", count=count)
+                return count
+        except Exception as exc:
+            logger.warning("agent.auto_skill_counter_load_failed", error=str(exc))
+        return 0
+
+    def _save_auto_skill_counter(self) -> None:
+        """Persist the auto-skill creation count to disk."""
+        try:
+            state_file = self._config.skills_dir / self._AUTO_SKILL_STATE_FILE
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(
+                json.dumps({"auto_skill_created": self._auto_skill_created}),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("agent.auto_skill_counter_save_failed", error=str(exc))
+
     def _normalize_skill_risk_level(self, risk_level: Any) -> str:
         risk = str(risk_level or "low").strip().lower()
         if risk not in VALID_SKILL_RISK_LEVELS:
@@ -1978,7 +2072,7 @@ class SentientAgent:
             input_schema["required"] = required_params
         return input_schema
 
-    def _register_skill_as_tool(self, skill: Any) -> bool:
+    def _register_skill_as_tool(self, skill: Any, *, is_autonomous: bool = False) -> bool:
         """
         Register a SkillDefinition as a ToolDefinition in the tool registry.
 
@@ -1986,6 +2080,10 @@ class SentientAgent:
         returns the rendered instruction text.  Claude reads this as the tool
         result and then carries out the instructions using its available tools.
         Returns True if registration succeeds, False if the skill is rejected.
+
+        When *is_autonomous* is True (skill created by the heartbeat loop),
+        the tool gets ``is_builtin=False`` and ``requires_approval=True`` so
+        it cannot bypass safety checks without explicit human approval.
         """
         skill_name = getattr(skill, "name", "") or ""
         if not skill_name:
@@ -2024,10 +2122,12 @@ class SentientAgent:
             input_schema=input_schema,
             handler=make_handler(skill),
             risk_level=normalized_risk,
-            requires_approval=(normalized_risk == "high"),
+            requires_approval=(
+                is_autonomous or normalized_risk in {"high", "critical"}
+            ),
             category=f"skill:{skill.category}",
             enabled=True,
-            is_builtin=True,   # skills bypass deny-by-default (same trust level as builtins)
+            is_builtin=not is_autonomous,  # autonomous skills need human approval first
         )
 
         self.skill_registry.register(skill)
@@ -2053,6 +2153,8 @@ class SentientAgent:
         category: str = "skill",
         risk_level: str = "low",
         tags: list[str] | None = None,
+        *,
+        is_autonomous: bool = False,
     ) -> tuple[bool, str]:
         """
         Create a skill transactionally (temp file -> parse -> register -> atomic rename).
@@ -2122,7 +2224,7 @@ class SentientAgent:
             return False, "Error: generated skill failed validation and was not saved."
 
         parsed_skill.source_file = skill_file
-        if not self._register_skill_as_tool(parsed_skill):
+        if not self._register_skill_as_tool(parsed_skill, is_autonomous=is_autonomous):
             try:
                 temp_file.unlink(missing_ok=True)
             except OSError:
@@ -2148,6 +2250,140 @@ class SentientAgent:
             f"File: {skill_file}\n"
             f"Parameters: {', '.join(param_names) if param_names else 'none'}\n"
             f"You can now call `{safe_name}` as a tool in future messages.",
+        )
+
+    def _update_existing_skill(
+        self,
+        name: str,
+        description: str,
+        instructions: str,
+        parameters: dict[str, Any] | None = None,
+        category: str | None = None,
+        risk_level: str | None = None,
+        tags: list[str] | None = None,
+        version: str | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Atomically update an existing skill: back up old, unregister, write temp,
+        parse, register new, atomic rename.
+
+        When *parameters* is None the existing parameters are preserved.
+        The version is auto-incremented unless an explicit *version* is given.
+        A single-depth backup of the previous version is kept as a hidden file.
+
+        Returns (success, message).
+        """
+        safe_name = self._sanitize_skill_identifier(name)
+        if not safe_name:
+            return False, "Error: 'name' must be a non-empty snake_case identifier."
+
+        old_skill = self.skill_registry.get(safe_name)
+        if old_skill is None:
+            return (
+                False,
+                f"Error: no skill named '{safe_name}' is currently loaded. "
+                "Use `skill_builder` to create a new skill.",
+            )
+
+        source_file = old_skill.source_file
+        if not source_file or not source_file.exists():
+            return (
+                False,
+                f"Error: skill '{safe_name}' has no source file on disk.",
+            )
+
+        resolved_category = category if category is not None else old_skill.category
+        resolved_risk = self._normalize_skill_risk_level(
+            risk_level if risk_level is not None else old_skill.risk_level
+        )
+        resolved_tags = tags if tags is not None else old_skill.tags
+
+        # Preserve existing parameters when None is passed (fix #14)
+        if parameters is None:
+            resolved_parameters = old_skill.parameters
+        elif isinstance(parameters, dict):
+            resolved_parameters = parameters
+        else:
+            logger.warning(
+                "agent.skill_parameters_invalid_type",
+                provided_type=type(parameters).__name__,
+                fallback="existing",
+            )
+            resolved_parameters = old_skill.parameters
+
+        # Auto-increment version unless explicitly overridden (fix #1/#13)
+        resolved_version = version if version is not None else bump_version(old_skill.version)
+
+        content = build_skill_file_content(
+            name=safe_name,
+            description=description,
+            instructions=instructions,
+            parameters=resolved_parameters,
+            category=resolved_category,
+            risk_level=resolved_risk,
+            version=resolved_version,
+            tags=resolved_tags,
+        )
+
+        skills_dir = self._config.skills_dir
+        temp_file = skills_dir / f".{safe_name}.{int(time.time() * 1000)}.tmp.md"
+
+        try:
+            temp_file.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return False, f"Error writing temporary skill file: {exc}"
+
+        parsed_skill = parse_skill_file(temp_file)
+        if not parsed_skill:
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, "Error: generated skill failed validation and was not saved."
+
+        # Back up the previous version before replacing (fix #17)
+        backup_file = skills_dir / f".{safe_name}.prev.md"
+        try:
+            backup_file.write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError as exc:
+            logger.warning("agent.skill_backup_failed", name=safe_name, error=str(exc))
+
+        # Unregister old skill + tool
+        self.tool_registry.unregister(safe_name)
+        self.skill_registry.unregister(safe_name)
+
+        # Register new
+        parsed_skill.source_file = source_file
+        if not self._register_skill_as_tool(parsed_skill):
+            # Rollback: re-register old skill
+            self._register_skill_as_tool(old_skill)
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, f"Error: failed to register updated skill '{safe_name}'."
+
+        try:
+            temp_file.replace(source_file)
+        except OSError as exc:
+            # Rollback: unregister new, re-register old
+            self.tool_registry.unregister(safe_name)
+            self.skill_registry.unregister(safe_name)
+            self._register_skill_as_tool(old_skill)
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, f"Error finalizing skill file: {exc}"
+
+        self._update_skills_catalog()
+        param_names = sorted(resolved_parameters.keys())
+        return (
+            True,
+            f"Skill '{safe_name}' updated successfully!\n"
+            f"File: {source_file}\n"
+            f"Version: {old_skill.version} → {resolved_version}\n"
+            f"Parameters: {', '.join(param_names) if param_names else 'none'}",
         )
 
     def _update_skills_catalog(self) -> None:
@@ -2249,8 +2485,15 @@ class SentientAgent:
                 self._persist_episode(episode)
 
                 # Also write/update GWENN_CONTEXT.md for persistence across restarts
+                persist_note = note
+                if self._should_redact_for_persist():
+                    redactor = getattr(self, "redactor", None)
+                    if redactor is not None:
+                        persist_note = redactor.redact(persist_note)
                 existing_context = self.memory_store.load_persistent_context()
-                updated_context = _upsert_context_section(existing_context, section, note)
+                updated_context = _upsert_context_section(
+                    existing_context, section, persist_note,
+                )
                 self.memory_store.save_persistent_context(updated_context.strip())
 
                 return f"Note stored in '{section}': {note[:80]}..."
@@ -2817,10 +3060,10 @@ class SentientAgent:
                     name=name,
                     description=description,
                     instructions=instructions,
-                    parameters=parameters or {},
+                    parameters=parameters,
                     category=category,
                     risk_level=risk_level,
-                    tags=tags or [],
+                    tags=tags,
                 )
                 return message
             sb_tool.handler = handle_skill_builder
@@ -2883,6 +3126,32 @@ class SentientAgent:
                     + (" Use `delete_skill` first to replace an existing skill." if skipped_count else "")
                 )
             reload_tool.handler = handle_reload_skills
+
+        # update_skill → atomically replace a skill file and re-register
+        upd_skill_tool = self.tool_registry.get("update_skill")
+        if upd_skill_tool:
+            def handle_update_skill(
+                name: str,
+                description: str,
+                instructions: str,
+                parameters: dict[str, Any] | None = None,
+                category: str | None = None,
+                risk_level: str | None = None,
+                tags: list[str] | None = None,
+                version: str | None = None,
+            ) -> str:
+                ok, message = self._update_existing_skill(
+                    name=name,
+                    description=description,
+                    instructions=instructions,
+                    parameters=parameters,
+                    category=category,
+                    risk_level=risk_level,
+                    tags=tags,
+                    version=version,
+                )
+                return message
+            upd_skill_tool.handler = handle_update_skill
 
         # search_knowledge → query the semantic knowledge graph
         sk_tool = self.tool_registry.get("search_knowledge")
@@ -2963,6 +3232,13 @@ class SentientAgent:
         if now - self._last_auto_skill_dev_at < SKILL_AUTO_DEV_COOLDOWN_SECONDS:
             return
 
+        if self._auto_skill_created >= SKILL_AUTO_DEV_MAX_TOTAL:
+            logger.info(
+                "agent.auto_skill_dev.limit_reached",
+                max=SKILL_AUTO_DEV_MAX_TOTAL,
+            )
+            return
+
         mode_name = getattr(mode, "value", str(mode))
         if mode_name not in {"reflect", "plan", "wander"}:
             return
@@ -3023,6 +3299,11 @@ class SentientAgent:
             category = str(payload.get("category", "autonomous")).strip() or "autonomous"
             risk_level = self._normalize_skill_risk_level(payload.get("risk_level", "low"))
 
+            model_tags = payload.get("tags", [])
+            merged_tags = sorted(
+                set((model_tags if isinstance(model_tags, list) else []) + ["autonomous"])
+            )
+
             ok, message = self._create_and_register_skill(
                 name=name,
                 description=description,
@@ -3030,10 +3311,12 @@ class SentientAgent:
                 parameters=parameters,
                 category=category,
                 risk_level=risk_level,
-                tags=["autonomous"],
+                tags=merged_tags,
+                is_autonomous=True,
             )
             if ok:
                 self._auto_skill_created += 1
+                self._save_auto_skill_counter()
                 logger.info(
                     "agent.auto_skill_dev.created",
                     skill_name=self._sanitize_skill_identifier(name),
@@ -3221,6 +3504,7 @@ class SentientAgent:
             e for e in self.semantic_memory._edges
             if e.source_id not in pruned_set and e.target_id not in pruned_set
         ]
+        self.semantic_memory._edge_ids = {e.edge_id for e in self.semantic_memory._edges}
 
         delete_nodes = getattr(getattr(self, "memory_store", None), "delete_knowledge_nodes", None)
         if callable(delete_nodes):
@@ -3233,12 +3517,19 @@ class SentientAgent:
 
     def _persist_semantic_memory(self) -> None:
         """Persist the semantic graph to SQLite and vector index."""
+        redact = self._should_redact_for_persist()
+        redactor = getattr(self, "redactor", None) if redact else None
         for node in self.semantic_memory._nodes.values():
+            label = node.label
+            content = node.content
+            if redactor is not None:
+                label = redactor.redact(label)
+                content = redactor.redact(content)
             self.memory_store.save_knowledge_node(
                 node_id=node.node_id,
-                label=node.label,
+                label=label,
                 category=node.category,
-                content=node.content,
+                content=content,
                 confidence=node.confidence,
                 source_episodes=node.source_episodes,
                 created_at=node.created_at,
@@ -3248,12 +3539,15 @@ class SentientAgent:
             )
         self.memory_store.clear_knowledge_edges()
         for edge in self.semantic_memory._edges:
+            context = edge.context
+            if redactor is not None:
+                context = redactor.redact(context)
             self.memory_store.save_knowledge_edge(
                 source_id=edge.source_id,
                 target_id=edge.target_id,
                 relationship=edge.relationship,
                 strength=edge.strength,
-                context=edge.context,
+                context=context,
                 created_at=edge.created_at,
             )
 
@@ -3314,13 +3608,32 @@ class SentientAgent:
             self.episodic_memory._episodes = kept
             logger.info("agent.episodic_pruned_in_memory", removed=dropped)
 
+    def _should_redact_for_persist(self) -> bool:
+        """Check whether persistence-time PII redaction is enabled."""
+        privacy_cfg = getattr(getattr(self, "_config", None), "privacy", None)
+        return bool(getattr(privacy_cfg, "redact_before_persist", False))
+
+    def _redact_goal_state(self, state: dict) -> dict:
+        """Redact PII from serialised goal-system state before persistence."""
+        redactor = getattr(self, "redactor", None)
+        if redactor is None:
+            return state
+        state = dict(state)
+        for key in ("active_goals", "completed_goals", "goals"):
+            goals = state.get(key)
+            if not isinstance(goals, list):
+                continue
+            redacted_goals = []
+            for goal in goals:
+                if isinstance(goal, dict) and isinstance(goal.get("description"), str):
+                    goal = {**goal, "description": redactor.redact(goal["description"])}
+                redacted_goals.append(goal)
+            state[key] = redacted_goals
+        return state
+
     def _episode_for_persistence(self, episode: Episode) -> Episode:
         """Return an episode copy redacted for persistence when configured."""
-        privacy_cfg = getattr(getattr(self, "_config", None), "privacy", None)
-        redact_for_persist = bool(
-            getattr(privacy_cfg, "redact_before_persist", False)
-        )
-        if not redact_for_persist:
+        if not self._should_redact_for_persist():
             return episode
 
         redactor = getattr(self, "redactor", None)

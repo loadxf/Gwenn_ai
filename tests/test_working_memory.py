@@ -286,3 +286,84 @@ class TestContextGeneration:
         mid_pos = ctx.index("mid item")
         low_pos = ctx.index("low item")
         assert high_pos < mid_pos < low_pos
+
+
+# ---------------------------------------------------------------------------
+# to_dict / from_dict round-trip (P0-1 validation)
+# ---------------------------------------------------------------------------
+
+class TestToDictRoundTrip:
+    """to_dict must serialize metadata and last_refreshed."""
+
+    def test_to_dict_includes_metadata(self):
+        wm = WorkingMemory(max_slots=3)
+        item = WorkingMemoryItem(
+            item_id="meta-item",
+            content="has metadata",
+            salience=0.7,
+            metadata={"source": "test", "priority": 1},
+        )
+        wm.attend(item)
+        data = wm.to_dict()
+        serialized = data["items"][0]
+        assert serialized["metadata"] == {"source": "test", "priority": 1}
+
+    def test_to_dict_includes_last_refreshed(self):
+        wm = WorkingMemory(max_slots=3)
+        item = WorkingMemoryItem(item_id="ref-item", content="refreshed", salience=0.5)
+        expected_time = item.last_refreshed
+        wm.attend(item)
+        data = wm.to_dict()
+        assert data["items"][0]["last_refreshed"] == pytest.approx(expected_time, abs=1.0)
+
+    def test_to_dict_round_trip_preserves_all_fields(self):
+        wm = WorkingMemory(max_slots=3)
+        item = WorkingMemoryItem(
+            item_id="rt-item",
+            content="round trip",
+            category="task_state",
+            salience=0.8,
+            emotional_valence=0.3,
+            access_count=5,
+            metadata={"key": "value"},
+        )
+        wm.attend(item)
+        data = wm.to_dict()
+        serialized = data["items"][0]
+        assert serialized["item_id"] == "rt-item"
+        assert serialized["content"] == "round trip"
+        assert serialized["category"] == "task_state"
+        assert serialized["salience"] == pytest.approx(0.8)
+        assert serialized["emotional_valence"] == pytest.approx(0.3)
+        assert serialized["access_count"] == 5
+        assert serialized["metadata"] == {"key": "value"}
+        assert "last_refreshed" in serialized
+        assert "entered_at" in serialized
+
+
+# ---------------------------------------------------------------------------
+# clear() fires eviction callback (P0-2 validation)
+# ---------------------------------------------------------------------------
+
+class TestClearEvictionCallback:
+    """clear() must fire the eviction callback for each item."""
+
+    def test_clear_fires_eviction_callback(self):
+        captured = []
+        wm = WorkingMemory(max_slots=3)
+        wm.set_eviction_callback(lambda item: captured.append(item.item_id))
+
+        wm.attend(_item("a", salience=0.5))
+        wm.attend(_item("b", salience=0.6))
+        wm.attend(_item("c", salience=0.7))
+
+        evicted = wm.clear()
+        assert len(evicted) == 3
+        assert set(captured) == {"a", "b", "c"}
+
+    def test_clear_without_callback_still_returns_items(self):
+        wm = WorkingMemory(max_slots=2)
+        wm.attend(_item("x", salience=0.5))
+        evicted = wm.clear()
+        assert len(evicted) == 1
+        assert evicted[0].item_id == "x"

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import os
 import re
 import signal
@@ -66,13 +67,31 @@ except Exception:  # pragma: no cover
     _termios = None
 
 
+def _log_redact(text: str) -> str:
+    """PII redactor for log fields (always enabled).
+
+    Uses a module-level singleton created on first call.  The
+    ``functools.lru_cache`` wrapper makes the initialisation both lazy
+    **and** thread-safe — no global mutable state required.
+    """
+    return _get_log_redactor().redact(text)
+
+
+@functools.lru_cache(maxsize=1)
+def _get_log_redactor():  # noqa: ANN202
+    from gwenn.privacy.redaction import PIIRedactor
+
+    return PIIRedactor(enabled=True)
+
+
 def _redact_sensitive_fields(logger, method_name, event_dict):
     """
     Structlog processor that redacts sensitive fields from log output.
 
     Prevents user messages, episode content, and other personal data from
     appearing in plaintext in log files. Active in all log modes to ensure
-    privacy by default.
+    privacy by default. PII tokens are replaced before truncation so that
+    full patterns are never written to disk.
     """
     sensitive_keys = {"content", "user_message", "thought", "note", "query"}
     max_display_len = 80
@@ -80,27 +99,48 @@ def _redact_sensitive_fields(logger, method_name, event_dict):
     for key in sensitive_keys:
         if key in event_dict:
             val = event_dict[key]
-            if isinstance(val, str) and len(val) > max_display_len:
-                event_dict[key] = val[:max_display_len] + "... [truncated]"
+            if isinstance(val, str):
+                val = _log_redact(val)
+                if len(val) > max_display_len:
+                    val = val[:max_display_len] + "... [truncated]"
+                event_dict[key] = val
 
     return event_dict
 
 
-# Configure standard library logging so filter_by_level has a real Logger
-logging.basicConfig(format="%(message)s", level=logging.WARNING)
+_logging_configured = False
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_log_level,
-        _redact_sensitive_fields,
-        structlog.dev.ConsoleRenderer(colors=True),
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-)
+
+def configure_logging() -> None:
+    """Configure structlog and standard-library logging for Gwenn entry points.
+
+    Safe to call more than once — subsequent calls are no-ops.  Both
+    ``main()`` and ``run_daemon()`` should invoke this before creating
+    any loggers to ensure PII redaction and consistent formatting.
+    """
+    global _logging_configured  # noqa: PLW0603
+    if _logging_configured:
+        return
+    _logging_configured = True
+
+    logging.basicConfig(format="%(message)s", level=logging.WARNING)
+
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_log_level,
+            _redact_sensitive_fields,
+            structlog.dev.ConsoleRenderer(colors=True),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+    )
+
+
+# Eagerly configure when main.py is the entry point (python -m gwenn.main).
+# Other callers (daemon, tests) should call configure_logging() explicitly.
+configure_logging()
 
 logger = structlog.get_logger(__name__)
 console = Console()
@@ -108,6 +148,24 @@ console = Console()
 # ANSI control-sequence matcher used to sanitize any raw escape text that
 # still slips through on terminals without full line-edit support.
 _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
+
+
+def _is_nonfatal_channel_start_error(exc: Exception) -> bool:
+    """Return True for known channel startup errors we should render nicely."""
+    if isinstance(exc, ImportError):
+        return True
+    err_type = type(exc).__name__
+    err_mod = type(exc).__module__
+    if err_type == "InvalidToken" and err_mod.startswith("telegram"):
+        return True
+    if err_type == "LoginFailure" and err_mod.startswith("discord"):
+        return True
+    return False
+
+
+def _redact_channel_error(message: str) -> str:
+    return _TELEGRAM_BOT_TOKEN_RE.sub("[REDACTED_TELEGRAM_TOKEN]", message or "")
 _OUTPUT_STYLE_CHOICES = ("balanced", "brief", "detailed")
 _SLASH_COMMANDS = (
     "/help",
@@ -1341,7 +1399,32 @@ class GwennSession:
             )
             return
 
-        await run_channels_until_shutdown(agent, sessions, channels, self._shutdown_event)
+        try:
+            await run_channels_until_shutdown(
+                agent,
+                sessions,
+                channels,
+                self._shutdown_event,
+                continue_on_import_error=(mode == "all"),
+            )
+        except Exception as exc:
+            if not _is_nonfatal_channel_start_error(exc):
+                raise
+            err_type = type(exc).__name__
+            err_mod = type(exc).__module__
+            if err_type == "InvalidToken" and err_mod.startswith("telegram"):
+                console.print(
+                    "[red]Telegram bot token was rejected by Telegram. "
+                    "Check TELEGRAM_BOT_TOKEN in .env.[/red]"
+                )
+                return
+            if err_type == "LoginFailure" and err_mod.startswith("discord"):
+                console.print(
+                    "[red]Discord bot login failed. Check DISCORD_BOT_TOKEN in .env "
+                    "and bot permissions.[/red]"
+                )
+                return
+            console.print(f"[red]{_redact_channel_error(str(exc))}[/red]")
 
     # ------------------------------------------------------------------
     # Input handling
@@ -1488,9 +1571,13 @@ class GwennSession:
                     )
                     text_filter = None
                     if self._config.daemon.redact_session_content:
-                        from gwenn.privacy.redaction import PIIRedactor
+                        agent_redactor = getattr(self._agent, "redactor", None)
+                        if agent_redactor is not None:
+                            text_filter = agent_redactor.redact
+                        else:
+                            from gwenn.privacy.redaction import PIIRedactor
 
-                        text_filter = PIIRedactor(enabled=True).redact
+                            text_filter = PIIRedactor(enabled=True).redact
 
                     store.save_session(
                         self._agent._conversation_history,

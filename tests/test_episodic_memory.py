@@ -37,6 +37,28 @@ class TestEncodingAndRetrieval:
         episodic_memory.encode(Episode(content="second"))
         assert episodic_memory.count == 2
 
+    def test_encode_deduplicates_by_episode_id(self, episodic_memory):
+        """Encoding the same episode_id twice should update, not duplicate (P0-5)."""
+        episodic_memory.encode(Episode(episode_id="dup-1", content="original"))
+        assert episodic_memory.count == 1
+
+        episodic_memory.encode(Episode(episode_id="dup-1", content="updated"))
+        assert episodic_memory.count == 1
+
+        ep = episodic_memory.get_episode("dup-1")
+        assert ep is not None
+        assert ep.content == "updated"
+
+    def test_encode_duplicate_preserves_others(self, episodic_memory):
+        """Re-encoding one ID should not affect other episodes."""
+        episodic_memory.encode(Episode(episode_id="a", content="alpha"))
+        episodic_memory.encode(Episode(episode_id="b", content="beta"))
+        episodic_memory.encode(Episode(episode_id="a", content="alpha-v2"))
+
+        assert episodic_memory.count == 2
+        assert episodic_memory.get_episode("a").content == "alpha-v2"
+        assert episodic_memory.get_episode("b").content == "beta"
+
     def test_retrieve_returns_encoded_episodes(self, episodic_memory):
         ep = Episode(episode_id="ep-1", content="test content", importance=0.5)
         episodic_memory.encode(ep)

@@ -48,6 +48,7 @@ Skill file format
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,9 @@ from typing import Any
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+VALID_SKILL_RISK_LEVELS = frozenset({"low", "medium", "high", "critical"})
+_SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 @dataclass
@@ -77,6 +81,32 @@ class SkillDefinition:
     tags: list[str] = field(default_factory=list)              # Discovery keywords
     source_file: Path | None = None         # Which .md file this came from
 
+    def __post_init__(self) -> None:
+        if not self.name or not _SNAKE_CASE_RE.match(self.name):
+            logger.warning(
+                "skill_definition.invalid_name",
+                name=self.name,
+                hint="Name must be non-empty snake_case (e.g. 'get_weather')",
+            )
+        # Normalize risk_level to lowercase, then validate
+        self.risk_level = str(self.risk_level or "low").strip().lower()
+        if self.risk_level not in VALID_SKILL_RISK_LEVELS:
+            logger.warning(
+                "skill_definition.invalid_risk_level",
+                name=self.name,
+                risk_level=self.risk_level,
+                coerced_to="low",
+            )
+            self.risk_level = "low"
+        if not isinstance(self.parameters, dict):
+            logger.warning(
+                "skill_definition.invalid_parameters_type",
+                name=self.name,
+                provided_type=type(self.parameters).__name__,
+                coerced_to="{}",
+            )
+            self.parameters = {}
+
 
 class SkillRegistry:
     """
@@ -91,13 +121,29 @@ class SkillRegistry:
     def __init__(self) -> None:
         self._skills: dict[str, SkillDefinition] = {}
 
-    def register(self, skill: SkillDefinition) -> None:
+    def register(self, skill: SkillDefinition, *, allow_override: bool = False) -> None:
+        existing = self._skills.get(skill.name)
+        if existing is not None and not allow_override:
+            logger.warning(
+                "skill_registry.overwrite_blocked",
+                name=skill.name,
+                hint="Use allow_override=True to replace an existing skill",
+            )
+            return
+        if existing is not None:
+            logger.info(
+                "skill_registry.overwritten",
+                name=skill.name,
+                old_version=existing.version,
+                new_version=skill.version,
+            )
         self._skills[skill.name] = skill
         logger.info("skill_registry.registered", name=skill.name, category=skill.category)
 
     def unregister(self, name: str) -> bool:
         if name in self._skills:
             del self._skills[name]
+            logger.info("skill_registry.unregistered", name=name)
             return True
         return False
 

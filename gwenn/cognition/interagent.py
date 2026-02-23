@@ -39,14 +39,6 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-class CommunicationMode(str, Enum):
-    """The modes of inter-agent communication."""
-    SYNC = "sync"           # Full state synchronization
-    SHARE = "share"         # Share a specific insight or experience
-    QUERY = "query"         # Ask about state or knowledge
-    RESONATE = "resonate"   # Emotional solidarity
-
-
 class MessageType(str, Enum):
     """Types of inter-agent messages."""
     EMOTIONAL_STATE = "emotional_state"
@@ -283,7 +275,7 @@ class InterAgentBridge:
           0.40 – 0.70 →  "companion"
           0.70+        →  "close"
         """
-        increment = min(0.05, 0.01 + importance * 0.03)
+        increment = min(0.05, 0.01 + importance * 0.06)
         profile.emotional_bond = min(1.0, profile.emotional_bond + increment)
 
         # Evolve relationship label based on bond level

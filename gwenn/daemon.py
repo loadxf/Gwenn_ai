@@ -16,6 +16,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -24,10 +25,13 @@ from typing import Any, Optional
 import structlog
 
 from gwenn.config import GwennConfig
+from gwenn.main import configure_logging
 from gwenn.memory.session_store import SessionStore
 from gwenn.privacy.redaction import PIIRedactor
 
 logger = structlog.get_logger(__name__)
+
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
 
 
 class GwennDaemon:
@@ -63,8 +67,8 @@ class GwennDaemon:
             max_count=config.daemon.session_max_count,
             max_messages=config.daemon.session_max_messages,
         )
-        # SentientAgent mutates shared state during respond(); serialize daemon chat calls.
-        self._agent_respond_lock = asyncio.Lock()
+        # Respond-lock is on the agent itself (agent._respond_lock) so daemon
+        # and platform channels share the same serialisation lock.
 
     async def run(self) -> None:
         """Full daemon lifecycle: init → serve → shutdown."""
@@ -119,7 +123,6 @@ class GwennDaemon:
 
         await self._agent.initialize()
         await self._agent.start()
-        setattr(self._agent, "_gwenn_respond_lock", self._agent_respond_lock)
         logger.info("daemon.agent_started")
 
         # Start configured channels (telegram, discord) if requested
@@ -138,7 +141,18 @@ class GwennDaemon:
         exc = task.exception()
         if exc is None:
             return
-        logger.error("daemon.channels_task_failed", error=str(exc), exc_info=True)
+        if self._is_nonfatal_channel_error(exc):
+            logger.warning(
+                "daemon.channels_task_failed_nonfatal",
+                error_type=type(exc).__name__,
+                error=self._redact_channel_error(str(exc)),
+            )
+            return
+        logger.error(
+            "daemon.channels_task_failed",
+            error=self._redact_channel_error(str(exc)),
+            exc_info=True,
+        )
         self._request_shutdown("daemon_channels_task_failed")
 
     async def _start_socket_server(self) -> None:
@@ -169,7 +183,44 @@ class GwennDaemon:
         if not channels:
             return
 
-        await run_channels_until_shutdown(self._agent, sessions, channels, self._shutdown_event)
+        try:
+            await run_channels_until_shutdown(
+                self._agent,
+                sessions,
+                channels,
+                self._shutdown_event,
+                continue_on_import_error=(
+                    "telegram" in channel_list and "discord" in channel_list
+                ),
+            )
+        except Exception as exc:
+            if self._is_nonfatal_channel_error(exc):
+                logger.warning(
+                    "daemon.channels_startup_skipped",
+                    channels=channel_list,
+                    error_type=type(exc).__name__,
+                    error=self._redact_channel_error(str(exc)),
+                )
+                return
+            raise
+
+    @staticmethod
+    def _is_nonfatal_channel_error(exc: Exception) -> bool:
+        """Return True for channel startup errors that should not stop the daemon."""
+        if isinstance(exc, ImportError):
+            return True
+        err_type = type(exc).__name__
+        err_mod = type(exc).__module__
+        if err_type == "InvalidToken" and err_mod.startswith("telegram"):
+            return True
+        if err_type == "LoginFailure" and err_mod.startswith("discord"):
+            return True
+        return False
+
+    @staticmethod
+    def _redact_channel_error(message: str) -> str:
+        """Mask Telegram bot tokens in channel error strings before logging."""
+        return _TELEGRAM_BOT_TOKEN_RE.sub("[REDACTED_TELEGRAM_TOKEN]", message or "")
 
     # ------------------------------------------------------------------
     # Client connection handler
@@ -228,6 +279,8 @@ class GwennDaemon:
                 logger.debug("daemon.client_close_failed", conn_id=conn_id, error=str(e))
             logger.info("daemon.client_closed", conn_id=conn_id)
 
+    _MAX_AUTH_FAILURES = 3
+
     async def _dispatch_loop(
         self,
         reader: asyncio.StreamReader,
@@ -236,6 +289,7 @@ class GwennDaemon:
     ) -> None:
         """Read NDJSON messages from client and dispatch responses."""
         last_activity = time.monotonic()
+        auth_failures = 0
         while not self._shutdown_event.is_set():
             try:
                 raw = await asyncio.wait_for(reader.readline(), timeout=1.0)
@@ -264,6 +318,18 @@ class GwennDaemon:
             response = await self._dispatch(msg_type, msg, history, req_id)
             await self._send(writer, response)
 
+            # Disconnect after repeated auth failures to prevent brute-force.
+            if response.get("message") == "unauthorized":
+                auth_failures += 1
+                if auth_failures >= self._MAX_AUTH_FAILURES:
+                    logger.warning(
+                        "daemon.auth_max_failures",
+                        failures=auth_failures,
+                    )
+                    break
+            else:
+                auth_failures = 0
+
             if msg_type == "stop":
                 break
 
@@ -286,14 +352,7 @@ class GwennDaemon:
                 text = msg.get("text", "")
                 if not text:
                     return {"type": "error", "req_id": req_id, "message": "empty text"}
-                lock = getattr(self._agent, "_gwenn_respond_lock", None)
-                if not isinstance(lock, asyncio.Lock):
-                    lock = getattr(self, "_agent_respond_lock", None)
-                if not isinstance(lock, asyncio.Lock):
-                    lock = asyncio.Lock()
-                    self._agent_respond_lock = lock
-                setattr(self._agent, "_gwenn_respond_lock", lock)
-                async with lock:
+                async with self._agent._respond_lock:
                     response_text = await self._agent.respond(
                         text,
                         conversation_history=history,
@@ -489,6 +548,7 @@ def run_daemon() -> None:
 
     Loads config, creates GwennDaemon, runs the event loop.
     """
+    configure_logging()
     try:
         config = GwennConfig()
     except Exception as e:

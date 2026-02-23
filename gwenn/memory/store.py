@@ -26,6 +26,7 @@ from typing import Any, Optional
 import structlog
 
 from gwenn.memory.episodic import Episode
+from gwenn.memory.working import DEFAULT_DECAY_RATE
 
 logger = structlog.get_logger(__name__)
 
@@ -143,6 +144,7 @@ class MemoryStore:
         self._vector_client: Any = None
         self._episodes_collection: Any = None
         self._knowledge_collection: Any = None
+        self._persistent_context_cache: Optional[str] = None
 
         logger.info("memory_store.initializing", path=str(db_path))
 
@@ -192,6 +194,7 @@ class MemoryStore:
     def close(self) -> None:
         """Close the database connection."""
         if self._conn:
+            self._harden_storage_permissions()
             self._conn.close()
             self._conn = None
         self._vector_client = None
@@ -392,8 +395,45 @@ class MemoryStore:
             ),
         )
         conn.commit()
-        self._harden_storage_permissions()
         self.upsert_episode_embedding(episode)
+
+    def save_episodes_batch(self, episodes: list[Episode]) -> int:
+        """Persist multiple episodes in a single transaction.
+
+        Uses ``executemany`` + a single ``commit`` for efficiency.
+        Returns the number of episodes written.
+        """
+        if not episodes:
+            return 0
+        conn = self._require_connection()
+        rows = []
+        for ep in episodes:
+            data = ep.to_dict()
+            rows.append((
+                data["episode_id"],
+                data["timestamp"],
+                data["content"],
+                data["category"],
+                data["emotional_valence"],
+                data["emotional_arousal"],
+                data["importance"],
+                data["tags"],
+                data["participants"],
+                data["outcome"],
+                int(data["consolidated"]),
+            ))
+        conn.executemany(
+            """INSERT OR REPLACE INTO episodes
+               (episode_id, timestamp, content, category, emotional_valence,
+                emotional_arousal, importance, tags, participants, outcome, consolidated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+        for ep in episodes:
+            self.upsert_episode_embedding(ep)
+        logger.info("memory_store.episodes_batch_saved", count=len(rows))
+        return len(rows)
 
     def load_episodes(
         self,
@@ -459,7 +499,6 @@ class MemoryStore:
              goal_congruence, emotion_label, trigger),
         )
         conn.commit()
-        self._harden_storage_permissions()
 
     def load_affect_history(self, limit: int = 100) -> list[dict]:
         """Load recent affective state history."""
@@ -513,7 +552,6 @@ class MemoryStore:
 
         if deleted > 0:
             conn.commit()
-            self._harden_storage_permissions()
             logger.info("memory_store.affect_snapshots_pruned", deleted=deleted)
 
         return deleted
@@ -538,7 +576,6 @@ class MemoryStore:
             (time.time(), self_model, values_snapshot, growth_notes, trigger),
         )
         conn.commit()
-        self._harden_storage_permissions()
 
     # -------------------------------------------------------------------------
     # Semantic Memory Persistence
@@ -561,7 +598,6 @@ class MemoryStore:
              json.dumps(metadata or {})),
         )
         conn.commit()
-        self._harden_storage_permissions()
         self.upsert_knowledge_embedding(
             node_id=node_id,
             label=label,
@@ -598,7 +634,6 @@ class MemoryStore:
         conn = self._require_connection()
         conn.execute("DELETE FROM knowledge_edges")
         conn.commit()
-        self._harden_storage_permissions()
 
     def save_knowledge_edge(self, source_id: str, target_id: str,
                             relationship: str, strength: float,
@@ -612,7 +647,6 @@ class MemoryStore:
             (source_id, target_id, relationship, strength, context, created_at),
         )
         conn.commit()
-        self._harden_storage_permissions()
 
     def load_knowledge_edges(self) -> list[dict]:
         """Load all knowledge edges from the database."""
@@ -676,7 +710,6 @@ class MemoryStore:
         )
         deleted = cursor.rowcount or 0
         conn.commit()
-        self._harden_storage_permissions()
 
         if self._knowledge_collection:
             try:
@@ -705,20 +738,24 @@ class MemoryStore:
         restarts. It's loaded into the system prompt on startup.
         """
         filepath = path or (self._db_path.parent / "GWENN_CONTEXT.md")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-        filepath.write_text(content, encoding="utf-8")
-        try:
-            filepath.chmod(0o600)
-        except OSError:
-            logger.debug("memory_store.context_chmod_skipped", path=str(filepath))
+        self._atomic_write_text(filepath, content)
+        # Invalidate cache only for the default path
+        if path is None:
+            self._persistent_context_cache = content
         logger.info("memory_store.context_saved", path=str(filepath))
         return filepath
 
     def load_persistent_context(self, path: Optional[Path] = None) -> str:
         """Load the persistent context file, or return empty string if none exists."""
+        # Use cache for default path
+        if path is None and self._persistent_context_cache is not None:
+            return self._persistent_context_cache
         filepath = path or (self._db_path.parent / "GWENN_CONTEXT.md")
         if filepath.exists():
-            return filepath.read_text(encoding="utf-8")
+            content = filepath.read_text(encoding="utf-8")
+            if path is None:
+                self._persistent_context_cache = content
+            return content
         return ""
 
     # -------------------------------------------------------------------------
@@ -733,16 +770,12 @@ class MemoryStore:
         with near-zero salience are filtered out before writing.
         """
         filepath = path or (self._db_path.parent / "working_memory.json")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "saved_at": time.time(),
             "items": [i for i in items if i.get("salience", 0.0) > 0.05],
         }
         try:
-            filepath.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            self._best_effort_chmod(filepath, 0o600)
+            self._atomic_write_json(filepath, payload)
             logger.info("memory_store.working_memory_saved", count=len(payload["items"]))
         except OSError as e:
             logger.warning("memory_store.working_memory_save_failed", error=str(e))
@@ -775,7 +808,7 @@ class MemoryStore:
         # Guard against clock drift making elapsed time negative
         elapsed_minutes = max(0.0, (time.time() - saved_at) / 60.0)
         # Apply same per-minute decay rate used by WorkingMemoryItem.decay()
-        decay_rate = 0.02
+        decay_rate = DEFAULT_DECAY_RATE
         decay_amount = decay_rate * elapsed_minutes
 
         surviving: list[dict] = []
@@ -799,16 +832,11 @@ class MemoryStore:
     def save_goal_state(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
         """Persist the goal-system state to a JSON sidecar file."""
         filepath = path or (self._db_path.parent / "goal_state.json")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "saved_at": time.time(),
             "state": state if isinstance(state, dict) else {},
         }
-        filepath.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self._best_effort_chmod(filepath, 0o600)
+        self._atomic_write_json(filepath, payload)
         logger.info("memory_store.goal_state_saved", path=str(filepath))
         return filepath
 
@@ -835,16 +863,11 @@ class MemoryStore:
     def save_metacognition(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
         """Persist MetacognitionEngine state to a JSON sidecar file."""
         filepath = path or (self._db_path.parent / "metacognition_state.json")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "saved_at": time.time(),
             "state": state if isinstance(state, dict) else {},
         }
-        filepath.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self._best_effort_chmod(filepath, 0o600)
+        self._atomic_write_json(filepath, payload)
         logger.info("memory_store.metacognition_saved", path=str(filepath))
         return filepath
 
@@ -870,16 +893,11 @@ class MemoryStore:
     def save_theory_of_mind(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
         """Persist TheoryOfMind state to a JSON sidecar file."""
         filepath = path or (self._db_path.parent / "theory_of_mind_state.json")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "saved_at": time.time(),
             "state": state if isinstance(state, dict) else {},
         }
-        filepath.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self._best_effort_chmod(filepath, 0o600)
+        self._atomic_write_json(filepath, payload)
         logger.info("memory_store.theory_of_mind_saved", path=str(filepath))
         return filepath
 
@@ -905,16 +923,11 @@ class MemoryStore:
     def save_interagent(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
         """Persist InterAgentBridge state to a JSON sidecar file."""
         filepath = path or (self._db_path.parent / "interagent_state.json")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "saved_at": time.time(),
             "state": state if isinstance(state, dict) else {},
         }
-        filepath.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self._best_effort_chmod(filepath, 0o600)
+        self._atomic_write_json(filepath, payload)
         logger.info("memory_store.interagent_saved", path=str(filepath))
         return filepath
 
@@ -940,16 +953,11 @@ class MemoryStore:
     def save_sensory(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
         """Persist SensoryIntegrator state to a JSON sidecar file."""
         filepath = path or (self._db_path.parent / "sensory_state.json")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "saved_at": time.time(),
             "state": state if isinstance(state, dict) else {},
         }
-        filepath.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self._best_effort_chmod(filepath, 0o600)
+        self._atomic_write_json(filepath, payload)
         logger.info("memory_store.sensory_saved", path=str(filepath))
         return filepath
 
@@ -975,15 +983,12 @@ class MemoryStore:
     def save_ethics(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
         """Persist EthicalReasoner state to a JSON sidecar file."""
         filepath = path or (self._db_path.parent / "ethics_state.json")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": 1,
             "saved_at": time.time(),
             "state": state,
         }
-        tmp = filepath.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, default=str), encoding="utf-8")
-        tmp.replace(filepath)
+        self._atomic_write_json(filepath, payload)
         logger.info("memory_store.ethics_saved", path=str(filepath))
         return filepath
 
@@ -1009,15 +1014,12 @@ class MemoryStore:
     def save_inner_life(self, state: dict[str, Any], path: Optional[Path] = None) -> Path:
         """Persist InnerLife state to a JSON sidecar file."""
         filepath = path or (self._db_path.parent / "inner_life_state.json")
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": 1,
             "saved_at": time.time(),
             "state": state,
         }
-        tmp = filepath.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, default=str), encoding="utf-8")
-        tmp.replace(filepath)
+        self._atomic_write_json(filepath, payload)
         logger.info("memory_store.inner_life_saved", path=str(filepath))
         return filepath
 
@@ -1064,7 +1066,6 @@ class MemoryStore:
         deleted = cursor.rowcount
         conn.commit()
         if deleted > 0:
-            self._harden_storage_permissions()
             logger.info(
                 "memory_store.episodes_pruned",
                 deleted=deleted,
@@ -1121,3 +1122,45 @@ class MemoryStore:
             path.chmod(mode)
         except OSError:
             logger.debug("memory_store.chmod_skipped", path=str(path), mode=oct(mode))
+
+    # -------------------------------------------------------------------------
+    # Atomic write helpers
+    # -------------------------------------------------------------------------
+
+    def _atomic_write_json(self, filepath: Path, payload: dict | list) -> None:
+        """Write JSON data atomically via temp-file-then-replace.
+
+        Ensures the target file is never left in a half-written state: we
+        write to a sibling ``.tmp`` file first, then atomically replace the
+        target.  The temp file is cleaned up on failure.
+        """
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        tmp = filepath.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            tmp.replace(filepath)
+        except BaseException:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        self._best_effort_chmod(filepath, 0o600)
+
+    def _atomic_write_text(self, filepath: Path, content: str) -> None:
+        """Write text data atomically via temp-file-then-replace."""
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        tmp = filepath.with_suffix(".tmp")
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(filepath)
+        except BaseException:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        self._best_effort_chmod(filepath, 0o600)

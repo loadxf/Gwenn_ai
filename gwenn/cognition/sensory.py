@@ -63,7 +63,6 @@ class GroundedPercept:
     intensity: float = 0.5              # 0-1, how salient this percept is
     timestamp: float = field(default_factory=time.time)
     source: str = "unknown"              # Where this percept came from
-    confidence: float = 0.8              # How reliable this percept is
 
     @property
     def age_seconds(self) -> float:

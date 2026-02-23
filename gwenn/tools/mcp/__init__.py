@@ -20,6 +20,7 @@ from typing import Any, Optional
 import httpx
 import structlog
 
+from gwenn import __version__
 from gwenn.tools.registry import ToolDefinition, ToolRegistry
 
 logger = structlog.get_logger(__name__)
@@ -367,7 +368,7 @@ class MCPClient:
         params = {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "clientInfo": {"name": "gwenn", "version": "0.3.0"},
+            "clientInfo": {"name": "gwenn", "version": __version__},
         }
 
         try:
@@ -459,6 +460,7 @@ class MCPClient:
         """Register all discovered MCP tools in the ToolRegistry."""
 
         count = 0
+        registered_names: dict[str, str] = {}  # truncated_name → original tool key
         for tool in self._discovered_tools:
             server_name = tool.server_name
             tool_name = tool.name
@@ -475,6 +477,25 @@ class MCPClient:
             safe_server = _sanitize_mcp_name_part(server_name)
             safe_tool = _sanitize_mcp_name_part(tool_name)
             registered_name = f"mcp_{safe_server}_{safe_tool}"[:64]
+
+            # Detect collisions caused by truncation and disambiguate
+            tool_key = f"{server_name}/{tool_name}"
+            existing_key = registered_names.get(registered_name)
+            if existing_key is not None and existing_key != tool_key:
+                logger.warning(
+                    "mcp_client.name_collision",
+                    truncated_name=registered_name,
+                    existing_tool=existing_key,
+                    new_tool=tool_key,
+                )
+                # Append a numeric suffix to disambiguate
+                for suffix in range(2, 100):
+                    candidate = f"{registered_name[:60]}_{suffix}"
+                    if candidate not in registered_names:
+                        registered_name = candidate
+                        break
+
+            registered_names[registered_name] = tool_key
             self._registry.register(
                 ToolDefinition(
                     name=registered_name,

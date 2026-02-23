@@ -96,18 +96,33 @@ async def start_channels(
     agent: "SentientAgent",
     sessions: "SessionManager",
     channels: list["BaseChannel"],
+    *,
+    continue_on_import_error: bool = False,
 ) -> list["BaseChannel"]:
     """
     Start channel adapters, register them on the agent, and begin session cleanup.
 
     Returns the list of successfully started channels.  On partial failure the
     already-started channels are rolled back.
+
+    When ``continue_on_import_error`` is True, channels that fail with
+    ``ImportError`` are skipped so other channels can still start.
     """
     sessions.start_cleanup_task()
     started: list[BaseChannel] = []
     try:
         for ch in channels:
-            await ch.start()
+            try:
+                await ch.start()
+            except ImportError as exc:
+                if not continue_on_import_error:
+                    raise
+                logger.error(
+                    "channels.start_skipped_import_error",
+                    channel=ch.channel_name,
+                    error=str(exc),
+                )
+                continue
             started.append(ch)
             agent.register_channel(ch)
     except Exception:
@@ -119,6 +134,8 @@ async def start_channels(
                 logger.exception("channels.start_rollback_stop_failed")
         await sessions.stop_cleanup_task()
         raise
+    if not started:
+        await sessions.stop_cleanup_task()
     return started
 
 
@@ -142,9 +159,18 @@ async def run_channels_until_shutdown(
     sessions: "SessionManager",
     channels: list["BaseChannel"],
     shutdown_event: asyncio.Event,
+    *,
+    continue_on_import_error: bool = False,
 ) -> None:
     """Start channels, wait for *shutdown_event*, then tear everything down."""
-    started = await start_channels(agent, sessions, channels)
+    started = await start_channels(
+        agent,
+        sessions,
+        channels,
+        continue_on_import_error=continue_on_import_error,
+    )
+    if not started:
+        return
     try:
         await shutdown_event.wait()
     finally:

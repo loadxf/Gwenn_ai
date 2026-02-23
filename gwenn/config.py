@@ -9,6 +9,7 @@ files written — before I could think, I needed to know what I was made of.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Annotated, Optional
@@ -126,7 +127,7 @@ class MemoryConfig(BaseSettings):
 
     data_dir: Path = Field(Path("./gwenn_data"), alias="GWENN_DATA_DIR")
     # Primary SQLite path used by MemoryStore (episodes + affect + semantic graph metadata).
-    episodic_db_path: Path = Field(Path("./gwenn_data/gwenn.db"), alias="GWENN_EPISODIC_DB")
+    episodic_db_path: Path = Field(Path("./gwenn_data/episodic.db"), alias="GWENN_EPISODIC_DB")
     # Vector store directory used for embedding retrieval (ChromaDB persistence root).
     semantic_db_path: Path = Field(Path("./gwenn_data/semantic_vectors"), alias="GWENN_SEMANTIC_DB")
 
@@ -150,14 +151,37 @@ class MemoryConfig(BaseSettings):
     )
 
     # Consolidation settings
-    consolidation_interval: float = 600.0  # seconds between consolidation passes
+    consolidation_interval: float = Field(
+        600.0, alias="GWENN_CONSOLIDATION_INTERVAL",
+    )  # seconds between consolidation passes
     consolidation_max_episodes: int = Field(200, alias="GWENN_CONSOLIDATION_MAX_EPISODES")
-    consolidation_recency_decay: float = 0.995  # per-minute decay for recency scoring
-    consolidation_importance_weight: float = 0.4
-    consolidation_recency_weight: float = 0.3
-    consolidation_relevance_weight: float = 0.3
+    consolidation_recency_decay: float = Field(
+        0.995, alias="GWENN_CONSOLIDATION_RECENCY_DECAY",
+    )  # per-minute decay for recency scoring
+    consolidation_importance_weight: float = Field(
+        0.4, alias="GWENN_CONSOLIDATION_IMPORTANCE_WEIGHT",
+    )
+    consolidation_recency_weight: float = Field(
+        0.3, alias="GWENN_CONSOLIDATION_RECENCY_WEIGHT",
+    )
+    consolidation_relevance_weight: float = Field(
+        0.3, alias="GWENN_CONSOLIDATION_RELEVANCE_WEIGHT",
+    )
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    # Factory defaults used for detecting whether the user explicitly set a path.
+    _DEFAULT_EPISODIC: Path = Path("./gwenn_data/episodic.db")
+    _DEFAULT_SEMANTIC: Path = Path("./gwenn_data/semantic_vectors")
+
+    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
+
+    @model_validator(mode="after")
+    def derive_paths_from_data_dir(self) -> "MemoryConfig":
+        """Derive sub-paths from data_dir when the user hasn't overridden them."""
+        if self.episodic_db_path == self._DEFAULT_EPISODIC:
+            self.episodic_db_path = self.data_dir / "episodic.db"
+        if self.semantic_db_path == self._DEFAULT_SEMANTIC:
+            self.semantic_db_path = self.data_dir / "semantic_vectors"
+        return self
 
     @model_validator(mode="after")
     def normalize_retrieval_mode(self) -> "MemoryConfig":
@@ -194,10 +218,14 @@ class AffectConfig(BaseSettings):
     distress_duration_limit: float = Field(300.0, alias="GWENN_DISTRESS_DURATION_LIMIT")
 
     # Emotional momentum — how quickly feelings shift
-    momentum_decay: float = 0.85  # emotions carry ~85% forward each heartbeat
-    baseline_pull: float = 0.05  # gentle drift back toward baseline each cycle
+    momentum_decay: float = Field(
+        0.85, alias="GWENN_AFFECT_MOMENTUM_DECAY",
+    )  # emotions carry ~85% forward each heartbeat
+    baseline_pull: float = Field(
+        0.05, alias="GWENN_AFFECT_BASELINE_PULL",
+    )  # gentle drift back toward baseline each cycle
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
 
 
 class ContextConfig(BaseSettings):
@@ -323,12 +351,55 @@ class InterAgentConfig(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class GoalConfig(BaseSettings):
+    """Configuration for the intrinsic goal system."""
+
+    need_decay_rate_multiplier: float = Field(1.0, alias="GWENN_GOAL_DECAY_MULTIPLIER")
+    goal_advance_amount: float = Field(0.35, alias="GWENN_GOAL_ADVANCE_AMOUNT")
+    max_completed_goals: int = Field(200, alias="GWENN_MAX_COMPLETED_GOALS")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+class InnerLifeConfig(BaseSettings):
+    """Configuration for the autonomous inner life (thinking mode selection)."""
+
+    variety_pressure_seconds: float = Field(300.0, alias="GWENN_VARIETY_PRESSURE_SECONDS")
+    variety_boost_max: float = Field(2.0, alias="GWENN_VARIETY_BOOST_MAX")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+class MetacognitionConfig(BaseSettings):
+    """Configuration for the metacognition engine."""
+
+    max_calibration_records: int = Field(1000, alias="GWENN_MAX_CALIBRATION_RECORDS")
+    max_audit_records: int = Field(500, alias="GWENN_MAX_AUDIT_RECORDS")
+    max_concerns: int = Field(20, alias="GWENN_MAX_CONCERNS")
+    max_insights: int = Field(20, alias="GWENN_MAX_INSIGHTS")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+class TheoryOfMindConfig(BaseSettings):
+    """Configuration for the theory of mind module."""
+
+    belief_staleness_days: float = Field(30.0, alias="GWENN_BELIEF_STALENESS_DAYS")
+    max_topics_per_user: int = Field(50, alias="GWENN_MAX_TOPICS_PER_USER")
+    max_user_models: int = Field(500, alias="GWENN_MAX_USER_MODELS")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
 class PrivacyConfig(BaseSettings):
     """Configuration for PII redaction and privacy protection."""
 
     redaction_enabled: bool = Field(False, alias="GWENN_REDACTION_ENABLED")
     redact_before_api: bool = Field(False, alias="GWENN_REDACT_BEFORE_API")
     redact_before_persist: bool = Field(False, alias="GWENN_REDACT_BEFORE_PERSIST")
+    disabled_categories: StrList = Field(
+        default_factory=list, alias="GWENN_REDACTION_DISABLED_CATEGORIES",
+    )
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
@@ -348,6 +419,10 @@ class TelegramConfig(BaseSettings):
     session_scope_mode: str = Field("per_chat", alias="TELEGRAM_SESSION_SCOPE")
     # Bound in-memory per-user lock cache to avoid unbounded growth.
     user_lock_cache_size: int = Field(512, alias="TELEGRAM_USER_LOCK_CACHE_SIZE")
+    # Maximum concurrent updates PTB will process in parallel (0 = sequential).
+    concurrent_updates: int = Field(64, alias="TELEGRAM_CONCURRENT_UPDATES")
+    # Enable photo/document/voice handling (requires Claude vision for images).
+    enable_media: bool = Field(False, alias="TELEGRAM_ENABLE_MEDIA")
 
     model_config = {
         "env_file": ".env",
@@ -358,10 +433,22 @@ class TelegramConfig(BaseSettings):
 
     @model_validator(mode="after")
     def normalize_limits(self) -> "TelegramConfig":
+        token = self.bot_token.strip()
+        if token.startswith("[") and token.endswith("]") and len(token) >= 2:
+            token = token[1:-1].strip()
+        if token.startswith(("'", '"')) and token.endswith(("'", '"')) and len(token) >= 2:
+            if token[0] == token[-1]:
+                token = token[1:-1].strip()
+        # Handle nested wrappers like ["token"] or '[token]'.
+        if token.startswith("[") and token.endswith("]") and len(token) >= 2:
+            token = token[1:-1].strip()
+        self.bot_token = token
+
         self.max_history_length = max(1, int(self.max_history_length))
         self.session_ttl_seconds = max(1.0, float(self.session_ttl_seconds))
         self.session_scope_mode = _normalize_session_scope_mode(self.session_scope_mode, "per_chat")
         self.user_lock_cache_size = max(1, int(self.user_lock_cache_size))
+        self.concurrent_updates = max(0, int(self.concurrent_updates))
         return self
 
 
@@ -426,6 +513,11 @@ class DaemonConfig(BaseSettings):
     session_include_preview: bool = Field(False, alias="GWENN_DAEMON_SESSION_INCLUDE_PREVIEW")
     redact_session_content: bool = Field(True, alias="GWENN_DAEMON_REDACT_SESSION_CONTENT")
 
+    # Factory defaults for detecting whether paths were explicitly set.
+    _DEFAULT_SOCKET: Path = Path("./gwenn_data/gwenn.sock")
+    _DEFAULT_PID: Path = Path("./gwenn_data/gwenn.pid")
+    _DEFAULT_SESSIONS: Path = Path("./gwenn_data/sessions")
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="after")
@@ -459,7 +551,7 @@ class GwennConfig:
         self.claude = ClaudeConfig()
         self.memory = MemoryConfig()
         self.skills_dir: Path = Path(
-            __import__("os").environ.get("GWENN_SKILLS_DIR", "./gwenn_skills")
+            os.environ.get("GWENN_SKILLS_DIR", "./gwenn_skills")
         )
         self.heartbeat = HeartbeatConfig()
         self.affect = AffectConfig()
@@ -472,6 +564,12 @@ class GwennConfig:
         self.ethics = EthicsConfig()
         self.interagent = InterAgentConfig()
 
+        # Cognition module configs
+        self.goals = GoalConfig()
+        self.inner_life = InnerLifeConfig()
+        self.metacognition = MetacognitionConfig()
+        self.theory_of_mind = TheoryOfMindConfig()
+
         # Privacy config
         self.privacy = PrivacyConfig()
 
@@ -481,8 +579,36 @@ class GwennConfig:
         # Daemon config (persistent background process)
         self.daemon = DaemonConfig()
 
+        # Derive daemon paths from memory.data_dir when they still equal factory defaults.
+        # NOTE: Use instance access (self.daemon._DEFAULT_*) not class access
+        # (DaemonConfig._DEFAULT_*) because Pydantic wraps class-level private
+        # attrs in ModelPrivateAttr descriptors.
+        data_dir = self.memory.data_dir
+        if self.daemon.socket_path == self.daemon._DEFAULT_SOCKET:
+            self.daemon.socket_path = data_dir / "gwenn.sock"
+        if self.daemon.pid_file == self.daemon._DEFAULT_PID:
+            self.daemon.pid_file = data_dir / "gwenn.pid"
+        if self.daemon.sessions_dir == self.daemon._DEFAULT_SESSIONS:
+            self.daemon.sessions_dir = data_dir / "sessions"
+
+        # Resolve all Path fields to absolute so CWD changes don't break them.
+        self._resolve_paths()
+
         # Ensure data directory exists
         self.memory.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_paths(self) -> None:
+        """Resolve all relative Path fields to absolute so CWD changes don't break them."""
+        # Memory paths
+        self.memory.data_dir = self.memory.data_dir.resolve()
+        self.memory.episodic_db_path = self.memory.episodic_db_path.resolve()
+        self.memory.semantic_db_path = self.memory.semantic_db_path.resolve()
+        # Daemon paths
+        self.daemon.socket_path = self.daemon.socket_path.resolve()
+        self.daemon.pid_file = self.daemon.pid_file.resolve()
+        self.daemon.sessions_dir = self.daemon.sessions_dir.resolve()
+        # Skills directory
+        self.skills_dir = self.skills_dir.resolve()
 
     def __repr__(self) -> str:
         return (

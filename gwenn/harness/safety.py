@@ -90,7 +90,8 @@ class SafetyGuard:
     # (e.g. in unit tests that construct SafetyGuard without a registry).
     # The authoritative source at runtime is tool_def.is_builtin, which is set
     # automatically by register_builtin_tools() for every tool it registers.
-    # User-created skills also receive is_builtin=True so they are allowed too.
+    # User-created skills receive is_builtin=True so they are allowed too.
+    # Autonomously-created skills get is_builtin=False and requires_approval=True.
     # Keep this list in sync with gwenn/tools/builtin/__init__.py.
     BUILTIN_TOOLS = frozenset({
         "remember", "recall", "check_emotional_state", "check_goals",
@@ -98,6 +99,7 @@ class SafetyGuard:
         "fetch_url", "convert_units", "get_calendar", "generate_token",
         "format_json", "encode_decode", "hash_text", "text_stats",
         "get_system_info", "skill_builder", "list_skills",
+        "delete_skill", "update_skill", "reload_skills", "search_knowledge",
     })
 
     def __init__(self, config: SafetyConfig, tool_registry=None):

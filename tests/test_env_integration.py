@@ -7,7 +7,7 @@ import pytest
 from gwenn.cognition.ethics import EthicalAssessment, EthicalDimension, EthicalReasoner
 from gwenn.cognition.interagent import InterAgentBridge, InterAgentMessage, MessageType
 from gwenn.cognition.sensory import GroundedPercept, SensoryChannel, SensoryIntegrator
-from gwenn.config import DaemonConfig
+from gwenn.config import DaemonConfig, TelegramConfig
 
 
 def test_daemon_config_normalizes_limits_and_auth_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -24,6 +24,24 @@ def test_daemon_config_normalizes_limits_and_auth_token(monkeypatch: pytest.Monk
     assert cfg.session_max_count == 1
     assert cfg.session_max_messages == 1
     assert cfg.auth_token == "secret-token"
+
+
+def test_telegram_config_strips_bracket_wrapped_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "TELEGRAM_BOT_TOKEN",
+        "[123456789:ABCDEFGHIJKLMNOPQRSTUV123456789]",
+    )
+    cfg = TelegramConfig()
+    assert cfg.bot_token == "123456789:ABCDEFGHIJKLMNOPQRSTUV123456789"
+
+
+def test_telegram_config_strips_quote_wrapped_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "TELEGRAM_BOT_TOKEN",
+        "'123456789:ABCDEFGHIJKLMNOPQRSTUV123456789'",
+    )
+    cfg = TelegramConfig()
+    assert cfg.bot_token == "123456789:ABCDEFGHIJKLMNOPQRSTUV123456789"
 
 
 def test_sensory_integrator_honors_percept_expiry_window() -> None:
@@ -49,6 +67,7 @@ def test_ethical_reasoner_honors_history_size_and_threshold() -> None:
             EthicalAssessment(
                 action_description="test",
                 dimension_scores={EthicalDimension.HARM: score},
+                concern_threshold=0.8,
             )
         )
 

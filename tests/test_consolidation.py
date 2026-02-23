@@ -403,3 +403,37 @@ class TestConsolidationPrompt:
         engine = ConsolidationEngine(episodic=em, semantic=sm, consolidation_interval=60.0)
         engine.mark_checked_no_work()
         assert engine.should_consolidate() is False
+
+    def test_get_consolidation_prompt_returns_none_when_batch_pending(self):
+        """Calling get_consolidation_prompt twice should return None the second time (P0-4)."""
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine = ConsolidationEngine(episodic=em, semantic=sm)
+
+        em.encode(Episode(episode_id="ep-1", content="first episode"))
+        prompt1 = engine.get_consolidation_prompt()
+        assert prompt1 is not None
+
+        # Second call before processing should be guarded
+        em.encode(Episode(episode_id="ep-2", content="second episode"))
+        prompt2 = engine.get_consolidation_prompt()
+        assert prompt2 is None
+
+    def test_retry_counter_marks_consolidated_after_max_retries(self):
+        """After max retries with no extraction, episodes should be marked consolidated."""
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine = ConsolidationEngine(episodic=em, semantic=sm)
+
+        em.encode(Episode(episode_id="ep-retry", content="retry me"))
+
+        # First two failures should leave episode unconsolidated
+        for _ in range(2):
+            engine.get_consolidation_prompt()
+            engine.process_consolidation_response("nonsense")
+            assert len(em.get_unconsolidated()) == 1
+
+        # Third failure should hit max_retries and mark consolidated
+        engine.get_consolidation_prompt()
+        engine.process_consolidation_response("still nonsense")
+        assert len(em.get_unconsolidated()) == 0

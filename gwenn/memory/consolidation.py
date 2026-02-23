@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 import structlog
 
+from gwenn.memory._utils import clamp01
 from gwenn.memory.episodic import EpisodicMemory
 from gwenn.memory.semantic import SemanticMemory
 
@@ -87,6 +88,8 @@ class ConsolidationEngine:
         self._pending_episode_ids: list[str] = []
         self._last_processed_episode_ids: list[str] = []
         self._last_emotional_insights: list[dict[str, Any]] = []
+        self._batch_retry_count: int = 0
+        self._max_retries: int = 3
 
         logger.info(
             "consolidation_engine.initialized",
@@ -111,9 +114,17 @@ class ConsolidationEngine:
         """
         Build the prompt for the cognitive engine to perform consolidation.
 
-        Returns None if there are no unconsolidated episodes to process.
+        Returns None if there are no unconsolidated episodes to process,
+        or if a previous batch is still pending processing.
         This prompt is then sent to CognitiveEngine.reflect() for processing.
         """
+        if self._pending_episode_ids:
+            logger.warning(
+                "consolidation.batch_still_pending",
+                pending_count=len(self._pending_episode_ids),
+            )
+            return None
+
         episodes = self._episodic.get_unconsolidated(max_age_hours=None)
 
         if not episodes:
@@ -222,11 +233,23 @@ class ConsolidationEngine:
         # Only mark episodes when extraction produced durable knowledge.
         if sum(counts.values()) > 0:
             self._episodic.mark_consolidated(source_episode_ids)
+            self._batch_retry_count = 0
         elif source_episode_ids:
-            logger.warning(
-                "consolidation.no_items_extracted",
-                episode_count=len(source_episode_ids),
-            )
+            self._batch_retry_count += 1
+            if self._batch_retry_count >= self._max_retries:
+                logger.warning(
+                    "consolidation.max_retries_reached",
+                    episode_count=len(source_episode_ids),
+                    retries=self._batch_retry_count,
+                )
+                self._episodic.mark_consolidated(source_episode_ids)
+                self._batch_retry_count = 0
+            else:
+                logger.warning(
+                    "consolidation.no_items_extracted",
+                    episode_count=len(source_episode_ids),
+                    retry=self._batch_retry_count,
+                )
         self._pending_episode_ids = []
 
         self._last_consolidation = time.time()
@@ -237,11 +260,7 @@ class ConsolidationEngine:
 
     @staticmethod
     def _clamp01(value: float, default: float = 0.5) -> float:
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            return default
-        return max(0.0, min(1.0, numeric))
+        return clamp01(value, default)
 
     @staticmethod
     def _stable_label(prefix: str, content: str) -> str:
@@ -329,9 +348,17 @@ class ConsolidationEngine:
             if part.lower().startswith("strength:"):
                 strength = self._clamp01(part.split(":", 1)[1].strip(), default=0.5)
 
-        # Ensure both nodes exist
-        self._semantic.store_knowledge(label=source, content=source, category="concept")
-        self._semantic.store_knowledge(label=target, content=target, category="concept")
+        # Ensure both endpoint nodes exist (tagged as placeholders for later enrichment)
+        source_node = self._semantic.store_knowledge(
+            label=source, content=source, category="concept",
+        )
+        if not source_node.source_episodes:
+            source_node.metadata["placeholder"] = True
+        target_node = self._semantic.store_knowledge(
+            label=target, content=target, category="concept",
+        )
+        if not target_node.source_episodes:
+            target_node.metadata["placeholder"] = True
         edge = self._semantic.add_relationship(source, target, relationship, strength)
         return edge is not None
 

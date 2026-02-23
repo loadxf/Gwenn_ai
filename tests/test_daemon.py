@@ -763,9 +763,60 @@ class TestGwennDaemonDispatch:
 
         assert events == ["telegram:start", "discord:start", "telegram:stop"]
 
+    async def test_run_platform_channels_invalid_token_nonfatal(
+        self, daemon, monkeypatch
+    ) -> None:
+        from gwenn.channels.session import SessionManager
+
+        class InvalidToken(Exception):
+            pass
+
+        InvalidToken.__module__ = "telegram.error"
+
+        def _build(_agent, channel_list):
+            _ = channel_list
+            return SessionManager(), [MagicMock(channel_name="telegram")]
+
+        async def _run(*_args, **_kwargs):
+            raise InvalidToken(
+                "The token `123456789:ABCDEFGHIJKLMNOPQRSTUV123456789` "
+                "was rejected by the server."
+            )
+
+        monkeypatch.setattr("gwenn.channels.startup.build_channels", _build)
+        monkeypatch.setattr("gwenn.channels.startup.run_channels_until_shutdown", _run)
+
+        await daemon._run_platform_channels(["cli", "telegram"])
+        assert not daemon._shutdown_event.is_set()
+
+    async def test_redact_channel_error_masks_telegram_token(self, daemon) -> None:
+        raw = (
+            "The token `123456789:ABCDEFGHIJKLMNOPQRSTUV123456789` was rejected."
+        )
+        redacted = daemon._redact_channel_error(raw)
+        assert "123456789:" not in redacted
+        assert "[REDACTED_TELEGRAM_TOKEN]" in redacted
+
     async def test_channel_task_failure_sets_shutdown_event(self, daemon) -> None:
         loop = asyncio.get_running_loop()
         task = loop.create_future()
         task.set_exception(RuntimeError("boom"))
         daemon._on_channel_task_done(task)
         assert daemon._shutdown_event.is_set()
+
+    async def test_channel_task_invalid_token_does_not_set_shutdown_event(self, daemon) -> None:
+        class InvalidToken(Exception):
+            pass
+
+        InvalidToken.__module__ = "telegram.error"
+
+        loop = asyncio.get_running_loop()
+        task = loop.create_future()
+        task.set_exception(
+            InvalidToken(
+                "The token `123456789:ABCDEFGHIJKLMNOPQRSTUV123456789` "
+                "was rejected by the server."
+            )
+        )
+        daemon._on_channel_task_done(task)
+        assert not daemon._shutdown_event.is_set()

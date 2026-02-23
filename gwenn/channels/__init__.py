@@ -17,6 +17,7 @@ from gwenn.channels.formatting import (
     format_for_telegram,
     markdown_to_telegram_html,
     split_message,
+    strip_html_tags,
 )
 from gwenn.channels.startup import (
     build_channels,
@@ -35,6 +36,7 @@ __all__ = [
     "format_for_telegram",
     "format_for_discord",
     "markdown_to_telegram_html",
+    "strip_html_tags",
     "build_channels",
     "run_channels_until_shutdown",
     "start_channels",

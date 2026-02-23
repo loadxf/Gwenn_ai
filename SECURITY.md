@@ -56,11 +56,18 @@ details. Key components:
   credit card numbers, and IP addresses in logs (disabled by default, enable
   via `GWENN_REDACTION_ENABLED`).
 - **Daemon auth + local ACLs** — Unix socket permissions are owner-only, and
-  optional protocol auth is available via `GWENN_DAEMON_AUTH_TOKEN`.
+  optional protocol auth is available via `GWENN_DAEMON_AUTH_TOKEN`. Clients
+  are disconnected after 3 consecutive auth failures to prevent brute-force.
 - **Session privacy defaults** — daemon session previews are disabled by default
   and session content redaction defaults to enabled.
 - **Data-at-rest hardening** — memory and session persistence applies restrictive
   file permissions on supported filesystems.
+- **Identity deserialization safety** — crash-safe loading that gracefully
+  ignores unknown or extra JSON keys from newer/older versions.
+- **Heartbeat circuit breaker** — exponential backoff (60s base, 15-minute cap)
+  prevents cascading failures; resets on success.
+- **Thread-safe logging** — PII redaction in log fields uses a `lru_cache`
+  singleton shared across entry points (main + daemon).
 
 ## Scope
 

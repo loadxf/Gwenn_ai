@@ -37,18 +37,19 @@ def test_get_api_tools_excludes_critical_when_max_risk_is_high():
     assert "critical_tool" not in tool_names
 
 
-def test_get_api_tools_treats_unknown_risk_as_highest_and_excludes():
+def test_invalid_risk_level_coerced_to_critical_and_excluded():
     registry = ToolRegistry()
-    registry.register(
-        ToolDefinition(
-            name="unknown_risk_tool",
-            description="unknown risk",
-            input_schema={"type": "object", "properties": {}},
-            handler=None,
-            risk_level="experimental",
-        )
+    tool = ToolDefinition(
+        name="unknown_risk_tool",
+        description="unknown risk",
+        input_schema={"type": "object", "properties": {}},
+        handler=None,
+        risk_level="experimental",
     )
+    # __post_init__ should coerce invalid risk_level to "critical"
+    assert tool.risk_level == "critical"
 
+    registry.register(tool)
     tools = registry.get_api_tools(max_risk="high")
     tool_names = {tool["name"] for tool in tools}
 

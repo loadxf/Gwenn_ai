@@ -29,6 +29,16 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
 
     registry.register = _register  # type: ignore[method-assign]
 
+    try:
+        _register_all_builtins(registry)
+    finally:
+        # Restore the real register even if an exception occurs during registration
+        registry.register = _real_register  # type: ignore[method-assign]
+
+
+def _register_all_builtins(registry: ToolRegistry) -> None:
+    """Internal helper: register every built-in tool definition."""
+
     # ---- Memory Tools ----
 
     registry.register(ToolDefinition(
@@ -654,11 +664,76 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     ))
 
     registry.register(ToolDefinition(
+        name="update_skill",
+        description=(
+            "Update an existing skill in place — atomically replaces its file and "
+            "re-registers the tool without requiring a delete/reload cycle. "
+            "All fields of the skill can be changed except the name. "
+            "Use this when a skill needs improved instructions, additional parameters, "
+            "or a corrected description."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The exact snake_case name of the existing skill to update.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New description for the skill (what it does and when to use it).",
+                },
+                "instructions": {
+                    "type": "string",
+                    "description": (
+                        "New step-by-step instructions. "
+                        "Reference parameters with {param_name} placeholders."
+                    ),
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": (
+                        "New parameter schema. Same format as skill_builder: "
+                        "each key is a param name, value has 'type', 'description', "
+                        "and optionally 'required', 'default', 'enum'. "
+                        "Omit to keep the existing parameters unchanged."
+                    ),
+                },
+                "category": {
+                    "type": "string",
+                    "description": "New category for the skill.",
+                },
+                "risk_level": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "critical"],
+                    "description": "New risk level.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New keyword tags.",
+                },
+                "version": {
+                    "type": "string",
+                    "description": (
+                        "Explicit version string. "
+                        "Omit to auto-increment (e.g. 1.0 → 1.1)."
+                    ),
+                },
+            },
+            "required": ["name", "description", "instructions"],
+        },
+        handler=None,
+        risk_level="medium",
+        category="skills",
+    ))
+
+    registry.register(ToolDefinition(
         name="reload_skills",
         description=(
             "Scan the skills directory for new .md files and load them without restarting. "
             "Already-loaded skills are left unchanged — to update an existing skill, "
-            "use `delete_skill` first, then `reload_skills`. "
+            "use `update_skill` or `delete_skill` first, then `reload_skills`. "
             "Use this after manually dropping a skill file into the gwenn_skills/ directory."
         ),
         input_schema={
@@ -728,6 +803,3 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         risk_level="low",
         category="skills",
     ))
-
-    # Restore the real register now that all builtins are tagged
-    registry.register = _real_register  # type: ignore[method-assign]

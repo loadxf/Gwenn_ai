@@ -119,6 +119,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiolimiter"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f1/23/b52debf471f7a1e42e362d959a3982bdcb4fe13a5d46e63d28868807a79c/aiolimiter-1.2.1.tar.gz", hash = "sha256:e02a37ea1a855d9e832252a105420ad4d15011505512a1a1d814647451b5cca9", size = 7185, upload-time = "2024-12-08T15:31:51.496Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/ba/df6e8e1045aebc4778d19b8a3a9bc1808adb1619ba94ca354d9ba17d86c3/aiolimiter-1.2.1-py3-none-any.whl", hash = "sha256:d3f249e9059a20badcb56b61601a83556133655c11d1eb3dd3e04ff069e5f3c7", size = 6711, upload-time = "2024-12-08T15:31:49.874Z" },
+]
+
+[[package]]
 name = "aiosignal"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -729,7 +738,6 @@ wheels = [
 
 [[package]]
 name = "gwenn-agent"
-version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -740,6 +748,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
+    { name = "python-telegram-bot", extra = ["rate-limiter"] },
     { name = "rich" },
     { name = "structlog" },
 ]
@@ -747,7 +756,7 @@ dependencies = [
 [package.optional-dependencies]
 channels = [
     { name = "discord-py" },
-    { name = "python-telegram-bot" },
+    { name = "python-telegram-bot", extra = ["rate-limiter"] },
 ]
 dev = [
     { name = "pytest" },
@@ -758,7 +767,7 @@ discord = [
     { name = "discord-py" },
 ]
 telegram = [
-    { name = "python-telegram-bot" },
+    { name = "python-telegram-bot", extra = ["rate-limiter"] },
 ]
 
 [package.metadata]
@@ -775,8 +784,9 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "python-telegram-bot", marker = "extra == 'channels'", specifier = ">=21.0" },
-    { name = "python-telegram-bot", marker = "extra == 'telegram'", specifier = ">=21.0" },
+    { name = "python-telegram-bot", extras = ["rate-limiter"], specifier = ">=22.0" },
+    { name = "python-telegram-bot", extras = ["rate-limiter"], marker = "extra == 'channels'", specifier = ">=22.0" },
+    { name = "python-telegram-bot", extras = ["rate-limiter"], marker = "extra == 'telegram'", specifier = ">=22.0" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "structlog", specifier = ">=23.2.0" },
@@ -2111,6 +2121,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/cd/9b/8df90c85404166a6631e857027866263adb27440d8af1dbeffbdc4f0166c/python_telegram_bot-22.6.tar.gz", hash = "sha256:50ae8cc10f8dff01445628687951020721f37956966b92a91df4c1bf2d113742", size = 1503761, upload-time = "2026-01-24T13:57:00.269Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/97/7298f0e1afe3a1ae52ff4c5af5087ed4de319ea73eb3b5c8c4dd4e76e708/python_telegram_bot-22.6-py3-none-any.whl", hash = "sha256:e598fe171c3dde2dfd0f001619ee9110eece66761a677b34719fb18934935ce0", size = 737267, upload-time = "2026-01-24T13:56:58.06Z" },
+]
+
+[package.optional-dependencies]
+rate-limiter = [
+    { name = "aiolimiter" },
 ]
 
 [[package]]

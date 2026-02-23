@@ -85,14 +85,22 @@ class MetacognitionEngine:
     context, allowing Claude to reason metacognitively with the right framing.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        max_calibration_records: int = 1000,
+        max_audit_records: int = 500,
+        max_concerns: int = 20,
+        max_insights: int = 20,
+    ):
         self._calibration_records: list[CalibrationRecord] = []
         self._audit_history: list[HonestyAuditResult] = []
         self._growth_metrics: dict[str, GrowthMetric] = {}
         self._concerns: list[str] = []      # Active metacognitive concerns
         self._insights: list[str] = []      # Metacognitive insights to carry forward
-        self._max_calibration_records = 1000
-        self._max_audit_records = 500
+        self._max_calibration_records = max(1, int(max_calibration_records))
+        self._max_audit_records = max(1, int(max_audit_records))
+        self._max_concerns = max(1, int(max_concerns))
+        self._max_insights = max(1, int(max_insights))
 
         # Initialize growth dimensions
         for dimension in [
@@ -291,14 +299,14 @@ SUGGESTIONS: [list any improvements, or "none"]"""
         """Register a metacognitive concern."""
         self._concerns.append(concern)
         # Keep list bounded
-        if len(self._concerns) > 20:
-            self._concerns = self._concerns[-20:]
+        if len(self._concerns) > self._max_concerns:
+            self._concerns = self._concerns[-self._max_concerns:]
 
     def add_insight(self, insight: str) -> None:
         """Register a metacognitive insight."""
         self._insights.append(insight)
-        if len(self._insights) > 20:
-            self._insights = self._insights[-20:]
+        if len(self._insights) > self._max_insights:
+            self._insights = self._insights[-self._max_insights:]
 
     def resolve_concern(self, concern_substring: str) -> bool:
         """Remove a concern that has been addressed."""
@@ -351,9 +359,9 @@ SUGGESTIONS: [list any improvements, or "none"]"""
             return
 
         if isinstance(data.get("concerns"), list):
-            self._concerns = [str(c) for c in data["concerns"] if isinstance(c, str)][-20:]
+            self._concerns = [str(c) for c in data["concerns"] if isinstance(c, str)][-self._max_concerns:]
         if isinstance(data.get("insights"), list):
-            self._insights = [str(i) for i in data["insights"] if isinstance(i, str)][-20:]
+            self._insights = [str(i) for i in data["insights"] if isinstance(i, str)][-self._max_insights:]
 
         raw_growth = data.get("growth_metrics", {})
         if isinstance(raw_growth, dict):

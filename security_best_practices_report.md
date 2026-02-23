@@ -2,14 +2,29 @@
 
 ## Executive Summary
 
-Security audit date: **February 18, 2026**.
+Initial security audit date: **February 18, 2026**.
+Last updated: **February 19, 2026**.
 
 This report was updated after remediation work and verification.
 
 Verification performed after fixes:
 - `ruff check gwenn tests` (clean)
-- `pytest -q` (`720 passed, 8 skipped`)
+- `pytest -q` (`1371 passed`)
 - Second-pass pattern scan over execution/auth/storage paths
+
+### Additional hardening (2026-02-19)
+
+- **SP-07 addendum:** Daemon now disconnects clients after 3 consecutive auth
+  failures to prevent brute-force attempts (`daemon.py:_MAX_AUTH_FAILURES`).
+- **Identity deserialization safety:** `_safe_dataclass_init()` in `identity.py`
+  ignores unknown JSON keys, preventing `TypeError` on load from newer/older
+  versions.
+- **Thread-safe log redaction:** PII log redactor uses `@functools.lru_cache`
+  singleton instead of mutable global state — no race conditions.
+- **Heartbeat circuit breaker:** Exponential backoff (60s base, 15-minute cap)
+  instead of fixed 60s cooldown. Resets on success.
+- **Shared respond lock:** Daemon and channel adapters share the agent's canonical
+  `_respond_lock` instead of maintaining redundant locks.
 
 ## Finding Status
 

@@ -1866,3 +1866,272 @@ def test_resolve_calibration_outcome_skips_when_no_unresolved():
 
     SentientAgent._resolve_calibration_outcome(agent, "Thanks!")
     assert call_count["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# PII redaction integration tests — persistence paths
+# ---------------------------------------------------------------------------
+
+
+def test_persist_semantic_memory_redacts_when_enabled():
+    """Knowledge node label/content and edge context are redacted before save."""
+    saved_nodes: list[dict] = []
+    saved_edges: list[dict] = []
+
+    class _Store:
+        def save_knowledge_node(self, **kwargs) -> None:
+            saved_nodes.append(kwargs)
+
+        def clear_knowledge_edges(self) -> None:
+            pass
+
+        def save_knowledge_edge(self, **kwargs) -> None:
+            saved_edges.append(kwargs)
+
+    node = SimpleNamespace(
+        node_id="n1",
+        label="User alice@example.com",
+        category="person",
+        content="Lives at 192.168.1.1",
+        confidence=0.9,
+        source_episodes=["ep1"],
+        created_at=1.0,
+        last_updated=2.0,
+        access_count=1,
+    )
+    edge = SimpleNamespace(
+        source_id="n1",
+        target_id="n2",
+        relationship="knows",
+        strength=0.8,
+        context="Met via alice@example.com",
+        created_at=1.0,
+    )
+
+    agent = object.__new__(SentientAgent)
+    agent._config = SimpleNamespace(
+        privacy=SimpleNamespace(redact_before_persist=True),
+    )
+    agent.redactor = PIIRedactor(enabled=True)
+    agent.memory_store = _Store()
+    agent.semantic_memory = SimpleNamespace(_nodes={"n1": node}, _edges=[edge])
+
+    SentientAgent._persist_semantic_memory(agent)
+
+    assert saved_nodes
+    assert "alice@example.com" not in saved_nodes[0]["label"]
+    assert "[REDACTED_EMAIL]" in saved_nodes[0]["label"]
+    assert "192.168.1.1" not in saved_nodes[0]["content"]
+    assert "[REDACTED_IP]" in saved_nodes[0]["content"]
+    assert saved_edges
+    assert "alice@example.com" not in saved_edges[0]["context"]
+    assert "[REDACTED_EMAIL]" in saved_edges[0]["context"]
+
+
+@pytest.mark.asyncio
+async def test_persist_working_memory_redacts_when_enabled():
+    """Working memory item content is redacted during shutdown when enabled."""
+    saved_items: list[list] = []
+
+    class _Store:
+        def save_affect_snapshot(self, **kwargs):
+            return None
+
+        def save_episode(self, episode):
+            return None
+
+        def save_knowledge_node(self, **kwargs):
+            return None
+
+        def clear_knowledge_edges(self):
+            return None
+
+        def save_knowledge_edge(self, **kwargs):
+            return None
+
+        def save_working_memory(self, items: list) -> None:
+            saved_items.append(items)
+
+        def close(self):
+            return None
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent.heartbeat = _HeartbeatStub()
+    agent.affect_state = SimpleNamespace(
+        dimensions=SimpleNamespace(
+            valence=0.0, arousal=0.3, dominance=0.0,
+            certainty=0.0, goal_congruence=0.0,
+        ),
+        current_emotion=SimpleNamespace(value="neutral"),
+    )
+    agent._config = SimpleNamespace(
+        memory=SimpleNamespace(shutdown_persist_recent_episodes=0),
+        privacy=SimpleNamespace(redact_before_persist=True),
+    )
+    agent.redactor = PIIRedactor(enabled=True)
+    agent.memory_store = _Store()
+    agent.episodic_memory = SimpleNamespace(count=0, retrieve_recent=lambda n=1: [])
+    agent.semantic_memory = SimpleNamespace(_nodes={}, _edges=[])
+    agent.working_memory = SimpleNamespace(
+        to_dict=lambda: {
+            "items": [
+                {"content": "User email is alice@example.com", "category": "note"},
+            ]
+        },
+    )
+    agent.identity = _IdentityStub()
+    agent._start_time = time.time() - 1.0
+
+    async def _consolidate():
+        return None
+
+    agent.consolidate_memories = _consolidate
+
+    await SentientAgent.shutdown(agent)
+
+    assert saved_items
+    items = saved_items[0]
+    assert items
+    assert "alice@example.com" not in items[0]["content"]
+    assert "[REDACTED_EMAIL]" in items[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_persist_goal_state_redacts_when_enabled():
+    """Goal descriptions are redacted during shutdown when persist redaction is enabled."""
+    saved_goals: list[dict] = []
+
+    class _Store:
+        def save_affect_snapshot(self, **kwargs):
+            return None
+
+        def save_episode(self, episode):
+            return None
+
+        def save_knowledge_node(self, **kwargs):
+            return None
+
+        def clear_knowledge_edges(self):
+            return None
+
+        def save_knowledge_edge(self, **kwargs):
+            return None
+
+        def save_working_memory(self, items: list) -> None:
+            return None
+
+        def save_goal_state(self, payload: dict) -> None:
+            saved_goals.append(payload)
+
+        def close(self):
+            return None
+
+    agent = object.__new__(SentientAgent)
+    agent._initialized = True
+    agent.heartbeat = _HeartbeatStub()
+    agent.affect_state = SimpleNamespace(
+        dimensions=SimpleNamespace(
+            valence=0.0, arousal=0.3, dominance=0.0,
+            certainty=0.0, goal_congruence=0.0,
+        ),
+        current_emotion=SimpleNamespace(value="neutral"),
+    )
+    agent._config = SimpleNamespace(
+        memory=SimpleNamespace(shutdown_persist_recent_episodes=0),
+        privacy=SimpleNamespace(redact_before_persist=True),
+    )
+    agent.redactor = PIIRedactor(enabled=True)
+    agent.memory_store = _Store()
+    agent.episodic_memory = SimpleNamespace(count=0, retrieve_recent=lambda n=1: [])
+    agent.semantic_memory = SimpleNamespace(_nodes={}, _edges=[])
+    agent.working_memory = SimpleNamespace(to_dict=lambda: {"items": []})
+    agent.goal_system = SimpleNamespace(
+        to_dict=lambda: {
+            "active_goals": [
+                {"description": "Help alice@example.com with setup", "status": "active"},
+            ],
+            "completed_goals": [],
+        },
+    )
+    agent.identity = _IdentityStub()
+    agent._start_time = time.time() - 1.0
+
+    async def _consolidate():
+        return None
+
+    agent.consolidate_memories = _consolidate
+
+    await SentientAgent.shutdown(agent)
+
+    assert saved_goals
+    goals = saved_goals[0]
+    assert goals["active_goals"]
+    desc = goals["active_goals"][0]["description"]
+    assert "alice@example.com" not in desc
+    assert "[REDACTED_EMAIL]" in desc
+
+
+def test_note_to_self_redacts_context_when_enabled():
+    """GWENN_CONTEXT.md content is redacted when persist redaction is enabled."""
+    import asyncio
+
+    saved_context: list[str] = []
+
+    class _Store:
+        def load_persistent_context(self) -> str:
+            return ""
+
+        def save_persistent_context(self, content: str) -> None:
+            saved_context.append(content)
+
+        def save_episode(self, episode) -> None:
+            pass
+
+    agent = object.__new__(SentientAgent)
+    agent._config = SimpleNamespace(
+        privacy=SimpleNamespace(redact_before_persist=True),
+    )
+    agent.redactor = PIIRedactor(enabled=True)
+    agent.memory_store = _Store()
+    agent.affect_state = SimpleNamespace(
+        dimensions=SimpleNamespace(valence=0.0),
+    )
+    agent.episodic_memory = SimpleNamespace(encode=lambda ep: None)
+
+    # We need to invoke the tool handler directly.
+    # Build it inline to mimic _bind_tool_handlers.
+    from gwenn.memory.episodic import Episode
+
+    async def handle_set_note(note: str, section: str = "reminders") -> str:
+        episode = Episode(
+            content=f"[NOTE TO SELF — {section}] {note}",
+            category="self_knowledge",
+            emotional_valence=agent.affect_state.dimensions.valence,
+            emotional_arousal=0.3,
+            importance=0.8,
+            tags=["note_to_self", section],
+            participants=["gwenn"],
+        )
+        agent.episodic_memory.encode(episode)
+        agent.memory_store.save_episode(episode)
+
+        persist_note = note
+        if agent._should_redact_for_persist():
+            redactor = getattr(agent, "redactor", None)
+            if redactor is not None:
+                persist_note = redactor.redact(persist_note)
+        existing_context = agent.memory_store.load_persistent_context()
+        # Simple inline append (real code uses _upsert_context_section)
+        agent.memory_store.save_persistent_context(
+            existing_context + f"\n## {section}\n{persist_note}\n"
+        )
+        return f"Note stored in '{section}': {note[:80]}..."
+
+    result = asyncio.get_event_loop().run_until_complete(
+        handle_set_note("Contact alice@example.com for help"),
+    )
+
+    assert saved_context
+    assert "alice@example.com" not in saved_context[-1]
+    assert "[REDACTED_EMAIL]" in saved_context[-1]

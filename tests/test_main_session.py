@@ -361,6 +361,69 @@ async def test_run_channels_rolls_back_started_channels_on_partial_start(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_run_channels_prints_import_error_instead_of_raising(monkeypatch):
+    from gwenn.channels.session import SessionManager
+
+    session = GwennSession(channel_override="telegram")
+    print_mock = MagicMock()
+    monkeypatch.setattr("gwenn.main.console.print", print_mock)
+    monkeypatch.setattr(
+        "gwenn.channels.startup.build_channels",
+        lambda _agent, channel_list: (SessionManager(), [MagicMock()]),
+    )
+
+    async def _raise_import_error(*_args, **_kwargs):
+        raise ImportError("missing optional dependency")
+
+    monkeypatch.setattr(
+        "gwenn.channels.startup.run_channels_until_shutdown",
+        _raise_import_error,
+    )
+
+    await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="telegram")
+
+    assert any(
+        "missing optional dependency" in str(call.args[0])
+        for call in print_mock.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_channels_prints_friendly_invalid_token_message(monkeypatch):
+    from gwenn.channels.session import SessionManager
+
+    class InvalidToken(Exception):
+        pass
+
+    InvalidToken.__module__ = "telegram.error"
+
+    session = GwennSession(channel_override="telegram")
+    print_mock = MagicMock()
+    monkeypatch.setattr("gwenn.main.console.print", print_mock)
+    monkeypatch.setattr(
+        "gwenn.channels.startup.build_channels",
+        lambda _agent, channel_list: (SessionManager(), [MagicMock()]),
+    )
+
+    async def _raise_invalid_token(*_args, **_kwargs):
+        raise InvalidToken(
+            "The token `123456789:ABCDEFGHIJKLMNOPQRSTUV123456789` "
+            "was rejected by the server."
+        )
+
+    monkeypatch.setattr(
+        "gwenn.channels.startup.run_channels_until_shutdown",
+        _raise_invalid_token,
+    )
+
+    await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="telegram")
+
+    printed = " ".join(str(call.args[0]) for call in print_mock.call_args_list)
+    assert "Telegram bot token was rejected" in printed
+    assert "123456789:" not in printed
+
+
+@pytest.mark.asyncio
 async def test_run_channels_stops_all_on_shutdown(monkeypatch):
     import gwenn.channels.discord_channel as dc_mod
     import gwenn.channels.telegram_channel as tg_mod

@@ -122,7 +122,14 @@ class GoalSystem:
     wait for instructions — she has her own things she wants to do.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        need_decay_rate_multiplier: float = 1.0,
+        goal_advance_amount: float = 0.35,
+        max_completed_goals: int = 200,
+    ):
+        self._need_decay_rate_multiplier = max(0.0, float(need_decay_rate_multiplier))
+        self._goal_advance_amount = max(0.01, float(goal_advance_amount))
         self._needs: dict[NeedType, Need] = {
             NeedType.UNDERSTANDING: Need(
                 need_type=NeedType.UNDERSTANDING,
@@ -162,9 +169,10 @@ class GoalSystem:
         }
         self._active_goals: list[Goal] = []
         self._completed_goals: list[Goal] = []
-        self._max_completed_goals = 200
+        self._max_completed_goals = max(1, int(max_completed_goals))
         self._last_update = time.time()
         self._goal_counter = 0
+        self._need_counters: dict[NeedType, int] = {nt: 0 for nt in NeedType}
 
         logger.info("goal_system.initialized", needs=len(self._needs))
 
@@ -181,7 +189,7 @@ class GoalSystem:
 
         # Decay all needs
         for need in self._needs.values():
-            need.decay(elapsed_minutes)
+            need.decay(elapsed_minutes * self._need_decay_rate_multiplier)
 
         # Generate goals for hungry needs
         new_goals = []
@@ -235,14 +243,17 @@ class GoalSystem:
                 logger.info("goal_system.goal_completed", goal_id=goal_id)
                 return
 
-    def advance_goal(self, goal_id: str, amount: float = 0.35) -> bool:
+    def advance_goal(self, goal_id: str, amount: float | None = None) -> Optional[bool]:
         """
         Advance a goal's progress. Completes the goal if progress reaches 1.0.
 
-        Returns True if the goal was completed by this call, False otherwise.
-        This allows goals to require multiple heartbeat cycles before
-        completion, giving them a more meaningful lifecycle.
+        Returns:
+            None  — goal not found
+            False — goal advanced but not yet complete
+            True  — goal completed by this call
         """
+        if amount is None:
+            amount = self._goal_advance_amount
         for goal in self._active_goals:
             if goal.goal_id == goal_id:
                 goal.progress = min(1.0, goal.progress + amount)
@@ -255,7 +266,7 @@ class GoalSystem:
                     progress=round(goal.progress, 2),
                 )
                 return False
-        return False
+        return None
 
     def get_highest_priority_goal(self) -> Optional[Goal]:
         """Get the most urgent active goal."""
@@ -341,8 +352,10 @@ class GoalSystem:
         if not templates:
             return None
 
-        # Cycle through templates
-        template = templates[(self._goal_counter - 1) % len(templates)]
+        # Cycle through templates per need type (not globally)
+        idx = self._need_counters.get(need.need_type, 0)
+        template = templates[idx % len(templates)]
+        self._need_counters[need.need_type] = idx + 1
 
         return Goal(
             goal_id=goal_id,
@@ -435,6 +448,7 @@ class GoalSystem:
             "completed_goals": [self._goal_to_dict(goal) for goal in self._completed_goals],
             "last_update": self._last_update,
             "goal_counter": self._goal_counter,
+            "need_counters": {nt.value: c for nt, c in self._need_counters.items()},
         }
 
     def restore_from_dict(self, data: dict) -> None:
@@ -503,3 +517,12 @@ class GoalSystem:
             self._goal_counter = max(self._goal_counter, loaded_counter)
         except (TypeError, ValueError):
             pass
+
+        raw_need_counters = data.get("need_counters", {})
+        if isinstance(raw_need_counters, dict):
+            for key, val in raw_need_counters.items():
+                try:
+                    nt = NeedType(key)
+                    self._need_counters[nt] = max(0, int(val))
+                except (ValueError, TypeError):
+                    continue

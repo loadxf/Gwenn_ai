@@ -67,16 +67,25 @@ class SessionStore:
         # Validate: only keep well-formed role/content pairs
         valid: list[dict] = []
         for m in messages:
-            if (
-                not isinstance(m, dict)
-                or m.get("role") not in ("user", "assistant")
-                or not isinstance(m.get("content"), str)
-            ):
+            if not isinstance(m, dict) or m.get("role") not in ("user", "assistant"):
+                continue
+            content = m.get("content")
+            if not isinstance(content, (str, list)):
                 continue
 
-            content = m["content"]
             if text_filter is not None:
-                content = text_filter(content)
+                if isinstance(content, str):
+                    content = text_filter(content)
+                else:
+                    content = [
+                        text_filter(block) if isinstance(block, str)
+                        else (
+                            {**block, "text": text_filter(block["text"])}
+                            if isinstance(block, dict) and isinstance(block.get("text"), str)
+                            else block
+                        )
+                        for block in content
+                    ]
 
             valid.append({"role": m["role"], "content": content})
         if not valid:
@@ -105,9 +114,17 @@ class SessionStore:
 
         out_path = self.sessions_dir / f"{session_id}.json"
         try:
-            out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp = out_path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(out_path)
             self._best_effort_chmod(out_path, 0o600)
         except OSError as e:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
             logger.error("session_store.write_failed", path=str(out_path), error=str(e))
             return ""
 
@@ -144,7 +161,19 @@ class SessionStore:
                     preview = ""
                     for m in data.get("messages", []):
                         if m.get("role") == "user":
-                            preview = m.get("content", "")[:80]
+                            raw_content = m.get("content", "")
+                            if isinstance(raw_content, str):
+                                preview = raw_content[:80]
+                            elif isinstance(raw_content, list):
+                                for block in raw_content:
+                                    if isinstance(block, str):
+                                        preview = block[:80]
+                                        break
+                                    if isinstance(block, dict) and isinstance(
+                                        block.get("text"), str
+                                    ):
+                                        preview = block["text"][:80]
+                                        break
                             break
                     entry["preview"] = preview
                 results.append(entry)
@@ -181,7 +210,7 @@ class SessionStore:
             m for m in raw
             if isinstance(m, dict)
             and m.get("role") in ("user", "assistant")
-            and isinstance(m.get("content"), str)
+            and isinstance(m.get("content"), (str, list))
         ]
         if len(valid) != len(raw):
             logger.warning(

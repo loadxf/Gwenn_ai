@@ -44,13 +44,16 @@ class RiskTier(str, Enum):
     CRITICAL = "critical"
 
 
-# Default policies per risk tier
-RISK_TIER_POLICIES: dict[RiskTier, dict[str, Any]] = {
-    RiskTier.LOW: {"auto_allow": True, "log": False, "require_approval": False, "deny": False},
-    RiskTier.MEDIUM: {"auto_allow": True, "log": True, "require_approval": False, "deny": False},
-    RiskTier.HIGH: {"auto_allow": False, "log": True, "require_approval": True, "deny": False},
-    RiskTier.CRITICAL: {"auto_allow": False, "log": True, "require_approval": False, "deny": True},
+# Default policies per risk tier (enforced by harness/safety.py)
+RISK_TIER_POLICIES: dict[RiskTier, dict[str, bool]] = {
+    RiskTier.LOW: {"require_approval": False, "deny": False},
+    RiskTier.MEDIUM: {"require_approval": False, "deny": False},
+    RiskTier.HIGH: {"require_approval": True, "deny": False},
+    RiskTier.CRITICAL: {"require_approval": False, "deny": True},
 }
+
+
+_VALID_RISK_LEVELS = frozenset(tier.value for tier in RiskTier)
 
 
 @dataclass
@@ -73,6 +76,17 @@ class ToolDefinition:
     enabled: bool = True                  # Can be disabled without removal
     is_builtin: bool = False              # True for builtins and user-created skills.
                                           # Bypasses the deny-by-default safety policy.
+    timeout: Optional[float] = None       # Per-tool timeout in seconds (None = use default)
+
+    def __post_init__(self) -> None:
+        if self.risk_level not in _VALID_RISK_LEVELS:
+            logger.warning(
+                "tool_definition.invalid_risk_level",
+                name=self.name,
+                risk_level=self.risk_level,
+                coerced_to="critical",
+            )
+            self.risk_level = RiskTier.CRITICAL.value
 
     def to_api_format(self) -> dict[str, Any]:
         """
@@ -133,37 +147,6 @@ class ToolRegistry:
             risk_level=tool.risk_level,
             category=tool.category,
         )
-
-    def register_function(
-        self,
-        name: str,
-        description: str,
-        parameters: dict[str, Any],
-        handler: Callable,
-        risk_level: str = "low",
-        category: str = "general",
-    ) -> None:
-        """Convenience method to register a tool from a function."""
-        # Strip the non-standard "required" key from individual property dicts
-        # (it belongs only in the top-level "required" array, not inside each property).
-        required_params = [k for k, v in parameters.items() if isinstance(v, dict) and v.get("required", False)]
-        clean_properties = {
-            k: {pk: pv for pk, pv in v.items() if pk != "required"}
-            for k, v in parameters.items()
-            if isinstance(v, dict)
-        }
-        input_schema: dict[str, Any] = {"type": "object", "properties": clean_properties}
-        if required_params:
-            input_schema["required"] = required_params
-        self.register(ToolDefinition(
-            name=name,
-            description=description,
-            input_schema=input_schema,
-            handler=handler,
-            risk_level=risk_level,
-            category=category,
-            requires_approval=risk_level == "high",
-        ))
 
     def unregister(self, name: str) -> bool:
         """Remove a tool from the registry."""

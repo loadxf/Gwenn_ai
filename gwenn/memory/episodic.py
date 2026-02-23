@@ -180,6 +180,14 @@ class EpisodicMemory:
             retrieval_mode=self._retrieval_mode,
         )
 
+    def clear(self) -> None:
+        """Remove all in-memory episodes.
+
+        Used during re-initialization to reload from persisted state.
+        """
+        self._episodes.clear()
+        logger.info("episodic_memory.cleared")
+
     def set_vector_search(
         self,
         vector_search_fn: Optional[Callable[[str, int], list[tuple[str, float]]]],
@@ -192,10 +200,20 @@ class EpisodicMemory:
         Encode a new episode into memory.
 
         This is the moment experience becomes memory. The episode is
-        stored with its full context and emotional tagging.
+        stored with its full context and emotional tagging. If an episode
+        with the same ID already exists, it is updated in-place.
 
         Returns the episode_id for reference.
         """
+        for i, existing in enumerate(self._episodes):
+            if existing.episode_id == episode.episode_id:
+                self._episodes[i] = episode
+                logger.debug(
+                    "episodic_memory.updated_existing",
+                    episode_id=episode.episode_id,
+                )
+                return episode.episode_id
+
         self._episodes.append(episode)
 
         logger.info(
@@ -293,7 +311,7 @@ class EpisodicMemory:
                 mood_congruence = 1.0 - abs(mood_valence - episode.emotional_valence) / 2.0
                 score += 0.05 * mood_congruence  # Small bonus, not overwhelming
 
-            scored.append((episode, score))
+            scored.append((episode, min(1.0, score)))
 
         # Sort by score descending, return top_k
         scored.sort(key=lambda x: x[1], reverse=True)

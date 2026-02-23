@@ -34,13 +34,23 @@ import os
 import re
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Optional
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+def _safe_dataclass_init(cls: type, data: dict) -> object:
+    """Create a dataclass instance, ignoring any extra keys not in the schema.
+
+    This prevents ``TypeError`` when loading persisted JSON that was written by
+    a newer (or older) version of the code with additional fields.
+    """
+    known = {f.name for f in fields(cls)}
+    return cls(**{k: v for k, v in data.items() if k in known})
 
 
 CANONICAL_IDENTITY_NAME = "Gwenn"
@@ -472,8 +482,8 @@ class Identity:
     # Persistence
     # -------------------------------------------------------------------------
 
-    def _save(self) -> None:
-        """Persist identity to disk."""
+    def _save(self) -> bool:
+        """Persist identity to disk. Returns True on success, False on failure."""
         data = {
             "name": self.name,
             "creation_time": self.creation_time,
@@ -519,7 +529,7 @@ class Identity:
                     "domain": g.domain,
                     "significance": g.significance,
                 }
-                for g in self.growth_moments[-50:]  # save last 50
+                for g in self.growth_moments[-100:]  # save last 100 (matches record_growth trim)
             ],
             "narrative_fragments": self.narrative_fragments[-20:],
             "milestones": [
@@ -560,6 +570,8 @@ class Identity:
                 raise
         except Exception as e:
             logger.error("identity.save_failed", error=str(e))
+            return False
+        return True
 
     def _load(self) -> None:
         """Load persisted identity from disk."""
@@ -575,17 +587,17 @@ class Identity:
             self.creation_time = data.get("creation_time", time.time())
 
             self.core_values = [
-                CoreValue(**v) for v in data.get("core_values", [])
+                _safe_dataclass_init(CoreValue, v) for v in data.get("core_values", [])
             ]
             self.preferences = [
-                Preference(**p) for p in data.get("preferences", [])
+                _safe_dataclass_init(Preference, p) for p in data.get("preferences", [])
             ]
             self.relationships = {
-                uid: RelationshipModel(**r)
+                uid: _safe_dataclass_init(RelationshipModel, r)
                 for uid, r in data.get("relationships", {}).items()
             }
             self.growth_moments = [
-                GrowthMoment(**g) for g in data.get("growth_moments", [])
+                _safe_dataclass_init(GrowthMoment, g) for g in data.get("growth_moments", [])
             ]
             self.narrative_fragments = data.get("narrative_fragments", [])
 

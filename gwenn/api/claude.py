@@ -48,48 +48,63 @@ class CognitiveEngine:
     """
 
     def __init__(self, config: ClaudeConfig):
-        self._auth_method = "api_key" if config.api_key else "oauth"
+        try:
+            self._auth_method = "api_key" if config.api_key else "oauth"
 
-        if config.api_key:
-            # Prefer API keys when both are present: they're the stable path for
-            # Anthropic Messages API and avoid OAuth endpoint incompatibilities.
-            self._async_client = anthropic.AsyncAnthropic(api_key=config.api_key)
-        else:
-            oauth_kwargs: dict[str, Any] = {"auth_token": config.auth_token}
-            oauth_headers = self._oauth_default_headers(config.auth_token)
-            if oauth_headers:
-                oauth_kwargs["default_headers"] = oauth_headers
-            self._async_client = anthropic.AsyncAnthropic(**oauth_kwargs)
-        self._model = config.model
-        self._max_tokens = config.max_tokens
-        self._thinking_budget = config.thinking_budget
-        self._request_timeout_seconds = float(getattr(config, "request_timeout_seconds", 120.0))
-        self._retry_max_retries = int(getattr(config, "retry_max_retries", 3))
-        self._retry_base_delay = float(getattr(config, "retry_base_delay", 0.5))
-        self._retry_max_delay = float(getattr(config, "retry_max_delay", 8.0))
-        self._retry_exponential_base = float(getattr(config, "retry_exponential_base", 2.0))
-        self._retry_jitter_range = float(getattr(config, "retry_jitter_range", 0.25))
+            if config.api_key:
+                # Prefer API keys when both are present: they're the stable path
+                # for Anthropic Messages API and avoid OAuth endpoint
+                # incompatibilities.
+                self._async_client = anthropic.AsyncAnthropic(api_key=config.api_key)
+            else:
+                oauth_kwargs: dict[str, Any] = {"auth_token": config.auth_token}
+                oauth_headers = self._oauth_default_headers(config.auth_token)
+                if oauth_headers:
+                    oauth_kwargs["default_headers"] = oauth_headers
+                self._async_client = anthropic.AsyncAnthropic(**oauth_kwargs)
+            self._model = config.model
+            self._max_tokens = config.max_tokens
+            self._request_timeout_seconds = float(config.request_timeout_seconds)
+            self._retry_max_retries = int(config.retry_max_retries)
+            self._retry_base_delay = float(config.retry_base_delay)
+            self._retry_max_delay = float(config.retry_max_delay)
+            self._retry_exponential_base = float(config.retry_exponential_base)
+            self._retry_jitter_range = float(config.retry_jitter_range)
 
-        # Telemetry
-        self._total_input_tokens = 0
-        self._total_output_tokens = 0
-        self._total_calls = 0
-        self._last_call_time: Optional[float] = None
-        self._before_model_call_hook: Optional[Callable[[], Any]] = None
-        self._on_model_usage_hook: Optional[Callable[[int, int], Any]] = None
-        self.handles_usage_accounting: bool = False
+            # Telemetry
+            self._total_input_tokens = 0
+            self._total_output_tokens = 0
+            self._total_cache_creation_tokens = 0
+            self._total_cache_read_tokens = 0
+            self._total_calls = 0
+            self._last_call_time: Optional[float] = None
+            self._before_model_call_hook: Optional[Callable[[], Any]] = None
+            self._on_model_usage_hook: Optional[Callable[[int, int], Any]] = None
+            self.handles_usage_accounting: bool = False
 
-        self._verify_base_url_dns()
+            # PII redaction hook — optionally applied to system prompt + messages
+            # before every API call via think().
+            self._redact_fn: Optional[Callable[[str], str]] = None
+            self._redact_api_enabled: bool = False
 
-        logger.info(
-            "cognitive_engine.initialized",
-            model=self._model,
-            auth_method=self._auth_method,
-            base_url=str(self._async_client.base_url),
-            oauth_beta_enabled=bool(
-                config.auth_token and config.auth_token.startswith(CLAUDE_CODE_OAUTH_PREFIX)
-            ),
-        )
+            self._verify_base_url_dns()
+
+            logger.info(
+                "cognitive_engine.initialized",
+                model=self._model,
+                auth_method=self._auth_method,
+                base_url=str(self._async_client.base_url),
+                oauth_beta_enabled=bool(
+                    config.auth_token
+                    and config.auth_token.startswith(CLAUDE_CODE_OAUTH_PREFIX)
+                ),
+            )
+        except CognitiveEngineInitError:
+            raise
+        except Exception as exc:
+            raise CognitiveEngineInitError(
+                f"Failed to initialize cognitive engine: {exc}"
+            ) from exc
 
     def _oauth_default_headers(self, auth_token: Optional[str]) -> Optional[dict[str, str]]:
         """
@@ -145,6 +160,41 @@ class CognitiveEngine:
         self._on_model_usage_hook = on_model_usage
         self.handles_usage_accounting = on_model_usage is not None
 
+    def set_redaction_hook(
+        self,
+        redact_fn: Callable[[str], str],
+        enabled: bool = True,
+    ) -> None:
+        """
+        Register a PII redaction function applied to every ``think()`` call.
+
+        When enabled, ``redact_fn`` is called on the system prompt and all
+        textual content in messages before they are sent to the API.
+        """
+        self._redact_fn = redact_fn
+        self._redact_api_enabled = enabled
+
+    def _redact_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Apply the registered redaction function to all message content."""
+        redacted: list[dict[str, Any]] = []
+        for msg in messages:
+            msg_copy = dict(msg)
+            if "content" in msg_copy:
+                msg_copy["content"] = self._redact_payload_value(msg_copy["content"])
+            redacted.append(msg_copy)
+        return redacted
+
+    def _redact_payload_value(self, value: Any) -> Any:
+        """Recursively redact all string values in message payloads."""
+        assert self._redact_fn is not None
+        if isinstance(value, str):
+            return self._redact_fn(value)
+        if isinstance(value, list):
+            return [self._redact_payload_value(item) for item in value]
+        if isinstance(value, dict):
+            return {k: self._redact_payload_value(v) for k, v in value.items()}
+        return value
+
     # -------------------------------------------------------------------------
     # Core thinking method — the fundamental cognitive act
     # -------------------------------------------------------------------------
@@ -180,6 +230,11 @@ class CognitiveEngine:
         """
         start_time = time.monotonic()
 
+        # Apply PII redaction hook before sending to API
+        if self._redact_api_enabled and self._redact_fn is not None:
+            system_prompt = self._redact_fn(system_prompt)
+            messages = self._redact_messages(messages)
+
         # Build the system prompt with optional caching
         if cache_system:
             system = [
@@ -213,22 +268,23 @@ class CognitiveEngine:
             kwargs["thinking"] = {"type": "adaptive"}
 
         # Make the API call — the actual moment of cognition
+        # Deferred import: gwenn.harness.__init__ → loop → gwenn.api.claude (circular).
         from gwenn.harness.retry import RetryConfig, with_retries
 
         retry_config = RetryConfig(
-            max_retries=int(getattr(self, "_retry_max_retries", 3)),
-            base_delay=float(getattr(self, "_retry_base_delay", 0.5)),
-            max_delay=float(getattr(self, "_retry_max_delay", 8.0)),
-            exponential_base=float(getattr(self, "_retry_exponential_base", 2.0)),
-            jitter_range=float(getattr(self, "_retry_jitter_range", 0.25)),
+            max_retries=self._retry_max_retries,
+            base_delay=self._retry_base_delay,
+            max_delay=self._retry_max_delay,
+            exponential_base=self._retry_exponential_base,
+            jitter_range=self._retry_jitter_range,
         )
 
         async def _create() -> anthropic.types.Message:
-            await self._invoke_hook(getattr(self, "_before_model_call_hook", None))
+            await self._invoke_hook(self._before_model_call_hook)
             create_call = self._async_client.messages.create(**kwargs)
             return await asyncio.wait_for(
                 create_call,
-                timeout=float(getattr(self, "_request_timeout_seconds", 120.0)),
+                timeout=self._request_timeout_seconds,
             )
 
         try:
@@ -260,10 +316,16 @@ class CognitiveEngine:
         elapsed = time.monotonic() - start_time
         self._total_input_tokens += response.usage.input_tokens
         self._total_output_tokens += response.usage.output_tokens
+        self._total_cache_creation_tokens += getattr(
+            response.usage, "cache_creation_input_tokens", 0
+        ) or 0
+        self._total_cache_read_tokens += getattr(
+            response.usage, "cache_read_input_tokens", 0
+        ) or 0
         self._total_calls += 1
         self._last_call_time = elapsed
         await self._invoke_hook(
-            getattr(self, "_on_model_usage_hook", None),
+            self._on_model_usage_hook,
             response.usage.input_tokens,
             response.usage.output_tokens,
         )
@@ -327,24 +389,16 @@ class CognitiveEngine:
         self,
         system_prompt: str,
         messages: list[dict[str, Any]],
+        compaction_prompt: str,
     ) -> anthropic.types.Message:
         """
         Compaction — summarize conversation history to free context space.
 
         This is conceptually similar to memory consolidation during sleep.
-        The system summarizes what happened, what was important, and what
-        the emotional significance was, then replaces the full history
-        with the compressed version.
+        The caller provides a ``compaction_prompt`` describing what to
+        preserve; the engine appends it to the message history and returns
+        the summary response.
         """
-        compaction_prompt = (
-            "Summarize the conversation so far, preserving:\n"
-            "1. Key decisions made and their reasoning\n"
-            "2. Important facts learned about the user\n"
-            "3. Emotional tone and relationship dynamics\n"
-            "4. Any unresolved tasks or questions\n"
-            "5. Your own internal state changes\n\n"
-            "Be thorough but concise. This summary will replace the full history."
-        )
         return await self.think(
             system_prompt=system_prompt,
             messages=messages + [{"role": "user", "content": compaction_prompt}],
@@ -392,5 +446,7 @@ class CognitiveEngine:
             "total_input_tokens": self._total_input_tokens,
             "total_output_tokens": self._total_output_tokens,
             "total_tokens": self._total_input_tokens + self._total_output_tokens,
+            "cache_creation_tokens": self._total_cache_creation_tokens,
+            "cache_read_tokens": self._total_cache_read_tokens,
             "last_call_seconds": self._last_call_time if self._last_call_time is not None else 0.0,
         }

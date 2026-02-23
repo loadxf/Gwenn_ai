@@ -187,7 +187,13 @@ def test_semantic_context_relationship_render_and_provenance_fallback_path() -> 
 
     class EpisodicStub:
         def __init__(self):
-            self._episodes = [Episode(episode_id="ep-present", content="Python decorators wrap functions clearly")]
+            self._ep = Episode(
+                episode_id="ep-present",
+                content="Python decorators wrap functions clearly",
+            )
+
+        def get_episode(self, ep_id: str):
+            return self._ep if ep_id == "ep-present" else None
 
     prov = sm.verify_provenance(node.node_id, EpisodicStub(), min_support_overlap=float("nan"))
     assert prov["found_count"] == 1

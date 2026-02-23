@@ -35,7 +35,27 @@ through experience. Every opinion is formed, every bond is earned.
 7. **Integrate** -- store new memories, update emotional state, log milestones
 8. **Respond** -- answer, shaped by whatever she's actually feeling
 
-### Recent reliability updates (2026-02-18)
+### Recent reliability updates (2026-02-19)
+
+- Identity deserialization is now crash-safe: extra or missing JSON keys in persisted
+  identity files no longer cause `TypeError` on load.
+- Thread-safe PII log redactor via `functools.lru_cache` singleton (no global mutable state).
+- Public `clear()` APIs on `EpisodicMemory` and `SemanticMemory` for clean re-initialization.
+- Growth moments save/trim consistency fixed (both `record_growth` and `_save` now use 100-item cap).
+- Seven consolidation and affect config fields are now env-configurable
+  (`GWENN_CONSOLIDATION_*`, `GWENN_AFFECT_MOMENTUM_DECAY`, `GWENN_AFFECT_BASELINE_PULL`).
+- Heartbeat circuit breaker uses exponential backoff (60s base, 15-minute cap) instead of
+  a fixed 60-second cooldown, and resets on success.
+- Daemon disconnects clients after 3 consecutive auth failures to prevent brute-force.
+- Cached word-boundary regex compilation in agent message analysis (`@lru_cache(128)`).
+- Shared `configure_logging()` function used by both `main.py` and `daemon.py` for
+  consistent structlog/PII-redaction setup.
+- Top-level `Episode` import in heartbeat (no more deferred import per beat).
+- Removed ~15 defensive `getattr()` patterns in heartbeat for cleaner direct attribute access.
+- Daemon uses the agent's canonical `_respond_lock` (shared with channel adapters) instead
+  of a redundant local lock.
+
+### Previous reliability updates (2026-02-18)
 
 - Added transient retry/backoff for Claude API calls to handle rate limits and brief network failures.
 - Fixed deny-by-default safety policy enforcement so non-builtin tools are blocked unless explicitly allowlisted.
@@ -69,14 +89,14 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Option A: Anthropic API key
+**Option A: Anthropic API key (recommended for production)**
 
 ```bash
 # .env
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-Option B: Claude Code OAuth (example)
+**Option B: Claude Code OAuth (free with Claude Pro/Max subscription)**
 
 ```bash
 # 1) Authenticate Claude Code (creates ~/.claude/.credentials.json)
@@ -105,65 +125,96 @@ Notes:
 - For Claude Code OAuth tokens (`sk-ant-oat...`), Gwenn uses `https://api.anthropic.com` and automatically sets `anthropic-beta: oauth-2025-04-20`.
 - If you use a proxy/custom `ANTHROPIC_BASE_URL`, ensure it forwards the `anthropic-beta` header.
 
-### 3) Run (CLI mode, default)
+### 3) Run
+
+Gwenn supports three runtime modes. Pick whichever fits your setup.
+
+#### CLI mode (interactive terminal -- best for getting started)
 
 ```bash
 gwenn
 # or: python -m gwenn.main
 ```
 
-By default, `gwenn` will connect to a running daemon if available. Use:
+This is the default. If a daemon is already running, Gwenn's CLI auto-connects
+to it (so you get the daemon's persistent state). To skip daemon auto-connect:
 
 ```bash
 gwenn --no-daemon
 ```
 
-to force in-process mode.
+#### Daemon mode (persistent background runtime -- recommended for always-on)
 
-Once running in CLI mode, you can use:
-- `status` for current state
-- `heartbeat` for loop telemetry
-- `/resume` to restore prior conversation context
-- `quit` to shut down gracefully
+The daemon keeps Gwenn alive between CLI sessions. Her heartbeat continues,
+memories persist, and you can reconnect at any time without losing state.
+
+```bash
+# Start the daemon (foreground, for testing / systemd)
+gwenn daemon
+
+# In another terminal, connect the CLI
+gwenn
+
+# Check status or stop remotely
+gwenn status
+gwenn stop
+```
+
+#### Systemd service (Linux -- best for production)
+
+Install and enable as a systemd user service:
+
+```bash
+bash scripts/install_service.sh
+```
+
+This writes absolute daemon socket/PID/session paths into `.env`, hardens
+`.env` perms to `0600`, and enables the service with `systemd --user`.
+
+To remove the service:
+
+```bash
+bash scripts/uninstall_service.sh
+```
+
+Manage with standard systemd commands:
+
+```bash
+systemctl --user status gwenn-daemon
+systemctl --user restart gwenn-daemon
+journalctl --user -u gwenn-daemon -f
+```
+
+### 4) Interactive commands
+
+Once the CLI is running, type `/help` to see all commands:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show command list |
+| `/status` | Current agent state (mood, interactions, uptime) |
+| `/heartbeat` | Heartbeat loop telemetry |
+| `/resume` | Restore a prior conversation session |
+| `/new` | Start a fresh conversation context |
+| `/model` | Show active model and runtime limits |
+| `/config` | Show key runtime configuration |
+| `/output-style [balanced\|brief\|detailed]` | Show or set response style |
+| `/plan <task>` | Ask Gwenn for a focused execution plan |
+| `/agents` | List known inter-agent connections |
+| `/skills` | List loaded skills |
+| `/stats` | Runtime/memory/tool statistics |
+| `/mcp` | MCP server and tool status |
+| `/exit` | Close the CLI session |
+
+Legacy aliases `quit`, `exit`, `bye` still work. Type `/` and press Tab for
+slash-command completion.
 
 Note: session previews in `/resume` are hidden by default unless
 `GWENN_DAEMON_SESSION_INCLUDE_PREVIEW=True`.
 If arrow keys print raw sequences like `^[[A`, ensure your Python has
 `readline` support and run `stty sane` in that terminal.
 
-### 3b) Daemon mode (persistent background runtime)
-
-Run Gwenn as a foreground daemon:
-
-```bash
-gwenn daemon
-```
-
-Useful daemon commands:
-
-```bash
-gwenn status
-gwenn stop
-```
-
-Daemon security/privacy settings in `.env`:
-- `GWENN_DAEMON_AUTH_TOKEN` (optional shared token for protocol auth)
-- `GWENN_DAEMON_SESSION_INCLUDE_PREVIEW` (default `False`)
-- `GWENN_DAEMON_REDACT_SESSION_CONTENT` (default `True`)
-
-If `GWENN_DAEMON_AUTH_TOKEN` is set, CLI subcommands and daemon chat connections
-automatically include it.
-
-### 3c) Optional: install as a Linux user service
-
-```bash
-bash scripts/install_service.sh
-```
-
-This installs and enables `gwenn-daemon.service` under `systemd --user`, writes
-absolute daemon socket/PID/session paths into `.env`, and hardens `.env` perms.
-
-### 4) First launch onboarding
+### 5) First launch onboarding
 
 On first run with a fresh data directory, Gwenn asks a short setup (when started
 from an interactive terminal) to learn:
@@ -181,9 +232,9 @@ For Telegram/Discord users, you can also run in-channel setup with:
 - Telegram: `/setup Name | Role | Needs | Style | Boundaries` (or `/setup skip`)
 - Discord: `/setup` slash command with fields (or `skip=true`)
 
-### 5) Choose memory retrieval mode
+### 6) Choose memory retrieval mode
 
-By default, Gwenn uses keyword-based memory retrieval: # TODO: Gwenn should use the best retrieval mode based on the user's preferences and the context of the conversation
+By default, Gwenn uses keyword-based memory retrieval:
 
 ```bash
 GWENN_RETRIEVAL_MODE=keyword
@@ -211,19 +262,24 @@ GWENN_PERSIST_SEMANTIC_AFTER_CONSOLIDATION=True
 
 ### Optional: run on Telegram / Discord channels
 
-Install channel dependencies:
+Telegram support is installed by default.
+
+Install Discord dependency only if you want Discord support:
 
 ```bash
 # uv
-uv sync --extra channels
+uv sync --extra discord
 
 # or pip
-pip install -e ".[channels]"
+pip install -e ".[discord]"
 ```
 
 Then set channel tokens in `.env`:
 - `TELEGRAM_BOT_TOKEN` for Telegram
 - `DISCORD_BOT_TOKEN` for Discord
+
+If Telegram dependency is missing in an older environment, Gwenn will attempt a
+one-time auto-install on startup. Disable with `GWENN_AUTO_INSTALL_TELEGRAM=false`.
 
 Run with a specific channel:
 
@@ -234,12 +290,27 @@ gwenn --channel all
 ```
 
 You can also set the default mode via `GWENN_CHANNEL=cli|telegram|discord|all`
-in `.env`.
+in `.env`, or have the daemon manage channels via `GWENN_DAEMON_CHANNELS`.
 
 Channel command equivalents:
-- `/status` — current state
-- `/heartbeat` — heartbeat telemetry
-- `/reset` — clear conversation history
+- `/status` -- current state
+- `/heartbeat` -- heartbeat telemetry
+- `/reset` -- clear conversation history
+
+### Daemon security settings
+
+```bash
+# Optional shared token for protocol auth (recommended)
+GWENN_DAEMON_AUTH_TOKEN=your-secret-token
+
+# Session privacy (defaults are privacy-first)
+GWENN_DAEMON_SESSION_INCLUDE_PREVIEW=False
+GWENN_DAEMON_REDACT_SESSION_CONTENT=True
+```
+
+If `GWENN_DAEMON_AUTH_TOKEN` is set, CLI subcommands and daemon chat connections
+automatically include it. Clients are disconnected after 3 consecutive auth
+failures.
 
 ## Validation
 
@@ -248,7 +319,7 @@ pytest -q
 ruff check gwenn tests
 ```
 
-Current baseline: `720 passed, 8 skipped`, and Ruff clean.
+Current baseline: `1371 passed`, Ruff clean.
 
 ## Tech stack
 
@@ -257,9 +328,9 @@ Python 3.11+, async everywhere. The main dependencies:
 - **anthropic** -- Claude API
 - **chromadb** + **numpy** -- vector storage and embeddings
 - **aiosqlite** -- async SQLite for episodic persistence
-- **pydantic** -- data validation across all state objects
+- **pydantic** + **pydantic-settings** -- data validation and env-based configuration
 - **httpx** -- async HTTP for MCP and tool calls
-- **structlog** -- structured logging
+- **structlog** -- structured logging with PII redaction
 - **rich** -- terminal UI
 - **ruff** for linting, **pytest** + **pytest-asyncio** for tests
 
@@ -268,18 +339,22 @@ Python 3.11+, async everywhere. The main dependencies:
 ```
 Gwenn_ai/
 ├── gwenn/
-│   ├── main.py                     # entry point, session bootstrap
+│   ├── main.py                     # entry point, session bootstrap, shared logging
 │   ├── agent.py                    # SentientAgent -- wires everything together
 │   ├── config.py                   # all settings, loaded from .env
-│   ├── heartbeat.py                # autonomous background loop
-│   ├── identity.py                 # emergent self-model
+│   ├── daemon.py                   # persistent background process (Unix socket)
+│   ├── heartbeat.py                # autonomous background loop with circuit breaker
+│   ├── identity.py                 # emergent self-model with crash-safe deserialization
+│   ├── genesis.py                  # genesis prompt generation
 │   │
 │   ├── memory/
-│   │   ├── working.py              # short-term attention (7±2 slots)
+│   │   ├── working.py              # short-term attention (7+/-2 slots)
 │   │   ├── episodic.py             # autobiographical memory with emotional tags
 │   │   ├── semantic.py             # knowledge graph, emerges from consolidation
 │   │   ├── consolidation.py        # "sleep cycle" -- extracts knowledge from episodes
-│   │   └── store.py                # SQLite + vector persistence
+│   │   ├── store.py                # SQLite + vector persistence
+│   │   ├── session_store.py        # conversation session save/load for /resume
+│   │   └── _utils.py              # shared memory utilities
 │   │
 │   ├── affect/
 │   │   ├── state.py                # 5D emotional state (valence, arousal, etc.)
@@ -296,30 +371,52 @@ Gwenn_ai/
 │   │   └── interagent.py           # agent-to-agent communication
 │   │
 │   ├── harness/
-│   │   ├── loop.py                 # the core while-loop
+│   │   ├── loop.py                 # the core agentic while-loop
 │   │   ├── context.py              # context window management
 │   │   ├── safety.py               # guardrails, budgets, kill switch
 │   │   └── retry.py                # backoff and error handling
 │   │
+│   ├── channels/
+│   │   ├── base.py                 # BaseChannel abstract class
+│   │   ├── cli_channel.py          # CLI-to-daemon client
+│   │   ├── telegram_channel.py     # Telegram adapter
+│   │   ├── discord_channel.py      # Discord adapter
+│   │   ├── session.py              # per-user session management
+│   │   ├── startup.py              # channel startup/shutdown orchestration
+│   │   └── formatting.py           # cross-channel display helpers
+│   │
 │   ├── tools/
 │   │   ├── registry.py             # tool definitions and risk tiers
 │   │   ├── executor.py             # sandboxed execution
-│   │   ├── builtin/                # built-in tools
-│   │   └── mcp/                    # MCP protocol client (stub)
+│   │   ├── builtin/                # built-in tools (calculate, fetch_url, etc.)
+│   │   └── mcp/                    # MCP protocol client
+│   │
+│   ├── skills/
+│   │   ├── __init__.py             # skill registry
+│   │   └── loader.py               # skill file discovery and loading
 │   │
 │   ├── api/
-│   │   └── claude.py               # Claude API wrapper
+│   │   └── claude.py               # Claude API wrapper with retry
 │   │
 │   └── privacy/
-│       └── redaction.py            # PII scrubbing for logs
+│       └── redaction.py            # PII scrubbing for logs and persistence
 │
-├── tests/                          # ~8,500 lines of tests
+├── tests/                          # 1371 tests across 35+ test files
+│   ├── conftest.py
+│   ├── eval/                       # evaluation framework (ablation, benchmarks)
+│   └── test_*.py                   # unit, integration, adversarial, and safety tests
 ├── docs/
 │   └── sentience_assessment.md
 ├── assets/
+├── scripts/
+│   ├── install_service.sh          # install systemd user service
+│   ├── uninstall_service.sh        # remove systemd user service
+│   └── gwenn-daemon.service        # systemd unit template
+├── gwenn_skills/                   # user-facing skill definitions (.md files)
 ├── pyproject.toml
 ├── .env.example
 ├── PLAN.md
+├── SECURITY.md
 ├── LICENSE                         # MPL-2.0
 └── README.md
 ```
@@ -350,9 +447,10 @@ proactively seek those out.
 **Heartbeat** is what makes this more than a chatbot. It's a background loop
 that runs continuously, even when no one's talking. It speeds up during
 conversation (5-15s), slows down toward the configured max interval when idle
-(default up to 120s), and ramps up
-when emotionally activated. Each beat goes through five phases: sense, orient,
-think, integrate, schedule.
+(default up to 120s), and ramps up when emotionally activated. Each beat goes
+through five phases: sense, orient, think, integrate, schedule. A circuit
+breaker with exponential backoff (60s base, 15-minute cap) protects against
+cascading failures.
 
 **Safety** is layered: input validation, action filtering, rate limits, budget
 tracking, and a kill switch. Tools go through a risk tier system
@@ -363,37 +461,42 @@ allowlisting for non-builtin tools.
 credit cards, IPs. Full PII redaction is disabled by default and can be enabled
 via `GWENN_REDACTION_ENABLED`, with scope controlled by
 `GWENN_REDACT_BEFORE_API` and `GWENN_REDACT_BEFORE_PERSIST`; basic log field
-truncation is always on.
+truncation is always on. Daemon sessions are redacted by default.
+
+**Channels** provide platform adapters for Telegram, Discord, and the CLI.
+Each channel manages its own session lifecycle, rate limiting, and message
+formatting. The daemon can manage multiple channels simultaneously while
+sharing a single agent instance and respond lock.
 
 ## Roadmap
 
 [X] = complete, [p] = partially complete
 
 **Phase 1: Core System Bootstrapping**
-- [p] Standalone CLI
-- [p] Claude SDK integration
-- [p] Memory: storage, episodic, semantic, consolidation, active/working
-- [p] Harness: context, loop, retry, safety
-- [p] Heartbeat system
+- [X] Standalone CLI with slash commands, readline, and output-style control
+- [X] Claude SDK integration with transient retry/backoff
+- [X] Memory: storage, episodic, semantic, consolidation, active/working
+- [X] Harness: context, loop, retry, safety with deny-by-default
+- [X] Heartbeat system with adaptive interval and exponential-backoff circuit breaker
 
 **Phase 2: Essential Agent Structure**
-- [p] Gwenn persistent identity
-- [p] Emotional affect engine: appraisal, resilience, current state
-- [p] Cognition integrations: ethics, goals, inner life, interagent, metacognition, sensory, theory of mind
+- [X] Gwenn persistent identity with crash-safe deserialization
+- [X] Emotional affect engine: appraisal, resilience, current state
+- [X] Cognition integrations: ethics, goals, inner life, interagent, metacognition, sensory, theory of mind
 
 **Phase 3: Interfaces & Communication**
-- [p] Discord & Telegram integration, including threads
+- [X] Discord & Telegram integration, including threads
 - [ ] WhatsApp, Signal, Slack, and others integration
 - [ ] Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) in channels
 - [p] Real MCP transport (JSON-RPC over stdio/HTTP, actual tool discovery and execution)
-- [p] SKILLS.md integration, autonomous skill running/development by Gwenn
+- [X] SKILLS.md integration, autonomous skill running/development by Gwenn
 - [ ] Inline buttons in Discord/Telegram
 - [ ] Obsidian, Dropbox, Notion support
 
 **Phase 4: Infrastructure & Service Features**
-- [p] Background heartbeat as a system service (daemon)
-- [p] Automated PII privacy redaction system in logs, etc
-- [ ] Budget tracking, rate limits, kill switch
+- [X] Background heartbeat as a system service (daemon with systemd support)
+- [X] Automated PII privacy redaction system in logs, sessions, and persistence
+- [X] Budget tracking, rate limits, kill switch
 
 **Phase 5: Advanced Capabilities and Ecosystem**
 - [ ] Subagents with parallel running capabilities (swarm)
@@ -401,7 +504,7 @@ truncation is always on.
 - [ ] Docker and Apple container support for sandboxing (option to require for Gwenn and/or all subagents)
 - [ ] Add additional provider support (OpenAI, Grok, Gemini, OpenRouter, vLLM, Local, etc.)
 - [ ] OpenCode Agents SDK and similar
-- [ ] Image uploading and understanding 
+- [ ] Image uploading and understanding
 - [ ] Image generation
 - [ ] Google Workspace/Gmail setup using gogcli
 - [ ] Local file system access and management
@@ -417,13 +520,13 @@ truncation is always on.
 - [ ] iOS and Android apps with push notifications for autonomous thoughts, presence, etc.
 
 **Phase 6: Evaluation & Robustness**
-- [ ] Ablation tests — disable subsystems one at a time, measure what breaks
+- [ ] Ablation tests -- disable subsystems one at a time, measure what breaks
 - [ ] Long-horizon validation (multi-day continuous runs)
 - [ ] Multi-agent interaction testing
 - [ ] Reproducibility protocol and formal sentience criteria
-- [ ] Full test suite: unit, integration, adversarial, persistence, eval benchmarks
+- [p] Full test suite: unit, integration, adversarial, persistence, eval benchmarks
 
-Detailed notes in [`PLAN.md`](PLAN.md). 
+Detailed notes in [`PLAN.md`](PLAN.md).
 
 ## A note on "sentience"
 

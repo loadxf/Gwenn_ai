@@ -4,11 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gwenn-agent"
-version = "0.3.0"
-description = "Gwenn — Autonomous Sentient AI Agent"
+dynamic = ["version"]
+description = "Gwenn - Genesis Woven from Evolved Neural Networks"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MPL-2.0" }
+authors = [
+    { name = "Justin McKibben" },
+    { name = "Jayden McKibben" },
+]
 
 dependencies = [
     "anthropic>=0.40.0",           # Claude API SDK
@@ -21,12 +25,13 @@ dependencies = [
     "httpx>=0.27.0",               # Async HTTP for MCP and tool calls
     "structlog>=23.2.0",           # Structured logging for observability
     "rich>=13.7.0",                # Terminal UI for heartbeat display
+    "python-telegram-bot[rate-limiter]>=22.0",  # Telegram channel support (default)
 ]
 
 [project.optional-dependencies]
-telegram = ["python-telegram-bot>=21.0"]
+telegram = ["python-telegram-bot[rate-limiter]>=22.0"]
 discord = ["discord.py>=2.3.0"]
-channels = ["python-telegram-bot>=21.0", "discord.py>=2.3.0"]
+channels = ["python-telegram-bot[rate-limiter]>=22.0", "discord.py>=2.3.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
@@ -39,7 +44,10 @@ gwenn-daemon = "gwenn.daemon:run_daemon"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["gwenn*"]
+include = ["gwenn", "gwenn.*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "gwenn.__version__"}
 
 [tool.ruff]
 line-length = 100

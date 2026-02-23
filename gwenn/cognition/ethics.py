@@ -267,7 +267,6 @@ class EthicalReasoner:
 
     def record_assessment(self, assessment: EthicalAssessment) -> None:
         """Record an ethical assessment for tracking over time."""
-        assessment.concern_threshold = self._concern_threshold
         self._assessment_history.append(assessment)
         if len(self._assessment_history) > self._assessment_history_size:
             self._assessment_history = self._assessment_history[-self._assessment_history_size:]
