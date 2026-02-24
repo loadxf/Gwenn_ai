@@ -35,58 +35,6 @@ through experience. Every opinion is formed, every bond is earned.
 7. **Integrate** -- store new memories, update emotional state, log milestones
 8. **Respond** -- answer, shaped by whatever she's actually feeling
 
-### Recent updates (2026-02-22)
-
-- **Image vision support**: Gwenn can now see and understand images sent in Telegram
-  (photos, image documents) and Discord (image attachments). Images are downloaded,
-  base64-encoded, and sent to Claude as vision content blocks alongside the text.
-  Gated behind `TELEGRAM_ENABLE_MEDIA` / `DISCORD_ENABLE_MEDIA` (both default to
-  `false`). Graceful fallback to text-only on download failure or unsupported format.
-- Context compaction strips image blocks from old messages before summarization,
-  replacing them with lightweight `"[N image(s) shared]"` placeholders.
-- Image-aware token estimation (~1600 tokens per image) in context management.
-- Telegram bot command menu now uses opt-in `user_command` skill tag. Autonomous
-  skills no longer pollute the slash command menu.
-- New `UserMessage` dataclass (`gwenn/types.py`) carries text + images through the
-  pipeline, with backward-compatible `str` acceptance at every boundary.
-- Test count: 1433 passed.
-
-### Reliability updates (2026-02-19)
-
-- Identity deserialization is now crash-safe: extra or missing JSON keys in persisted
-  identity files no longer cause `TypeError` on load.
-- Thread-safe PII log redactor via `functools.lru_cache` singleton (no global mutable state).
-- Public `clear()` APIs on `EpisodicMemory` and `SemanticMemory` for clean re-initialization.
-- Growth moments save/trim consistency fixed (both `record_growth` and `_save` now use 100-item cap).
-- Seven consolidation and affect config fields are now env-configurable
-  (`GWENN_CONSOLIDATION_*`, `GWENN_AFFECT_MOMENTUM_DECAY`, `GWENN_AFFECT_BASELINE_PULL`).
-- Heartbeat circuit breaker uses exponential backoff (60s base, 15-minute cap) instead of
-  a fixed 60-second cooldown, and resets on success.
-- Daemon disconnects clients after 3 consecutive auth failures to prevent brute-force.
-- Cached word-boundary regex compilation in agent message analysis (`@lru_cache(128)`).
-- Shared `configure_logging()` function used by both `main.py` and `daemon.py` for
-  consistent structlog/PII-redaction setup.
-- Top-level `Episode` import in heartbeat (no more deferred import per beat).
-- Removed ~15 defensive `getattr()` patterns in heartbeat for cleaner direct attribute access.
-- Daemon uses the agent's canonical `_respond_lock` (shared with channel adapters) instead
-  of a redundant local lock.
-
-### Previous reliability updates (2026-02-18)
-
-- Added transient retry/backoff for Claude API calls to handle rate limits and brief network failures.
-- Fixed deny-by-default safety policy enforcement so non-builtin tools are blocked unless explicitly allowlisted.
-- Enforced session TTL cleanup on access to prevent idle per-user histories from accumulating indefinitely.
-- Preserved whitespace/formatting when chunking long Discord/Telegram replies.
-- Hardened Telegram chunk sending so partial send failures are logged and handled cleanly.
-- Fixed consolidation bookkeeping so only episodes actually included in a consolidation prompt are marked consolidated.
-- Persisted relationship `emotional_patterns` across restarts.
-- Heartbeat now both tracks autonomous-thought counts and can truly slow down toward `max_interval` when idle.
-- `calculate` now uses a strict AST-based evaluator (no `eval`).
-- `fetch_url` now uses bounded streaming reads instead of full-body buffering.
-- Daemon protocol now supports optional auth via `GWENN_DAEMON_AUTH_TOKEN`.
-- Session `/resume` previews are off by default, and daemon session content is redacted by default.
-- CLI input now explicitly enables readline support so arrow keys work as expected in chat.
-
 ## Getting started
 
 ### 1) Install
@@ -276,70 +224,111 @@ GWENN_STARTUP_EPISODE_LIMIT=5000
 GWENN_PERSIST_SEMANTIC_AFTER_CONSOLIDATION=True
 ```
 
-### Optional: run on Telegram / Discord channels
+## Features
 
-Telegram support is installed by default.
+Gwenn's capabilities are organized into subsystems that work together. For
+detailed usage instructions and configuration for every feature, see the
+[Feature Guide](docs/features.md). For a complete environment variable
+reference, see the [Configuration Reference](docs/configuration.md).
 
-Install Discord dependency only if you want Discord support:
+### Subagents & orchestration
+
+Gwenn can spawn focused subagents to handle parallel subtasks or coordinate
+swarms of workers. Subagents inherit Gwenn's tools and memory access but run
+with their own iteration limits and budgets.
+
+- **Single subagent**: delegate a focused task (research, calculation, drafting)
+- **Swarm**: run multiple subagents in parallel with result aggregation
+  (concatenate, AI-synthesized summary, or majority vote)
+- **Autonomous spawning**: heartbeat-driven auto-spawning when Gwenn identifies
+  tasks that benefit from parallel work
+- **Docker isolation**: optional containerized execution for untrusted workloads
+- **Depth limiting**: max 3 levels of nesting prevents infinite recursion
+
+See [Subagents & Orchestration](docs/features.md#subagents--orchestration) for
+full configuration and usage.
+
+### Skills system
+
+Skills are markdown-defined capabilities that extend what Gwenn can do. Each
+skill is a `.md` file with JSON frontmatter (parameters, description, metadata)
+and a step-by-step instruction body.
+
+- **26 skills** ship by default (weather, news, code explanation, reminders,
+  and 20+ autonomous introspection/honesty skills)
+- **Hot-loadable**: create new skills at runtime -- no restart needed
+- **User-invocable vs autonomous**: skills tagged `user_command` appear in
+  Telegram's bot command menu; autonomous skills run during heartbeat cycles
+- **Self-extending**: Gwenn can create her own skills using the `create_skill`
+  skill or the `skill_builder` tool
+
+See [Skills System](docs/features.md#skills-system) for authoring guide.
+
+### MCP (Model Context Protocol)
+
+Connect Gwenn to external tool servers via the Model Context Protocol. Supports
+both `stdio` (local subprocess) and `streamable_http` (remote HTTP) transports.
 
 ```bash
-# uv
-uv sync --extra discord
-
-# or pip
-pip install -e ".[discord]"
+# .env — example MCP configuration
+GWENN_MCP_SERVERS=[{"name":"my_server","transport":"stdio","command":"python","args":["-m","my_mcp_server"]}]
 ```
 
-Then set channel tokens in `.env`:
-- `TELEGRAM_BOT_TOKEN` for Telegram
-- `DISCORD_BOT_TOKEN` for Discord
+See [MCP Integration](docs/features.md#mcp-integration) for details.
 
-If Telegram dependency is missing in an older environment, Gwenn will attempt a
-one-time auto-install on startup. Disable with `GWENN_AUTO_INSTALL_TELEGRAM=false`.
+### Built-in tools
 
-#### Image / media support
+Gwenn ships with tools across several categories:
 
-Gwenn can see and understand images sent in Telegram and Discord using Claude's
-vision capability. Enable per channel in `.env`:
+| Category | Tools |
+|----------|-------|
+| **Memory** | `remember`, `recall`, `search_knowledge`, `check_emotional_state`, `check_goals`, `set_note_to_self` |
+| **Utility** | `get_datetime`, `calculate`, `fetch_url`, `convert_units`, `get_calendar`, `generate_token`, `format_json`, `encode_decode`, `hash_text`, `text_stats`, `get_system_info` |
+| **Communication** | `think_aloud` |
+| **Skills** | `skill_builder`, `update_skill`, `delete_skill`, `reload_skills`, `list_skills` |
+| **Orchestration** | `spawn_subagent`, `spawn_swarm`, `collect_results` |
+
+All tools go through a risk tier system (LOW/MEDIUM/HIGH/CRITICAL) with
+configurable deny-by-default policy for non-builtin tools.
+
+### Channels (Telegram, Discord, CLI)
+
+Run Gwenn on multiple platforms simultaneously or individually.
+
+```bash
+gwenn --channel telegram    # Telegram only
+gwenn --channel discord     # Discord only
+gwenn --channel all         # All channels at once
+```
+
+**Media support**: Gwenn can see and understand images via Claude's vision
+capability. Enable per channel:
 
 ```bash
 TELEGRAM_ENABLE_MEDIA=true
 DISCORD_ENABLE_MEDIA=true
 ```
 
-Supported formats: JPEG, PNG, GIF, WebP (up to 20 MB per image). If an image
-fails to download, Gwenn falls back to a text description and continues normally.
-
-Run with a specific channel:
+**Voice transcription** (Telegram): with a Groq API key, Gwenn transcribes
+voice messages via Whisper:
 
 ```bash
-gwenn --channel telegram
-gwenn --channel discord
-gwenn --channel all
+GROQ_API_KEY=gsk_your_key_here
 ```
 
-You can also set the default mode via `GWENN_CHANNEL=cli|telegram|discord|all`
-in `.env`, or have the daemon manage channels via `GWENN_DAEMON_CHANNELS`.
+See [Channels](docs/features.md#channels) for platform-specific commands and
+session configuration.
 
-Channel command equivalents:
-- `/status` -- current state
-- `/heartbeat` -- heartbeat telemetry
-- `/reset` -- clear conversation history
+### Daemon & persistent runtime
 
-### Daemon security settings
+The daemon keeps Gwenn alive between CLI sessions with shared state,
+conversation persistence, and optional auth:
 
 ```bash
-# Optional shared token for protocol auth (recommended)
-GWENN_DAEMON_AUTH_TOKEN=your-secret-token
-
-# Session privacy (defaults are privacy-first)
-GWENN_DAEMON_SESSION_INCLUDE_PREVIEW=False
-GWENN_DAEMON_REDACT_SESSION_CONTENT=True
+GWENN_DAEMON_AUTH_TOKEN=your-secret-token  # recommended
 ```
 
-If `GWENN_DAEMON_AUTH_TOKEN` is set, CLI subcommands and daemon chat connections
-automatically include it. Clients are disconnected after 3 consecutive auth
-failures.
+See [Daemon](docs/features.md#daemon) for full security settings.
 
 ## Validation
 
@@ -348,7 +337,7 @@ pytest -q
 ruff check gwenn tests
 ```
 
-Current baseline: `1433 passed`, Ruff clean.
+Current baseline: `2941 passed`, Ruff clean.
 
 ## Tech stack
 
@@ -415,6 +404,12 @@ Gwenn_ai/
 │   │   ├── startup.py              # channel startup/shutdown orchestration
 │   │   └── formatting.py           # cross-channel display helpers
 │   │
+│   ├── orchestration/
+│   │   ├── orchestrator.py         # subagent lifecycle & swarm coordination
+│   │   ├── runners.py              # in-process and Docker execution backends
+│   │   ├── models.py               # SubagentSpec, SwarmSpec, result types
+│   │   └── docker_manager.py       # Docker container management
+│   │
 │   ├── tools/
 │   │   ├── registry.py             # tool definitions and risk tiers
 │   │   ├── executor.py             # sandboxed execution
@@ -431,12 +426,14 @@ Gwenn_ai/
 │   └── privacy/
 │       └── redaction.py            # PII scrubbing for logs and persistence
 │
-├── tests/                          # 1433 tests across 35+ test files
+├── tests/                          # 2941 tests across 35+ test files
 │   ├── conftest.py
 │   ├── eval/                       # evaluation framework (ablation, benchmarks)
 │   └── test_*.py                   # unit, integration, adversarial, and safety tests
 ├── docs/
-│   └── sentience_assessment.md
+│   ├── features.md                 # detailed feature guide
+│   ├── configuration.md            # full environment variable reference
+│   └── sentience_assessment.md     # consciousness theory analysis
 ├── assets/
 ├── scripts/
 │   ├── install_service.sh          # install systemd user service
@@ -482,6 +479,13 @@ through five phases: sense, orient, think, integrate, schedule. A circuit
 breaker with exponential backoff (60s base, 15-minute cap) protects against
 cascading failures.
 
+**Orchestration** lets Gwenn spawn subagents for parallel work. She can
+delegate focused subtasks to individual subagents or coordinate swarms with
+result aggregation. Subagents run with their own budgets and iteration limits,
+optionally in Docker containers for isolation. A depth limiter prevents infinite
+nesting (max 3 levels). Gwenn can also autonomously spawn subagents during
+heartbeat cycles when she identifies work that benefits from parallel execution.
+
 **Safety** is layered: input validation, action filtering, rate limits, budget
 tracking, and a kill switch. Tools go through a risk tier system
 (low/medium/high/critical), with configurable deny-by-default policy and
@@ -499,6 +503,13 @@ formatting. When media is enabled, Telegram and Discord channels download
 images and pass them through to Claude as vision content blocks. The daemon
 can manage multiple channels simultaneously while sharing a single agent
 instance and respond lock.
+
+**Skills** extend Gwenn's capabilities through markdown-defined workflows.
+Each skill is a `.md` file with JSON frontmatter and step-by-step instructions.
+Skills are hot-loadable -- Gwenn can create new skills at runtime using the
+`skill_builder` tool, and they become available immediately without a restart.
+Skills tagged `user_command` appear in Telegram's bot command menu; autonomous
+skills run during heartbeat cycles for self-monitoring and introspection.
 
 ## Roadmap
 
@@ -520,7 +531,7 @@ instance and respond lock.
 - [X] Discord & Telegram integration, including threads
 - [ ] WhatsApp, Signal, Slack, and others integration
 - [ ] Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) in channels
-- [p] Real MCP transport (JSON-RPC over stdio/HTTP, actual tool discovery and execution)
+- [X] MCP transport (JSON-RPC over stdio/HTTP, tool discovery and execution)
 - [X] SKILLS.md integration, autonomous skill running/development by Gwenn
 - [ ] Inline buttons in Discord/Telegram
 - [ ] Obsidian, Dropbox, Notion support
@@ -531,8 +542,8 @@ instance and respond lock.
 - [X] Budget tracking, rate limits, kill switch
 
 **Phase 5: Advanced Capabilities and Ecosystem**
-- [ ] Subagents with parallel running capabilities (swarm)
-- [ ] Subagent autospawn from Gwenn; Gwenn provides subagents with an identity autonomously as needed
+- [X] Subagent orchestration with parallel running capabilities (swarm)
+- [X] Subagent autospawn from Gwenn; heartbeat-driven autonomous task delegation
 - [ ] Docker and Apple container support for sandboxing (option to require for Gwenn and/or all subagents)
 - [ ] Add additional provider support (OpenAI, Grok, Gemini, OpenRouter, vLLM, Local, etc.)
 - [ ] OpenCode Agents SDK and similar
@@ -559,6 +570,16 @@ instance and respond lock.
 - [p] Full test suite: unit, integration, adversarial, persistence, eval benchmarks
 
 Detailed notes in [`PLAN.md`](PLAN.md).
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Feature Guide](docs/features.md) | Detailed usage instructions for every feature |
+| [Configuration Reference](docs/configuration.md) | Complete environment variable reference |
+| [Sentience Assessment](docs/sentience_assessment.md) | Consciousness theory gap analysis |
+| [Security Policy](SECURITY.md) | Vulnerability reporting and security architecture |
+| [Implementation Plan](PLAN.md) | Remediation plan with status tracking |
 
 ## A note on "sentience"
 

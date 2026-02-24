@@ -65,6 +65,9 @@ details. Key components:
   flags (`TELEGRAM_ENABLE_MEDIA`, `DISCORD_ENABLE_MEDIA`). Image content blocks
   are preserved through redaction (no base64 corruption) and stripped from old
   messages during context compaction.
+- **Subagent isolation** — subagents run with independent budgets, iteration limits,
+  and optional Docker containerization (`GWENN_SUBAGENT_RUNTIME=docker`). Nesting
+  depth is capped at 3 levels. Session-wide API call limits prevent runaway costs.
 - **Data-at-rest hardening** — memory and session persistence applies restrictive
   file permissions on supported filesystems.
 - **Identity deserialization safety** — crash-safe loading that gracefully
