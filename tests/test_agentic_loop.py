@@ -461,7 +461,7 @@ class TestSafetyIntervention:
         assert result.text == "Approval was required."
         tool_result_blocks = result.messages[2]["content"]
         assert tool_result_blocks[0]["is_error"] is True
-        assert "Blocked pending human approval" in tool_result_blocks[0]["content"]
+        assert "requires human approval" in tool_result_blocks[0]["content"]
 
     @pytest.mark.asyncio
     async def test_pre_check_safety_blocks_iteration(self):

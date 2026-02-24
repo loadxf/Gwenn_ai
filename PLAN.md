@@ -129,9 +129,14 @@ Also wire consolidation to persist: in `consolidate_memories()`, after
 
 ---
 
-### 2.2 Persist Affective State Across Restarts
+### 2.2 Persist Affective State Across Restarts -- DONE
 
-**Problem:** The `affect_snapshots` table schema exists (`gwenn/memory/store.py:54-68`)
+**Status:** Resolved. `_persist_affect_snapshot()` is called on shutdown, after
+appraisal events, and periodically with throttling/delta filtering.
+`load_affect_history(limit=1)` restores affect dimensions (including baseline)
+on startup in `initialize()`.
+
+**Original problem:** The `affect_snapshots` table schema exists (`gwenn/memory/store.py:54-68`)
 and `save_affect_snapshot()` / `load_affect_history()` methods exist, but they
 are never called during startup or shutdown. Affective state always resets to
 defaults on restart.
@@ -273,12 +278,14 @@ used for anything beyond the `requires_approval` flag.
 
 ---
 
-## Phase 6: Observability & Calibration -- MOSTLY DONE
+## Phase 6: Observability & Calibration -- DONE
 
-### 6.1 Add Affect Snapshot Logging
+### 6.1 Add Affect Snapshot Logging -- DONE
 
-**Status:** Open. Affect snapshots schema exists in `MemoryStore` but is not
-called during normal operation.
+**Status:** Resolved. `_persist_affect_snapshot()` writes affect snapshots on
+meaningful emotional transitions (throttled by time interval and dimension delta).
+Called on shutdown, after appraisal events with significant changes, and on
+high-priority triggers (user_message, tool_failure, social_connection, etc.).
 
 ### 6.2 Add Log Redaction -- DONE
 
@@ -334,7 +341,7 @@ contribution). No framework exists for this.
 | 1.3 | Wire budget tracking | Critical | Low | DONE |
 | 1.4 | Fix set_note_to_self | High | Low | DONE |
 | 2.1 | Persist semantic memory | High | Medium | DONE |
-| 2.2 | Persist affect state | Medium | Low | Open |
+| 2.2 | Persist affect state | Medium | Low | DONE |
 | 2.3 | Embedding retrieval | Medium | High | DONE (keyword/embedding/hybrid) |
 | 3.1 | Unit tests | High | Medium | DONE (2941 tests) |
 | 3.2 | Integration tests | Medium | Medium | DONE |
@@ -344,7 +351,7 @@ contribution). No framework exists for this.
 | 4.3 | PII redaction | Medium | High | DONE |
 | 5.1 | Real MCP transport | Low | High | DONE |
 | 5.2 | Tool risk tiering | Medium | Low | Open |
-| 6.1 | Affect logging | Low | Low | Open |
+| 6.1 | Affect logging | Low | Low | DONE |
 | 6.2 | Log redaction | Low | Low | DONE |
 | 7.1 | Ablation framework | Low | Medium | Open |
 | 7.2 | Identity coherence tests | Low | Medium | Open |

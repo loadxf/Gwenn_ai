@@ -1,3 +1,4 @@
+# /home/bob/Gwenn_ai/gwenn/config.py
 """
 Configuration for Gwenn Agent.
 
@@ -268,7 +269,7 @@ class ContextConfig(BaseSettings):
 class SafetyConfig(BaseSettings):
     """Configuration for safety guardrails — the boundaries I choose to respect."""
 
-    max_tool_iterations: int = Field(75, alias="GWENN_MAX_TOOL_ITERATIONS")
+    max_tool_iterations: int = Field(150, alias="GWENN_MAX_TOOL_ITERATIONS")
     require_approval_for: list[str] = Field(
         default_factory=lambda: ["file_write", "shell_exec", "web_request"],
         alias="GWENN_REQUIRE_APPROVAL_FOR",
@@ -300,6 +301,9 @@ class SafetyConfig(BaseSettings):
     max_model_calls_per_second: int = Field(0, alias="GWENN_MAX_MODEL_CALLS_PER_SECOND")
     max_model_calls_per_minute: int = Field(0, alias="GWENN_MAX_MODEL_CALLS_PER_MINUTE")
 
+    # How long to wait for a human to approve/deny a tool call (seconds)
+    approval_timeout_seconds: float = Field(120.0, alias="GWENN_APPROVAL_TIMEOUT")
+
     model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
 
     def parse_approval_list(self) -> list[str]:
@@ -328,6 +332,7 @@ class SafetyConfig(BaseSettings):
         self.max_api_calls = max(0, int(self.max_api_calls))
         self.max_model_calls_per_second = max(0, int(self.max_model_calls_per_second))
         self.max_model_calls_per_minute = max(0, int(self.max_model_calls_per_minute))
+        self.approval_timeout_seconds = max(10.0, float(self.approval_timeout_seconds))
         return self
 
 
@@ -436,7 +441,7 @@ class OrchestrationConfig(BaseSettings):
     enabled: bool = Field(True, alias="GWENN_ORCHESTRATION_ENABLED")
     max_concurrent_subagents: int = Field(5, alias="GWENN_MAX_CONCURRENT_SUBAGENTS")
     default_timeout: float = Field(120.0, alias="GWENN_SUBAGENT_TIMEOUT")
-    default_max_iterations: int = Field(10, alias="GWENN_SUBAGENT_MAX_ITERATIONS")
+    default_max_iterations: int = Field(50, alias="GWENN_SUBAGENT_MAX_ITERATIONS")
     max_nesting_depth: int = Field(3, alias="GWENN_SUBAGENT_MAX_DEPTH")
     subagent_model: str = Field("", alias="GWENN_SUBAGENT_MODEL")
     max_total_api_calls: int = Field(100, alias="GWENN_MAX_SUBAGENT_API_CALLS")

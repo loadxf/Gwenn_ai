@@ -399,6 +399,8 @@ score = alpha * recency + beta * importance + gamma * relevance
 ```
 
 Recall is mood-congruent -- emotional state biases which memories surface.
+Chronological retrieval (`retrieve_chronological()`) is also available for
+timeline-ordered recall with optional landmark filtering.
 
 ### Semantic memory
 
@@ -412,7 +414,7 @@ experience, not hardcoding.
 Periodically (default every 600 seconds), Gwenn runs a "sleep cycle" that:
 1. Selects unconsolidated episodes weighted by recency, importance, relevance
 2. Sends them to Claude for knowledge extraction
-3. Parses FACT, RELATIONSHIP, SELF, and PATTERN entries
+3. Parses FACT, RELATIONSHIP, SELF, PATTERN, and EMOTIONAL_INSIGHT entries
 4. Adds new nodes and edges to the semantic knowledge graph
 5. Marks episodes as consolidated
 
@@ -438,7 +440,7 @@ GWENN_EPISODIC_DB=./gwenn_data/episodic.db
 GWENN_SEMANTIC_DB=./gwenn_data/semantic_vectors
 GWENN_STARTUP_EPISODE_LIMIT=5000
 GWENN_PERSIST_SEMANTIC_AFTER_CONSOLIDATION=True
-GWENN_WM_EVICTION_TO_EPISODIC=False
+GWENN_WM_EVICTION_TO_EPISODIC=True
 
 # Consolidation tuning
 GWENN_CONSOLIDATION_INTERVAL=600.0

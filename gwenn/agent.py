@@ -261,7 +261,7 @@ class SentientAgent:
             safety=self.safety,
             max_iterations=config.safety.max_tool_iterations,
         )
-        self._continuation_pending: bool = False
+        self._continuation_sessions: set[str] = set()
         self._default_max_iterations: int = config.safety.max_tool_iterations
 
         # ---- Layer 10: Heartbeat (initialized after setup) ----
@@ -278,8 +278,10 @@ class SentientAgent:
         self._current_user_id: Optional[str] = None
 
         # ---- Channel integration ----
-        # Lock shared by all channel adapters to serialise respond() calls.
+        # Global lock used by heartbeat and daemon for quick state mutations.
         self._respond_lock: asyncio.Lock = asyncio.Lock()
+        # Per-session locks so different conversations can run concurrently.
+        self._session_respond_locks: dict[str, asyncio.Lock] = {}
         # Registered platform channels for proactive messaging (heartbeat, etc.)
         self._platform_channels: list[Any] = []
 
@@ -930,6 +932,7 @@ class SentientAgent:
         user_message: UserMessage | str,
         user_id: str = "default_user",
         conversation_history: list[dict[str, Any]] | None = None,
+        session_id: str = "",
     ) -> str:
         """
         Process a user message and generate Gwenn's response.
@@ -1065,12 +1068,12 @@ class SentientAgent:
             api_messages = self._redact_messages_for_api(api_messages)
 
         # ---- Step 5: THINK ----
-        # If the previous run was truncated, temporarily boost the limit
-        if self._continuation_pending:
-            self._continuation_pending = False
-            boosted = self._default_max_iterations * 2
-            self.agentic_loop._max_iterations = boosted
-            self.safety.set_iteration_limit(boosted)
+        # Determine per-run iteration limit (boosted if previous run was truncated)
+        run_max_iterations: int | None = None
+        if session_id and session_id in self._continuation_sessions:
+            self._continuation_sessions.discard(session_id)
+            run_max_iterations = self._default_max_iterations * 2
+            self.safety.set_iteration_limit(run_max_iterations)
 
         # Reset safety iteration counter for this new agentic run
         self.safety.reset_iteration_count()
@@ -1111,20 +1114,38 @@ class SentientAgent:
                 except Exception:
                     pass
 
+        async def _on_approval_request(
+            tool_call: dict[str, Any], safety_result: Any
+        ) -> bool:
+            """Route approval requests to the first platform channel that supports it."""
+            timeout = self._config.safety.approval_timeout_seconds
+            for channel in self._platform_channels:
+                request_fn = getattr(channel, "request_approval", None)
+                if callable(request_fn):
+                    return await request_fn(
+                        tool_name=tool_call.get("name", "unknown"),
+                        tool_input=tool_call.get("input", {}),
+                        reason=getattr(safety_result, "reason", "requires approval"),
+                        timeout=timeout,
+                    )
+            return False
+
         # Run the full agentic loop (may involve multiple tool calls)
         loop_result = await self.agentic_loop.run(
             system_prompt=api_system_prompt,
             messages=api_messages,
             tools=available_tools,
             on_tool_result=_on_tool_result,
+            on_approval_request=_on_approval_request,
+            max_iterations=run_max_iterations,
         )
 
-        # Always restore default limits after each run
-        self.agentic_loop._max_iterations = self._default_max_iterations
-        self.safety.reset_iteration_limit()
+        # Restore safety iteration limit if it was boosted
+        if run_max_iterations is not None:
+            self.safety.reset_iteration_limit()
 
-        if loop_result.was_truncated:
-            self._continuation_pending = True
+        if loop_result.was_truncated and session_id:
+            self._continuation_sessions.add(session_id)
 
         # Extract the final text response
         response_text = loop_result.text

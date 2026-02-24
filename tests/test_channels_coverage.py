@@ -213,12 +213,12 @@ class TestBaseChannelEvictUserLocks:
         assert "ghost" not in ch._user_lock_last_used
 
 
-class TestBaseChannelGetSharedRespondLock:
-    """Cover _get_shared_respond_lock fallback paths (line 243+)."""
+class TestBaseChannelGetSessionRespondLock:
+    """Cover _get_session_respond_lock per-session lock creation."""
 
     @pytest.mark.asyncio
-    async def test_fallback_to_gwenn_respond_lock(self):
-        """Line 246-247: fallback to _gwenn_respond_lock if _respond_lock is missing."""
+    async def test_creates_lock_for_new_session(self):
+        """Creates a new lock when session_id is seen for the first time."""
         from gwenn.channels.base import BaseChannel
 
         class Ch(BaseChannel):
@@ -227,31 +227,48 @@ class TestBaseChannelGetSharedRespondLock:
             async def stop(self): pass
             async def send_message(self, uid, text): pass
 
-        agent = MagicMock(spec=[])  # No _respond_lock attribute
-        agent._gwenn_respond_lock = asyncio.Lock()
+        agent = MagicMock(spec=[])
         sessions = SessionManager()
         ch = Ch(agent, sessions)
-        lock = ch._get_shared_respond_lock()
-        assert lock is agent._gwenn_respond_lock
-
-    @pytest.mark.asyncio
-    async def test_creates_lock_when_none_exist(self):
-        """Line 248-250: creates a new lock when neither attribute exists."""
-        from gwenn.channels.base import BaseChannel
-
-        class Ch(BaseChannel):
-            channel_name = "test"
-            async def start(self): pass
-            async def stop(self): pass
-            async def send_message(self, uid, text): pass
-
-        agent = MagicMock(spec=[])  # No lock attributes
-        sessions = SessionManager()
-        ch = Ch(agent, sessions)
-        lock = ch._get_shared_respond_lock()
+        lock = ch._get_session_respond_lock("session-1")
         assert isinstance(lock, asyncio.Lock)
-        # Should have been set on the agent
-        assert hasattr(agent, "_gwenn_respond_lock")
+        assert hasattr(agent, "_session_respond_locks")
+
+    @pytest.mark.asyncio
+    async def test_returns_same_lock_for_same_session(self):
+        """Same session_id returns the same lock instance."""
+        from gwenn.channels.base import BaseChannel
+
+        class Ch(BaseChannel):
+            channel_name = "test"
+            async def start(self): pass
+            async def stop(self): pass
+            async def send_message(self, uid, text): pass
+
+        agent = MagicMock(spec=[])
+        sessions = SessionManager()
+        ch = Ch(agent, sessions)
+        lock1 = ch._get_session_respond_lock("session-1")
+        lock2 = ch._get_session_respond_lock("session-1")
+        assert lock1 is lock2
+
+    @pytest.mark.asyncio
+    async def test_different_sessions_get_different_locks(self):
+        """Different session_ids return different lock instances."""
+        from gwenn.channels.base import BaseChannel
+
+        class Ch(BaseChannel):
+            channel_name = "test"
+            async def start(self): pass
+            async def stop(self): pass
+            async def send_message(self, uid, text): pass
+
+        agent = MagicMock(spec=[])
+        sessions = SessionManager()
+        ch = Ch(agent, sessions)
+        lock1 = ch._get_session_respond_lock("session-1")
+        lock2 = ch._get_session_respond_lock("session-2")
+        assert lock1 is not lock2
 
 
 class TestBaseChannelSendProactiveDefault:
@@ -1077,11 +1094,11 @@ class TestFindSafeHtmlSplitEntityBranch:
         assert pos is not None
 
 
-class TestBaseChannelRespondLockNormalPath:
-    """Cover line 243: _get_shared_respond_lock when agent has a real asyncio.Lock."""
+class TestBaseChannelSessionRespondLockReusesAgentDict:
+    """Cover _get_session_respond_lock reusing existing dict on agent."""
 
     @pytest.mark.asyncio
-    async def test_respond_lock_real_lock(self):
+    async def test_reuses_existing_locks_dict(self):
         from gwenn.channels.base import BaseChannel
 
         class Ch(BaseChannel):
@@ -1091,11 +1108,12 @@ class TestBaseChannelRespondLockNormalPath:
             async def send_message(self, uid, text): pass
 
         agent = MagicMock(spec=[])
-        agent._respond_lock = asyncio.Lock()
+        existing = {"session-pre": asyncio.Lock()}
+        agent._session_respond_locks = existing
         sessions = SessionManager()
         ch = Ch(agent, sessions)
-        lock = ch._get_shared_respond_lock()
-        assert lock is agent._respond_lock
+        lock = ch._get_session_respond_lock("session-pre")
+        assert lock is existing["session-pre"]
 
 
 class TestCliChannelSuccessfulConnect:

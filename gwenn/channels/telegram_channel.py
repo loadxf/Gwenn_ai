@@ -29,9 +29,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import secrets
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import structlog
 
@@ -175,6 +176,8 @@ class TelegramChannel(BaseChannel):
         self._cancel_flags: dict[str, bool] = {}
         # Queue for proactive messages received before the bot is ready.
         self._proactive_queue: list[str] = []
+        # Pending approval requests: id -> (event, result_holder)
+        self._pending_approvals: dict[str, tuple[asyncio.Event, list[bool]]] = {}
 
     # ------------------------------------------------------------------
     # BaseChannel interface
@@ -211,7 +214,7 @@ class TelegramChannel(BaseChannel):
         # Only receive update types we actually handle (#8).
         await self._app.updater.start_polling(
             drop_pending_updates=True,
-            allowed_updates=["message", "edited_message"],
+            allowed_updates=["message", "edited_message", "callback_query"],
         )
         logger.info("telegram_channel.started")
 
@@ -293,8 +296,11 @@ class TelegramChannel(BaseChannel):
         return self._id_set(self._config.allowed_user_ids)
 
     def _register_handlers(self) -> None:
-        from telegram.ext import CommandHandler, MessageHandler, filters
+        from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
+        self._app.add_handler(
+            CallbackQueryHandler(self._on_approval_callback, pattern=r"^(approve|deny):")
+        )
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("help", self._on_help))
         self._app.add_handler(CommandHandler("setup", self._on_setup))
@@ -371,6 +377,133 @@ class TelegramChannel(BaseChannel):
         if owner_ids:
             return user_id in owner_ids
         return self._is_allowed(user_id)
+
+    # ------------------------------------------------------------------
+    # Tool-call approval flow (inline keyboard)
+    # ------------------------------------------------------------------
+
+    async def _on_approval_callback(self, update, context) -> None:
+        """Handle Approve/Deny button presses from inline keyboards."""
+        query = update.callback_query
+        if query is None:
+            return
+
+        user_id = str(query.from_user.id)
+        if not self._is_owner_user(user_id):
+            await query.answer("Only owners can approve tool calls.", show_alert=True)
+            return
+
+        data = query.data or ""
+        if ":" not in data:
+            await query.answer("Unknown action.")
+            return
+
+        action, approval_id = data.split(":", 1)
+        pending = self._pending_approvals.pop(approval_id, None)
+        if pending is None:
+            await query.answer("This approval has expired or already been handled.")
+            return
+
+        event, result_holder = pending
+        approved = action == "approve"
+        result_holder.append(approved)
+        event.set()
+
+        decision = "Approved" if approved else "Denied"
+        await query.answer(f"{decision}!")
+        try:
+            await query.edit_message_text(
+                f"{query.message.text}\n\n{decision} by user {user_id}."
+            )
+        except Exception:
+            pass
+
+    async def request_approval(
+        self,
+        tool_name: str,
+        tool_input: Any,
+        reason: str,
+        timeout: float,
+    ) -> bool:
+        """Send an inline-keyboard approval request to owners and wait for a response.
+
+        Returns True if approved, False if denied or timed out.
+        """
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        approval_id = secrets.token_hex(6)
+        input_preview = str(tool_input)
+        if len(input_preview) > 500:
+            input_preview = input_preview[:500] + "...[truncated]"
+
+        text = (
+            f"Tool approval required\n\n"
+            f"Tool: {tool_name}\n"
+            f"Reason: {reason}\n"
+            f"Input: {input_preview}"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Approve", callback_data=f"approve:{approval_id}"),
+                InlineKeyboardButton("Deny", callback_data=f"deny:{approval_id}"),
+            ]
+        ])
+
+        event = asyncio.Event()
+        result_holder: list[bool] = []
+        self._pending_approvals[approval_id] = (event, result_holder)
+
+        try:
+            sent_count = 0
+            owner_ids = self._get_owner_ids()
+            for uid in owner_ids:
+                chat_id = self._validate_platform_id(uid)
+                if chat_id is None:
+                    continue
+                try:
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        reply_markup=keyboard,
+                    )
+                    sent_count += 1
+                except Exception:
+                    logger.warning(
+                        "telegram_channel.approval_send_failed",
+                        owner=uid,
+                        exc_info=True,
+                    )
+
+            if sent_count == 0:
+                logger.warning(
+                    "telegram_channel.no_owners_for_approval",
+                    tool=tool_name,
+                )
+                return False
+
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return bool(result_holder and result_holder[0])
+
+        except asyncio.TimeoutError:
+            logger.info(
+                "telegram_channel.approval_timeout",
+                tool=tool_name,
+                approval_id=approval_id,
+            )
+            for uid in self._get_owner_ids():
+                chat_id = self._validate_platform_id(uid)
+                if chat_id is not None:
+                    try:
+                        await self._app.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"Approval for {tool_name} timed out after {timeout:.0f}s — denied.",
+                        )
+                    except Exception:
+                        pass
+            return False
+
+        finally:
+            self._pending_approvals.pop(approval_id, None)
 
     def _session_scope_mode(self) -> str:
         return self._normalize_scope_mode(self._config.session_scope_mode, default="per_chat")

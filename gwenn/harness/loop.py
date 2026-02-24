@@ -64,7 +64,7 @@ class AgenticLoop:
         executor: ToolExecutor,
         context_manager: ContextManager,
         safety: SafetyGuard,
-        max_iterations: int = 75,
+        max_iterations: int = 150,
     ):
         self._engine = engine
         self._executor = executor
@@ -89,6 +89,8 @@ class AgenticLoop:
         on_tool_result: Optional[Any] = None,   # Callback for tool result events
         on_response: Optional[Any] = None,       # Callback for response events
         on_iteration: Optional[Any] = None,      # Callback for each iteration
+        on_approval_request: Optional[Any] = None,  # async (tool_call, safety_result) -> bool
+        max_iterations: Optional[int] = None,    # Per-run override (None = use instance default)
     ) -> LoopResult:
         """
         Run the agentic loop to completion.
@@ -107,11 +109,13 @@ class AgenticLoop:
             on_tool_call: Optional callback when a tool is called
             on_response: Optional callback when a text response is generated
             on_iteration: Optional callback at the start of each loop iteration
+            max_iterations: Per-run iteration limit (None = use instance default)
 
         Returns:
             LoopResult containing the final response, all tool calls made,
             and loop metadata
         """
+        effective_max = max_iterations if max_iterations is not None else self._max_iterations
         self._total_runs += 1
         self._safety.reset_iteration_count()
         start_time = time.monotonic()
@@ -131,7 +135,7 @@ class AgenticLoop:
             thinking_enabled=enable_thinking,
         )
 
-        while iteration < self._max_iterations:
+        while iteration < effective_max:
             iteration += 1
             self._total_iterations += 1
 
@@ -139,7 +143,7 @@ class AgenticLoop:
                 "on_iteration",
                 on_iteration,
                 iteration,
-                self._max_iterations,
+                effective_max,
             )
 
             # --- Safety pre-check ---
@@ -246,30 +250,49 @@ class AgenticLoop:
                     continue
 
                 if safety_result.requires_approval:
-                    logger.warning(
-                        "agentic_loop.tool_requires_approval",
-                        tool=call["name"],
-                        reason=safety_result.reason,
-                    )
-                    result = ToolExecutionResult(
-                        tool_use_id=call["id"],
-                        tool_name=call["name"],
-                        success=False,
-                        error=(
-                            "Blocked pending human approval: "
-                            f"{safety_result.reason}"
-                        ),
-                    )
-                    tool_results.append(result)
-                    if on_tool_result:
+                    approved = False
+                    if on_approval_request is not None:
                         try:
-                            on_tool_result(call, result)
-                        except Exception as callback_error:
+                            approved = await on_approval_request(call, safety_result)
+                        except Exception as approval_error:
                             logger.warning(
-                                "agentic_loop.on_tool_result_failed",
-                                error=str(callback_error),
+                                "agentic_loop.approval_callback_error",
+                                tool=call["name"],
+                                error=str(approval_error),
                             )
-                    continue
+                            approved = False
+
+                    if not approved:
+                        logger.warning(
+                            "agentic_loop.tool_requires_approval",
+                            tool=call["name"],
+                            reason=safety_result.reason,
+                            had_callback=on_approval_request is not None,
+                        )
+                        result = ToolExecutionResult(
+                            tool_use_id=call["id"],
+                            tool_name=call["name"],
+                            success=False,
+                            error=(
+                                "Blocked — human denied or no approval channel: "
+                                f"{safety_result.reason}"
+                            ),
+                        )
+                        tool_results.append(result)
+                        if on_tool_result:
+                            try:
+                                on_tool_result(call, result)
+                            except Exception as callback_error:
+                                logger.warning(
+                                    "agentic_loop.on_tool_result_failed",
+                                    error=str(callback_error),
+                                )
+                        continue
+
+                    logger.info(
+                        "agentic_loop.tool_approved",
+                        tool=call["name"],
+                    )
 
                 # Execute the tool
                 result = await self._executor.execute(
@@ -316,7 +339,7 @@ class AgenticLoop:
             truncated = True
             logger.warning(
                 "agentic_loop.max_iterations",
-                max=self._max_iterations,
+                max=effective_max,
                 tool_calls=len(all_tool_calls),
             )
             try:

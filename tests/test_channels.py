@@ -350,7 +350,8 @@ class TestBaseChannelHandleMessage:
         assert mock_agent.respond.call_args.kwargs["user_id"] == "myplatform_100"
 
     @pytest.mark.asyncio
-    async def test_handle_message_uses_shared_agent_lock_across_channels(self):
+    async def test_handle_message_uses_per_session_lock(self):
+        """Different sessions can run concurrently; same session serialises."""
         from gwenn.channels.base import BaseChannel
 
         class ConcreteChannel(BaseChannel):
@@ -370,7 +371,8 @@ class TestBaseChannelHandleMessage:
                 self.active = 0
                 self.max_active = 0
 
-            async def respond(self, user_message, user_id, conversation_history):
+            async def respond(self, user_message, user_id, conversation_history,
+                              session_id=""):
                 self.active += 1
                 self.max_active = max(self.max_active, self.active)
                 await asyncio.sleep(0.01)
@@ -383,11 +385,20 @@ class TestBaseChannelHandleMessage:
         ch1 = ConcreteChannel(agent, sessions)
         ch2 = ConcreteChannel(agent, sessions)
 
+        # Different users (different sessions) should run concurrently
         await asyncio.gather(
             ch1.handle_message("1", "a"),
             ch2.handle_message("2", "b"),
         )
+        assert agent.max_active == 2
 
+        # Same user (same session) should serialise
+        agent.active = 0
+        agent.max_active = 0
+        await asyncio.gather(
+            ch1.handle_message("1", "a"),
+            ch1.handle_message("1", "b"),
+        )
         assert agent.max_active == 1
 
 

@@ -227,27 +227,26 @@ class BaseChannel(ABC):
         self._user_lock_last_used[raw_user_id] = time.monotonic()
         self._evict_user_locks()
 
-    def _get_shared_respond_lock(self) -> asyncio.Lock:
+    def _get_session_respond_lock(self, session_id: str) -> asyncio.Lock:
         """
-        Return a per-agent lock shared across all adapters that use this agent.
+        Return a per-session lock for serialising respond() calls.
 
-        SentientAgent mutates shared state during respond(); this lock prevents
-        concurrent platform callbacks from racing across channels.
+        Different sessions (e.g. different Telegram group topics) can run
+        concurrently.  Within a single session, calls are serialised to
+        prevent history corruption.
 
-        The lock is created once in SentientAgent.__init__ (``_respond_lock``).
-        The fallback (``_gwenn_respond_lock``) exists only for non-standard
-        agent implementations used in tests.
+        Locks are stored on the agent so they are shared across all channel
+        adapters that reference the same agent instance.
         """
-        lock = getattr(self._agent, "_respond_lock", None)
-        if isinstance(lock, asyncio.Lock):
-            return lock
-        # Fallback for mock agents or legacy callers.
-        lock = getattr(self._agent, "_gwenn_respond_lock", None)
-        if isinstance(lock, asyncio.Lock):
-            return lock
-        lock = asyncio.Lock()
-        self._agent._gwenn_respond_lock = lock
-        return lock
+        locks: dict[str, asyncio.Lock] | None = getattr(
+            self._agent, "_session_respond_locks", None
+        )
+        if locks is None:
+            locks = {}
+            self._agent._session_respond_locks = locks  # type: ignore[attr-defined]
+        if session_id not in locks:
+            locks[session_id] = asyncio.Lock()
+        return locks[session_id]
 
     async def handle_message(
         self,
@@ -273,9 +272,10 @@ class BaseChannel(ABC):
         else:
             session_id = self.make_session_id(f"user:{raw_user_id}")
         history = self._sessions.get_or_create(session_id)
-        async with self._get_shared_respond_lock():
+        async with self._get_session_respond_lock(session_id):
             return await self._agent.respond(
                 user_message=message,
                 user_id=user_id,
                 conversation_history=history,
+                session_id=session_id,
             )

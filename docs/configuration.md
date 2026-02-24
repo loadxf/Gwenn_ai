@@ -50,7 +50,7 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 | `GWENN_STARTUP_EPISODE_LIMIT` | `5000` | Max recent episodes to preload (0 = disable) |
 | `GWENN_SHUTDOWN_PERSIST_RECENT_EPISODES` | `0` | Episodes to persist on shutdown |
 | `GWENN_PERSIST_SEMANTIC_AFTER_CONSOLIDATION` | `True` | Flush semantic graph after each consolidation |
-| `GWENN_WM_EVICTION_TO_EPISODIC` | `False` | Promote evicted working memory items to episodic |
+| `GWENN_WM_EVICTION_TO_EPISODIC` | `True` | Promote evicted working memory items to episodic |
 
 ## Consolidation
 

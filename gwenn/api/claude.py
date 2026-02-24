@@ -314,16 +314,7 @@ class CognitiveEngine:
 
         # Add extended thinking if requested
         if enable_thinking:
-            if self._thinking_budget > 0:
-                kwargs["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": self._thinking_budget,
-                }
-                # API requires max_tokens > budget_tokens
-                if kwargs["max_tokens"] <= self._thinking_budget:
-                    kwargs["max_tokens"] = self._thinking_budget + 1024
-            else:
-                kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["thinking"] = {"type": "adaptive"}
 
         # Proactive OAuth refresh — re-read token before it expires
         self._maybe_refresh_oauth()

@@ -849,7 +849,7 @@ async def test_think_with_tools_no_tool_choice():
 
 @pytest.mark.asyncio
 async def test_think_with_thinking_budget_enabled():
-    """When enable_thinking=True and budget > 0, thinking config includes budget_tokens."""
+    """When enable_thinking=True, thinking config uses adaptive type."""
     engine = _bare_engine(_auth_method="api_key", _thinking_budget=16000)
 
     response = _ok_response()
@@ -864,7 +864,7 @@ async def test_think_with_thinking_budget_enabled():
 
     assert result is response
     kwargs = create.await_args.kwargs
-    assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 16000}
+    assert kwargs["thinking"] == {"type": "adaptive"}
 
 
 @pytest.mark.asyncio
