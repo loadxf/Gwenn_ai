@@ -144,6 +144,8 @@ def _make_agent(**overrides):
     )
     agent.safety = SimpleNamespace(
         reset_iteration_count=lambda: None,
+        set_iteration_limit=lambda limit: None,
+        reset_iteration_limit=lambda: None,
         stats={},
     )
     agent.tool_registry = SimpleNamespace(
@@ -210,8 +212,11 @@ def _make_agent(**overrides):
         telemetry={},
     )
     agent.agentic_loop = SimpleNamespace(
-        run=AsyncMock(return_value=SimpleNamespace(text="response")),
+        run=AsyncMock(return_value=SimpleNamespace(text="response", was_truncated=False)),
+        _max_iterations=75,
     )
+    agent._continuation_pending = False
+    agent._default_max_iterations = 75
     agent.consolidator = SimpleNamespace(
         get_consolidation_prompt=lambda: None,
         mark_checked_no_work=lambda: None,
@@ -3575,6 +3580,8 @@ class TestRespondToolResultSensory:
         )
 
         class _LoopWithToolResults:
+            _max_iterations = 75
+
             async def run(self, **kwargs):
                 on_tool_result = kwargs.get("on_tool_result")
                 on_tool_result(
@@ -3585,7 +3592,7 @@ class TestRespondToolResultSensory:
                     {"id": "t2", "name": "fail_tool", "input": {}},
                     SimpleNamespace(success=False, result=None, error="blocked by safety"),
                 )
-                return SimpleNamespace(text="done")
+                return SimpleNamespace(text="done", was_truncated=False)
 
         agent.agentic_loop = _LoopWithToolResults()
         await SentientAgent.respond(agent, "test", user_id="u1")
@@ -5613,6 +5620,7 @@ class TestRespondGroundEnvExceptionDirect:
             text="done",
             input_tokens=10,
             output_tokens=10,
+            was_truncated=False,
         )
 
         # Capture the on_tool_result callback and invoke it during run()
@@ -5624,7 +5632,7 @@ class TestRespondGroundEnvExceptionDirect:
                 callback(tool_call, tool_result)
             return loop_result
 
-        agent.agentic_loop = SimpleNamespace(run=_fake_run)
+        agent.agentic_loop = SimpleNamespace(run=_fake_run, _max_iterations=75)
         agent._assemble_system_prompt = MagicMock(return_value="system")
         agent._build_api_messages = MagicMock(return_value=[])
         session = SimpleNamespace(

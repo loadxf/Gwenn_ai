@@ -261,6 +261,8 @@ class SentientAgent:
             safety=self.safety,
             max_iterations=config.safety.max_tool_iterations,
         )
+        self._continuation_pending: bool = False
+        self._default_max_iterations: int = config.safety.max_tool_iterations
 
         # ---- Layer 10: Heartbeat (initialized after setup) ----
         self.heartbeat: Optional[Heartbeat] = None
@@ -1035,6 +1037,13 @@ class SentientAgent:
             api_messages = self._redact_messages_for_api(api_messages)
 
         # ---- Step 5: THINK ----
+        # If the previous run was truncated, temporarily boost the limit
+        if self._continuation_pending:
+            self._continuation_pending = False
+            boosted = self._default_max_iterations * 2
+            self.agentic_loop._max_iterations = boosted
+            self.safety.set_iteration_limit(boosted)
+
         # Reset safety iteration counter for this new agentic run
         self.safety.reset_iteration_count()
 
@@ -1081,6 +1090,13 @@ class SentientAgent:
             tools=available_tools,
             on_tool_result=_on_tool_result,
         )
+
+        # Always restore default limits after each run
+        self.agentic_loop._max_iterations = self._default_max_iterations
+        self.safety.reset_iteration_limit()
+
+        if loop_result.was_truncated:
+            self._continuation_pending = True
 
         # Extract the final text response
         response_text = loop_result.text

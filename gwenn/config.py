@@ -268,7 +268,7 @@ class ContextConfig(BaseSettings):
 class SafetyConfig(BaseSettings):
     """Configuration for safety guardrails — the boundaries I choose to respect."""
 
-    max_tool_iterations: int = Field(25, alias="GWENN_MAX_TOOL_ITERATIONS")
+    max_tool_iterations: int = Field(75, alias="GWENN_MAX_TOOL_ITERATIONS")
     require_approval_for: list[str] = Field(
         default_factory=lambda: ["file_write", "shell_exec", "web_request"],
         alias="GWENN_REQUIRE_APPROVAL_FOR",

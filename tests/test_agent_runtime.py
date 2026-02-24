@@ -36,10 +36,11 @@ class _HeartbeatStub:
 class _LoopStub:
     def __init__(self):
         self.calls: list[dict] = []
+        self._max_iterations = 75
 
     async def run(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(text="ok")
+        return SimpleNamespace(text="ok", was_truncated=False)
 
 
 class _IdentityStub:
@@ -178,6 +179,8 @@ async def test_respond_passes_tools_and_redacts_api_payload():
     agent.working_memory = _WorkingMemoryStub()
     agent.safety = SimpleNamespace(
         reset_iteration_count=lambda: None,
+        set_iteration_limit=lambda limit: None,
+        reset_iteration_limit=lambda: None,
     )
     agent.tool_registry = SimpleNamespace(
         get_api_tools=lambda **kwargs: [{"name": "echo"}],
@@ -192,6 +195,8 @@ async def test_respond_passes_tools_and_redacts_api_payload():
     agent._assemble_system_prompt = (
         lambda **kwargs: "Call me at alice@example.com for details."
     )
+    agent._continuation_pending = False
+    agent._default_max_iterations = 75
 
     async def _noop_integrate(*args, **kwargs):
         return None
@@ -267,7 +272,11 @@ async def test_respond_appraisal_includes_message_valence_hint():
     agent.episodic_memory = SimpleNamespace(retrieve=lambda **kwargs: [])
     agent.semantic_memory = SimpleNamespace(query=lambda **kwargs: [])
     agent.working_memory = _WorkingMemoryStub()
-    agent.safety = SimpleNamespace(reset_iteration_count=lambda: None)
+    agent.safety = SimpleNamespace(
+        reset_iteration_count=lambda: None,
+        set_iteration_limit=lambda limit: None,
+        reset_iteration_limit=lambda: None,
+    )
     agent.tool_registry = SimpleNamespace(get_api_tools=lambda **kwargs: [])
     agent.goal_system = SimpleNamespace()
     agent.theory_of_mind = SimpleNamespace()
@@ -278,6 +287,8 @@ async def test_respond_appraisal_includes_message_valence_hint():
     agent.process_appraisal = lambda event: appraisals.append(event)
     agent._assemble_system_prompt = lambda **kwargs: "prompt"
     agent.agentic_loop = _LoopStub()
+    agent._continuation_pending = False
+    agent._default_max_iterations = 75
 
     async def _noop_integrate(*args, **kwargs):
         return None
@@ -301,6 +312,8 @@ async def test_respond_appraises_tool_results():
     appraisals: list[AppraisalEvent] = []
 
     class _LoopWithToolResults:
+        _max_iterations = 75
+
         async def run(self, **kwargs):
             on_tool_result = kwargs.get("on_tool_result")
             assert callable(on_tool_result)
@@ -312,7 +325,7 @@ async def test_respond_appraises_tool_results():
                 {"id": "tool_2", "name": "echo", "input": {"text": "bad"}},
                 SimpleNamespace(success=False, result=None, error="boom"),
             )
-            return SimpleNamespace(text="ok")
+            return SimpleNamespace(text="ok", was_truncated=False)
 
     agent = object.__new__(SentientAgent)
     agent._initialized = True
@@ -345,7 +358,11 @@ async def test_respond_appraises_tool_results():
     agent.episodic_memory = SimpleNamespace(retrieve=lambda **kwargs: [])
     agent.semantic_memory = SimpleNamespace(query=lambda **kwargs: [])
     agent.working_memory = _WorkingMemoryStub()
-    agent.safety = SimpleNamespace(reset_iteration_count=lambda: None)
+    agent.safety = SimpleNamespace(
+        reset_iteration_count=lambda: None,
+        set_iteration_limit=lambda limit: None,
+        reset_iteration_limit=lambda: None,
+    )
     agent.tool_registry = SimpleNamespace(get_api_tools=lambda **kwargs: [{"name": "echo"}])
     agent.goal_system = SimpleNamespace()
     agent.theory_of_mind = SimpleNamespace()
@@ -356,6 +373,8 @@ async def test_respond_appraises_tool_results():
     agent.process_appraisal = lambda event: appraisals.append(event)
     agent._assemble_system_prompt = lambda **kwargs: "prompt"
     agent.agentic_loop = _LoopWithToolResults()
+    agent._continuation_pending = False
+    agent._default_max_iterations = 75
 
     async def _noop_integrate(*args, **kwargs):
         return None

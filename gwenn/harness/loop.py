@@ -64,7 +64,7 @@ class AgenticLoop:
         executor: ToolExecutor,
         context_manager: ContextManager,
         safety: SafetyGuard,
-        max_iterations: int = 25,
+        max_iterations: int = 75,
     ):
         self._engine = engine
         self._executor = executor
@@ -311,17 +311,39 @@ class AgenticLoop:
             loop_messages.append({"role": "user", "content": result_content})
 
         else:
-            # Hit max iterations without completing
+            # Hit max iterations — one final toolless call so Gwenn can
+            # summarize progress and ask the user about continuing.
             truncated = True
             logger.warning(
                 "agentic_loop.max_iterations",
                 max=self._max_iterations,
                 tool_calls=len(all_tool_calls),
             )
-            final_text = (
-                "[Reached maximum iteration limit. "
-                f"Completed {len(all_tool_calls)} tool operations.]"
-            )
+            try:
+                nudge = (
+                    f"\n\n[SYSTEM: You have reached your iteration limit after "
+                    f"{len(all_tool_calls)} tool operations across {iteration} "
+                    f"iterations. Briefly tell the user what you've accomplished "
+                    f"so far and ask if they'd like you to continue with a "
+                    f"temporarily increased limit.]"
+                )
+                wrap_response = await self._engine.think(
+                    system_prompt=system_prompt + nudge,
+                    messages=loop_messages,
+                    tools=None,
+                    enable_thinking=False,
+                )
+                final_text = self._engine.extract_text(wrap_response)
+                if not final_text:
+                    raise ValueError("empty wrap-up response")
+            except Exception as exc:
+                logger.warning("agentic_loop.wrap_up_failed", error=str(exc))
+                final_text = (
+                    "I've been working on your request but reached my iteration "
+                    f"limit after {len(all_tool_calls)} tool operations. "
+                    "Would you like me to continue with a temporarily increased "
+                    "limit?"
+                )
 
         elapsed = time.monotonic() - start_time
 

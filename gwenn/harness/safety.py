@@ -117,6 +117,7 @@ class SafetyGuard:
         self._emergency_stop_reason: Optional[str] = None
         self._model_calls_last_second: deque[float] = deque()
         self._model_calls_last_minute: deque[float] = deque()
+        self._iteration_limit_override: int | None = None
 
         # Dangerous patterns in tool inputs (checked as substrings, lowercased)
         self._dangerous_patterns = [
@@ -175,10 +176,13 @@ class SafetyGuard:
 
         # Check iteration limit
         self._iteration_count += 1
-        if self._iteration_count > self._config.max_tool_iterations:
+        effective_limit = (
+            self._iteration_limit_override or self._config.max_tool_iterations
+        )
+        if self._iteration_count > effective_limit:
             return SafetyCheckResult(
                 allowed=False,
-                reason=f"Maximum iteration limit reached ({self._config.max_tool_iterations})",
+                reason=f"Maximum iteration limit reached ({effective_limit})",
                 risk_level="blocked",
             )
 
@@ -421,6 +425,14 @@ class SafetyGuard:
         """Reset the iteration counter (called at the start of each agentic run)."""
         self._iteration_count = 0
         self._last_reset = time.time()
+
+    def set_iteration_limit(self, limit: int) -> None:
+        """Temporarily override the max iteration limit for the current run."""
+        self._iteration_limit_override = limit
+
+    def reset_iteration_limit(self) -> None:
+        """Clear the temporary iteration limit override."""
+        self._iteration_limit_override = None
 
     def update_budget(self, input_tokens: int, output_tokens: int) -> None:
         """Update budget tracking with token usage from an API call."""
