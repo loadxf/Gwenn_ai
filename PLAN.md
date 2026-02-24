@@ -3,7 +3,7 @@
 This plan addresses all findings from `deep-research.md` — bugs, missing wiring,
 architectural gaps, and recommended improvements — organized by priority.
 
-**Last updated:** 2026-02-22
+**Last updated:** 2026-02-24
 
 ---
 
@@ -200,7 +200,7 @@ retrieval optional with a config flag and falling back to keyword overlap.
 
 ### 3.1 Build Core Unit Tests -- DONE
 
-**Status:** Resolved. 35+ test files with 1433 tests covering all core subsystems:
+**Status:** Resolved. 35+ test files with 2941 tests covering all core subsystems:
 - `tests/test_episodic_memory.py` — Retrieve scoring, mood-congruent retrieval
 - `tests/test_working_memory.py` — Slot management, eviction, decay
 - `tests/test_consolidation.py` — FACT/RELATIONSHIP/SELF/PATTERN parsing, malformed lines
@@ -252,22 +252,13 @@ are redacted by default.
 
 ## Phase 5: MCP & External Integration
 
-### 5.1 Implement Real MCP Transport
+### 5.1 Implement Real MCP Transport -- DONE
 
-**Problem:** `gwenn/tools/mcp/__init__.py` is a stub (253 lines) that defines
-the protocol structure but doesn't implement actual JSON-RPC stdio/HTTP
-transport.
-
-**Files to modify:**
-- `gwenn/tools/mcp/__init__.py` — Implement actual JSON-RPC 2.0 transport:
-  - stdio transport (subprocess-based, for local MCP servers)
-  - HTTP/SSE transport (for remote MCP servers)
-  - Tool discovery via `tools/list`
-  - Tool execution via `tools/call`
-
-**Depends on:** Phase 1.2 (safety wiring) and Phase 4.1 (deny-by-default) must
-be complete before enabling real MCP tools, to prevent uncontrolled external
-actions.
+**Status:** Resolved. `gwenn/tools/mcp/__init__.py` implements JSON-RPC 2.0
+transport with both `stdio` (subprocess) and `streamable_http` (HTTP POST)
+transports. Tool discovery via `tools/list`, execution via `tools/call`,
+Content-Length framing for stdio, and optional Bearer auth for HTTP.
+MCP tools are registered as proxy tools prefixed with `mcp_<server>_`.
 
 ### 5.2 Add Tool Risk Tiering
 
@@ -345,13 +336,13 @@ contribution). No framework exists for this.
 | 2.1 | Persist semantic memory | High | Medium | DONE |
 | 2.2 | Persist affect state | Medium | Low | Open |
 | 2.3 | Embedding retrieval | Medium | High | DONE (keyword/embedding/hybrid) |
-| 3.1 | Unit tests | High | Medium | DONE (1371 tests) |
+| 3.1 | Unit tests | High | Medium | DONE (2941 tests) |
 | 3.2 | Integration tests | Medium | Medium | DONE |
 | 3.3 | Adversarial tests | Medium | Medium | DONE |
 | 4.1 | Deny-by-default policy | High | Low | DONE |
 | 4.2 | Provenance tracking | Medium | Medium | Open |
 | 4.3 | PII redaction | Medium | High | DONE |
-| 5.1 | Real MCP transport | Low | High | Partial |
+| 5.1 | Real MCP transport | Low | High | DONE |
 | 5.2 | Tool risk tiering | Medium | Low | Open |
 | 6.1 | Affect logging | Low | Low | Open |
 | 6.2 | Log redaction | Low | Low | DONE |
@@ -359,7 +350,7 @@ contribution). No framework exists for this.
 | 7.2 | Identity coherence tests | Low | Medium | Open |
 | 7.3 | Memory quality benchmarks | Low | Medium | Open |
 
-**Completed:** 13/19 items (68%). Remaining items are lower priority or depend on
+**Completed:** 14/19 items (74%). Remaining items are lower priority or depend on
 architectural decisions (affect persistence, provenance tracking, ablation framework).
 
 ---
