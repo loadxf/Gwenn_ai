@@ -24,7 +24,7 @@ from typing import Optional
 
 import structlog
 
-from gwenn.affect.state import AffectiveState, EmotionalDimensions
+from gwenn.affect.state import AffectiveState
 from gwenn.config import AffectConfig
 
 logger = structlog.get_logger(__name__)
@@ -45,11 +45,14 @@ class ResilienceCircuit:
         # Track how long distress has persisted
         self._distress_start: Optional[float] = None
         self._distress_active = False
+        self._last_arousal_damp_time: float = 0.0
+        self._arousal_damp_interval: float = 5.0  # minimum seconds between dampings
 
         # Habituation tracking: stimulus_type -> (last_time, count)
         self._habituation: dict[str, tuple[float, int]] = defaultdict(lambda: (0.0, 0))
         self._habituation_window = 120.0   # seconds before habituation resets
         self._habituation_decay = 0.7      # each repeat has 70% of previous impact
+        self._habituation_max_entries = 500  # prune beyond this size
 
     def check(self, state: AffectiveState) -> AffectiveState:
         """
@@ -82,6 +85,16 @@ class ResilienceCircuit:
         # Apply habituation decay
         self._habituation[stimulus_key] = (now, count + 1)
         factor = self._habituation_decay ** count
+
+        # Prune stale entries to prevent unbounded growth
+        if len(self._habituation) > self._habituation_max_entries:
+            stale = [
+                k for k, (t, _) in self._habituation.items()
+                if now - t > self._habituation_window
+            ]
+            for k in stale:
+                del self._habituation[k]
+
         return max(0.1, factor)  # Never fully habituate — minimum 10% impact
 
     def _enforce_arousal_ceiling(self, state: AffectiveState) -> AffectiveState:
@@ -101,9 +114,14 @@ class ResilienceCircuit:
                 ceiling=ceiling,
             )
             state.dimensions.arousal = ceiling
-            # Also slightly reduce valence extremity when arousal is capped
-            state.dimensions.valence *= 0.95
+            # Also slightly reduce valence extremity when arousal is capped,
+            # but only once per interval to prevent compounding on rapid calls.
+            now = time.time()
+            if now - self._last_arousal_damp_time >= self._arousal_damp_interval:
+                state.dimensions.valence *= 0.95
+                self._last_arousal_damp_time = now
 
+        state.update_classification()
         return state
 
     def _check_distress_timeout(self, state: AffectiveState) -> AffectiveState:

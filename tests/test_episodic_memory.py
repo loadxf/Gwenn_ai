@@ -37,6 +37,28 @@ class TestEncodingAndRetrieval:
         episodic_memory.encode(Episode(content="second"))
         assert episodic_memory.count == 2
 
+    def test_encode_deduplicates_by_episode_id(self, episodic_memory):
+        """Encoding the same episode_id twice should update, not duplicate (P0-5)."""
+        episodic_memory.encode(Episode(episode_id="dup-1", content="original"))
+        assert episodic_memory.count == 1
+
+        episodic_memory.encode(Episode(episode_id="dup-1", content="updated"))
+        assert episodic_memory.count == 1
+
+        ep = episodic_memory.get_episode("dup-1")
+        assert ep is not None
+        assert ep.content == "updated"
+
+    def test_encode_duplicate_preserves_others(self, episodic_memory):
+        """Re-encoding one ID should not affect other episodes."""
+        episodic_memory.encode(Episode(episode_id="a", content="alpha"))
+        episodic_memory.encode(Episode(episode_id="b", content="beta"))
+        episodic_memory.encode(Episode(episode_id="a", content="alpha-v2"))
+
+        assert episodic_memory.count == 2
+        assert episodic_memory.get_episode("a").content == "alpha-v2"
+        assert episodic_memory.get_episode("b").content == "beta"
+
     def test_retrieve_returns_encoded_episodes(self, episodic_memory):
         ep = Episode(episode_id="ep-1", content="test content", importance=0.5)
         episodic_memory.encode(ep)
@@ -146,7 +168,6 @@ class TestRetrieveScoring:
 
     def test_recency_bias_override(self, populated_episodic_memory):
         """Passing recency_bias should override the default recency weight."""
-        results_default = populated_episodic_memory.retrieve(query="", top_k=5)
         results_biased = populated_episodic_memory.retrieve(query="", top_k=5, recency_bias=0.99)
         # With a very high recency bias, the most recent episode should dominate
         most_recent_id = results_biased[0][0].episode_id
@@ -158,6 +179,66 @@ class TestRetrieveScoring:
         results = populated_episodic_memory.retrieve(min_importance=0.75, top_k=10)
         for ep, _ in results:
             assert ep.importance >= 0.75
+
+
+# ---------------------------------------------------------------------------
+# Retrieval modes (keyword / embedding / hybrid)
+# ---------------------------------------------------------------------------
+
+class TestRetrievalModes:
+    """Ensure retrieval mode switching behaves predictably."""
+
+    def test_embedding_mode_uses_vector_scores(self):
+        now = time.time()
+        mem = EpisodicMemory(
+            importance_weight=0.0,
+            recency_weight=0.0,
+            relevance_weight=1.0,
+            retrieval_mode="embedding",
+            vector_search_fn=lambda _q, _k: [("ep-b", 0.9), ("ep-a", 0.1)],
+        )
+        mem.encode(Episode(episode_id="ep-a", content="alpha", timestamp=now))
+        mem.encode(Episode(episode_id="ep-b", content="beta", timestamp=now))
+
+        results = mem.retrieve(query="anything", top_k=2)
+        assert results[0][0].episode_id == "ep-b"
+
+    def test_hybrid_mode_blends_keyword_and_embedding(self):
+        now = time.time()
+        mem = EpisodicMemory(
+            importance_weight=0.0,
+            recency_weight=0.0,
+            relevance_weight=1.0,
+            retrieval_mode="hybrid",
+            hybrid_keyword_weight=0.2,
+            hybrid_embedding_weight=0.8,
+            vector_search_fn=lambda _q, _k: [("ep-vec", 1.0), ("ep-key", 0.0)],
+        )
+        mem.encode(Episode(episode_id="ep-key", content="python decorators", timestamp=now))
+        mem.encode(Episode(episode_id="ep-vec", content="unrelated text", timestamp=now))
+
+        results = mem.retrieve(query="python decorators", top_k=2)
+        assert results[0][0].episode_id == "ep-vec"
+
+    def test_embedding_mode_falls_back_to_keyword_when_vector_empty(self):
+        now = time.time()
+        mem = EpisodicMemory(
+            importance_weight=0.0,
+            recency_weight=0.0,
+            relevance_weight=1.0,
+            retrieval_mode="embedding",
+            vector_search_fn=lambda _q, _k: [],
+        )
+        mem.encode(Episode(episode_id="ep-match", content="python decorators", timestamp=now))
+        mem.encode(Episode(episode_id="ep-other", content="weather report", timestamp=now))
+
+        results = mem.retrieve(query="python decorators", top_k=2)
+        assert results[0][0].episode_id == "ep-match"
+
+    def test_get_episode_by_id(self, episodic_memory):
+        episodic_memory.encode(Episode(episode_id="known", content="known"))
+        assert episodic_memory.get_episode("known") is not None
+        assert episodic_memory.get_episode("missing") is None
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +373,17 @@ class TestUnconsolidatedEpisodes:
         ids = [e.episode_id for e in unconsolidated]
         assert "new" in ids
         assert "old" not in ids
+
+    def test_get_unconsolidated_without_age_limit_includes_old(self, episodic_memory):
+        old_ep = Episode(
+            episode_id="old",
+            content="very old",
+            timestamp=time.time() - 48 * 3600,
+        )
+        episodic_memory.encode(old_ep)
+        unconsolidated = episodic_memory.get_unconsolidated(max_age_hours=None)
+        ids = [e.episode_id for e in unconsolidated]
+        assert "old" in ids
 
 
 # ---------------------------------------------------------------------------

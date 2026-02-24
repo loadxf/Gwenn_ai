@@ -6,19 +6,23 @@ It's the boundary between "deciding to do something" and "doing it."
 
 The executor enforces:
 1. SANDBOXING: Tools run in restricted contexts where possible
-2. APPROVAL GATES: High-risk tools require human confirmation
-3. TIMEOUT PROTECTION: No tool can run forever
-4. ERROR HANDLING: Failures are captured and fed back to Claude as tool results
-5. OBSERVABILITY: Every execution is logged for audit and debugging
+2. TIMEOUT PROTECTION: No tool can run forever
+3. ERROR HANDLING: Failures are captured and fed back to Claude as tool results
+4. OBSERVABILITY: Every execution is logged for audit and debugging
 
 The critical design philosophy: let Claude reason freely about what to do,
 but let the executor enforce what's ALLOWED. Claude can ask to delete a file;
 the executor decides whether that's permitted.
+
+Note: Approval gating is handled by the safety guard (harness/safety.py) in the
+agentic loop BEFORE the executor runs. The executor focuses on sandboxing,
+timeouts, and error handling.
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import traceback
 from typing import Any, Callable, Optional
@@ -28,15 +32,6 @@ import structlog
 from gwenn.tools.registry import ToolDefinition, ToolRegistry
 
 logger = structlog.get_logger(__name__)
-
-
-class ApprovalRequired(Exception):
-    """Raised when a tool execution requires human approval."""
-    def __init__(self, tool_name: str, tool_input: dict, reason: str):
-        self.tool_name = tool_name
-        self.tool_input = tool_input
-        self.reason = reason
-        super().__init__(f"Approval required for {tool_name}: {reason}")
 
 
 class ToolExecutionResult:
@@ -63,29 +58,54 @@ class ToolExecutionResult:
         self.error = error
         self.execution_time = execution_time
 
-    def to_api_format(self) -> dict[str, Any]:
-        """
-        Convert to the tool_result format for the Claude API.
 
-        This is the message that goes back into the conversation to tell
-        Claude what happened when the tool was executed.
-        """
-        if self.success:
-            content = str(self.result) if self.result is not None else "Tool executed successfully."
-        else:
-            content = f"Error: {self.error}"
+# JSON Schema type → Python types (for lightweight validation)
+_JSON_TYPE_MAP: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "array": (list,),
+    "object": (dict,),
+}
 
-        return {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": self.tool_use_id,
-                    "content": content,
-                    "is_error": not self.success,
-                }
-            ],
-        }
+
+def _validate_tool_input(
+    schema: dict[str, Any],
+    tool_input: dict[str, Any],
+) -> Optional[str]:
+    """
+    Lightweight JSON Schema validation for tool inputs.
+
+    Checks required fields and basic type constraints.  Returns an error
+    message string on failure, or None if the input is valid.
+    """
+    required = schema.get("required", [])
+    properties = schema.get("properties", {})
+
+    # Check required fields
+    missing = [name for name in required if name not in tool_input]
+    if missing:
+        return f"Missing required parameter(s): {', '.join(missing)}"
+
+    # Check types for provided fields
+    for name, value in tool_input.items():
+        prop_schema = properties.get(name)
+        if not prop_schema or not isinstance(prop_schema, dict):
+            continue
+        expected_type = prop_schema.get("type")
+        if not expected_type:
+            continue
+        py_types = _JSON_TYPE_MAP.get(expected_type)
+        if py_types is None:
+            continue
+        # In Python bool is a subclass of int, but JSON booleans are distinct
+        if isinstance(value, bool) and expected_type in ("integer", "number"):
+            return f"Parameter '{name}' expected {expected_type}, got boolean"
+        if not isinstance(value, py_types):
+            return f"Parameter '{name}' expected {expected_type}, got {type(value).__name__}"
+
+    return None
 
 
 class ToolExecutor:
@@ -95,9 +115,9 @@ class ToolExecutor:
     The executor sits between Claude's tool_use decisions and the actual
     tool handlers. It intercepts each call to:
     1. Check if the tool exists and is enabled
-    2. Verify risk level and approval requirements
+    2. Apply sandbox policy
     3. Apply timeout limits
-    4. Execute in appropriate sandbox
+    4. Execute the handler (sync or async)
     5. Capture results or errors
     6. Log everything for observability
     """
@@ -105,25 +125,31 @@ class ToolExecutor:
     def __init__(
         self,
         registry: ToolRegistry,
-        approval_callback: Optional[Callable] = None,
         default_timeout: float = 30.0,
         max_output_length: int = 25000,  # Match Claude Code's limit
+        sandbox_enabled: bool = False,
+        sandbox_allowed_tools: Optional[list[str]] = None,
+        max_concurrent_sync: int = 8,
     ):
         self._registry = registry
-        self._approval_callback = approval_callback
         self._default_timeout = default_timeout
         self._max_output_length = max_output_length
+        self._sandbox_enabled = sandbox_enabled
+        self._sandbox_allowed_tools = set(sandbox_allowed_tools or [])
+        self._sync_slot = asyncio.Semaphore(max(1, int(max_concurrent_sync)))
 
         # Execution statistics
         self._total_executions = 0
         self._total_successes = 0
         self._total_failures = 0
-        self._total_approvals_requested = 0
 
         logger.info(
             "tool_executor.initialized",
             timeout=default_timeout,
             max_output=max_output_length,
+            sandbox_enabled=sandbox_enabled,
+            sandbox_allowlist_count=len(self._sandbox_allowed_tools),
+            max_concurrent_sync=max(1, int(max_concurrent_sync)),
         )
 
     async def execute(
@@ -177,19 +203,19 @@ class ToolExecutor:
                 error=f"Tool '{tool_name}' is currently disabled.",
             )
 
-        # Step 2: Check approval requirements
-        if tool_def.requires_approval:
-            approved = await self._request_approval(tool_def, tool_input)
-            if not approved:
-                self._total_failures += 1
-                return ToolExecutionResult(
-                    tool_use_id=tool_use_id,
-                    tool_name=tool_name,
-                    success=False,
-                    error="Tool execution denied by human operator.",
-                )
+        if self._sandbox_enabled and not self._is_sandbox_allowed(tool_def):
+            self._total_failures += 1
+            return ToolExecutionResult(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                success=False,
+                error=(
+                    f"Tool '{tool_name}' is blocked by sandbox policy. "
+                    "Only built-in tools and explicitly allowed tools are permitted."
+                ),
+            )
 
-        # Step 3: Get the handler
+        # Step 2: Get the handler
         handler = tool_def.handler
         if not handler:
             self._total_failures += 1
@@ -200,20 +226,27 @@ class ToolExecutor:
                 error=f"No handler registered for tool: {tool_name}",
             )
 
+        # Step 3: Validate input against the tool's JSON Schema
+        validation_error = _validate_tool_input(tool_def.input_schema, tool_input)
+        if validation_error:
+            self._total_failures += 1
+            return ToolExecutionResult(
+                tool_use_id=tool_use_id,
+                tool_name=tool_name,
+                success=False,
+                error=validation_error,
+            )
+
         # Step 4: Execute with timeout
+        timeout = tool_def.timeout if tool_def.timeout is not None else self._default_timeout
         try:
             if asyncio.iscoroutinefunction(handler):
                 result = await asyncio.wait_for(
                     handler(**tool_input),
-                    timeout=self._default_timeout,
+                    timeout=timeout,
                 )
             else:
-                # Run sync handlers in executor to avoid blocking
-                loop = asyncio.get_event_loop()
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: handler(**tool_input)),
-                    timeout=self._default_timeout,
-                )
+                result = await self._execute_sync_handler(handler, tool_input, timeout)
 
             # Truncate overly long results
             result_str = str(result)
@@ -249,13 +282,13 @@ class ToolExecutor:
             logger.warning(
                 "tool_executor.timeout",
                 tool_name=tool_name,
-                timeout=self._default_timeout,
+                timeout=timeout,
             )
             return ToolExecutionResult(
                 tool_use_id=tool_use_id,
                 tool_name=tool_name,
                 success=False,
-                error=f"Tool execution timed out after {self._default_timeout}s",
+                error=f"Tool execution timed out after {timeout}s",
                 execution_time=elapsed,
             )
 
@@ -277,33 +310,80 @@ class ToolExecutor:
                 execution_time=elapsed,
             )
 
-    async def _request_approval(
+    async def _execute_sync_handler(
         self,
-        tool_def: ToolDefinition,
+        handler: Callable[..., Any],
         tool_input: dict[str, Any],
-    ) -> bool:
-        """Request human approval for a high-risk tool execution."""
-        self._total_approvals_requested += 1
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """
+        Execute a synchronous handler in a dedicated daemon thread.
 
-        if self._approval_callback:
+        Using a per-call thread avoids deadlocks we have seen with repeated
+        run_in_executor/to_thread usage in this runtime.
+        """
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        try:
+            await asyncio.wait_for(
+                self._sync_slot.acquire(),
+                timeout=effective_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                "Sync tool executor is saturated with long-running tasks."
+            ) from exc
+
+        loop = asyncio.get_running_loop()
+        done = asyncio.Event()
+        result_box: dict[str, Any] = {}
+
+        def _invoke() -> None:
             try:
-                return await self._approval_callback(
-                    tool_name=tool_def.name,
-                    tool_input=tool_input,
-                    risk_level=tool_def.risk_level,
-                    description=tool_def.description,
-                )
-            except Exception as e:
-                logger.error("tool_executor.approval_error", error=str(e))
-                return False  # Deny on error — fail safe
+                result_box["result"] = handler(**tool_input)
+            except Exception as exc:  # pragma: no cover - surfaced to caller
+                result_box["error"] = exc
+            finally:
+                try:
+                    loop.call_soon_threadsafe(done.set)
+                    loop.call_soon_threadsafe(self._sync_slot.release)
+                except RuntimeError:  # pragma: no cover – shutdown race
+                    # Loop may already be closed if shutdown races tool completion.
+                    try:
+                        self._sync_slot.release()
+                    except ValueError:
+                        # Already released; ignore.
+                        pass
 
-        # No callback = auto-deny high-risk tools
-        logger.warning(
-            "tool_executor.no_approval_callback",
-            tool_name=tool_def.name,
-            action="denied",
-        )
-        return False
+        try:
+            thread = threading.Thread(target=_invoke, daemon=True)
+            thread.start()
+        except Exception:
+            self._sync_slot.release()
+            raise
+
+        try:
+            await asyncio.wait_for(done.wait(), timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            # Release the semaphore since the stuck thread may never do so.
+            # If the thread eventually completes, its finally block will call
+            # release() again; guard against ValueError from double-release.
+            try:
+                self._sync_slot.release()
+            except ValueError:  # pragma: no cover – thread may have already released
+                pass
+            raise RuntimeError(
+                f"Synchronous tool handler timed out after {effective_timeout}s"
+            ) from None
+
+        if "error" in result_box:
+            raise result_box["error"]
+        return result_box.get("result")
+
+    def _is_sandbox_allowed(self, tool_def: ToolDefinition) -> bool:
+        """Enforce the sandbox boundary for externally sourced tools."""
+        if tool_def.is_builtin:
+            return True
+        return tool_def.name in self._sandbox_allowed_tools
 
     @property
     def stats(self) -> dict[str, Any]:
@@ -311,7 +391,6 @@ class ToolExecutor:
             "total_executions": self._total_executions,
             "successes": self._total_successes,
             "failures": self._total_failures,
-            "approvals_requested": self._total_approvals_requested,
             "success_rate": (
                 self._total_successes / max(1, self._total_executions)
             ),

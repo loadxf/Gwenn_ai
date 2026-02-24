@@ -1,0 +1,25 @@
+[Unit]
+Description=Gwenn Autonomous AI Agent Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=INSTALL_DIR
+ExecStart=INSTALL_DIR/.venv/bin/gwenn daemon
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+TimeoutStopSec=30s
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gwenn-daemon
+EnvironmentFile=INSTALL_DIR/.env
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+
+[Install]
+WantedBy=default.target

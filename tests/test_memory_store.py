@@ -17,7 +17,7 @@ Covers:
 from __future__ import annotations
 
 import json
-import sqlite3
+import os
 import time
 from pathlib import Path
 
@@ -139,7 +139,32 @@ class TestInitialisation:
         db_path = tmp_path / "double_init.db"
         ms = MemoryStore(db_path)
         ms.initialize()
+        first_conn = ms._conn
         ms.initialize()  # should be idempotent
+        assert ms._conn is first_conn
+        ms.close()
+
+    def test_permissions_hardened_for_db_files(self, tmp_path: Path):
+        if os.name == "nt":
+            pytest.skip("Permission bits are not POSIX-stable on Windows")
+
+        db_path = tmp_path / "perm_test.db"
+        ms = MemoryStore(db_path)
+        ms.initialize()
+        ms.save_episode(_make_episode(episode_id="perm-ep"))
+
+        db_mode = os.stat(db_path).st_mode & 0o777
+        parent_mode = os.stat(db_path.parent).st_mode & 0o777
+        assert db_mode & 0o077 == 0
+        assert parent_mode & 0o077 == 0
+
+        wal_path = Path(f"{db_path}-wal")
+        shm_path = Path(f"{db_path}-shm")
+        for sidecar in (wal_path, shm_path):
+            if sidecar.exists():
+                mode = os.stat(sidecar).st_mode & 0o777
+                assert mode & 0o077 == 0
+
         ms.close()
 
 
@@ -216,6 +241,12 @@ class TestEpisodeCRUD:
         for i in range(len(loaded) - 1):
             assert loaded[i].timestamp >= loaded[i + 1].timestamp
 
+    def test_load_episodes_without_limit_returns_all(self, store: MemoryStore):
+        for i in range(4):
+            store.save_episode(_make_episode(episode_id=f"ep-all-{i}"))
+        loaded = store.load_episodes(limit=None)
+        assert len(loaded) == 4
+
 
 # ---------------------------------------------------------------------------
 # 3. Episode filtering by timestamp (since) and category
@@ -272,6 +303,16 @@ class TestEpisodeFiltering:
         ids = [e.episode_id for e in loaded]
         assert "exact" not in ids
         assert "after" in ids
+
+    def test_filter_by_consolidated_flag(self, store: MemoryStore):
+        store.save_episode(_make_episode(episode_id="c-yes", consolidated=True))
+        store.save_episode(_make_episode(episode_id="c-no", consolidated=False))
+
+        consolidated_rows = store.load_episodes(limit=None, consolidated=True)
+        unconsolidated_rows = store.load_episodes(limit=None, consolidated=False)
+
+        assert {e.episode_id for e in consolidated_rows} == {"c-yes"}
+        assert {e.episode_id for e in unconsolidated_rows} == {"c-no"}
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +380,55 @@ class TestAffectSnapshot:
         ids = [snap["snapshot_id"] for snap in history]
         assert len(set(ids)) == 3  # all unique
 
+    def test_prune_affect_snapshots_respects_max_rows(self, store: MemoryStore):
+        for i in range(6):
+            store.save_affect_snapshot(
+                valence=float(i) / 10.0,
+                arousal=0.2,
+                dominance=0.0,
+                certainty=0.0,
+                goal_congruence=0.0,
+                emotion_label=f"snap-{i}",
+            )
+
+        deleted = store.prune_affect_snapshots(max_rows=3, older_than_days=None)
+        history = store.load_affect_history(limit=10)
+
+        assert deleted == 3
+        assert len(history) == 3
+
+    def test_prune_affect_snapshots_respects_age_cutoff(self, store: MemoryStore):
+        for i in range(4):
+            store.save_affect_snapshot(
+                valence=0.1 * i,
+                arousal=0.2,
+                dominance=0.0,
+                certainty=0.0,
+                goal_congruence=0.0,
+                emotion_label=f"age-{i}",
+            )
+
+        # Backdate the oldest two rows so age pruning can remove them.
+        row_ids = [
+            row["snapshot_id"]
+            for row in store._conn.execute(
+                "SELECT snapshot_id FROM affect_snapshots ORDER BY timestamp ASC"
+            ).fetchall()
+        ]
+        old_cutoff = time.time() - (40.0 * 86400.0)
+        store._conn.execute(
+            "UPDATE affect_snapshots SET timestamp = ? WHERE snapshot_id IN (?, ?)",
+            (old_cutoff, row_ids[0], row_ids[1]),
+        )
+        store._conn.commit()
+
+        deleted = store.prune_affect_snapshots(max_rows=10, older_than_days=30.0)
+        history = store.load_affect_history(limit=10)
+        min_allowed = time.time() - (30.0 * 86400.0)
+
+        assert deleted >= 2
+        assert all(snap["timestamp"] >= min_allowed for snap in history)
+
 
 # ---------------------------------------------------------------------------
 # 5. Identity snapshot
@@ -398,6 +488,7 @@ class TestKnowledgeNodes:
             created_at=1_700_000_000.0,
             last_updated=1_700_001_000.0,
             access_count=5,
+            metadata={"source": "test"},
         )
 
     def test_save_and_load_single_node(self, store: MemoryStore):
@@ -413,6 +504,7 @@ class TestKnowledgeNodes:
         assert n["created_at"] == pytest.approx(1_700_000_000.0)
         assert n["last_updated"] == pytest.approx(1_700_001_000.0)
         assert n["access_count"] == 5
+        assert n["metadata"] == {"source": "test"}
 
     def test_source_episodes_json_round_trip(self, store: MemoryStore):
         episodes = ["ep-alpha", "ep-beta", "ep-gamma"]
@@ -435,6 +527,34 @@ class TestKnowledgeNodes:
             )
         nodes = store.load_knowledge_nodes()
         assert len(nodes) == 5
+
+    def test_metadata_non_dict_coerced_to_empty_dict(self, store: MemoryStore):
+        now = time.time()
+        conn = store._conn
+        assert conn is not None
+        conn.execute(
+            """
+            INSERT INTO knowledge_nodes
+            (node_id, label, category, content, confidence, source_episodes, created_at, last_updated, access_count, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "node-bad-metadata",
+                "bad",
+                "concept",
+                "bad metadata",
+                0.5,
+                "[]",
+                now,
+                now,
+                0,
+                json.dumps(["not", "a", "dict"]),
+            ),
+        )
+        conn.commit()
+
+        nodes = {n["node_id"]: n for n in store.load_knowledge_nodes()}
+        assert nodes["node-bad-metadata"]["metadata"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +637,79 @@ class TestKnowledgeEdges:
 
 
 # ---------------------------------------------------------------------------
-# 8. Persistent context
+# 8. Knowledge node deletion
+# ---------------------------------------------------------------------------
+
+class TestKnowledgeNodeDeletion:
+    """delete_knowledge_nodes removes nodes and their incident edges."""
+
+    def _seed_graph(self, store: MemoryStore) -> None:
+        now = time.time()
+        for nid in ("a", "b", "c"):
+            store.save_knowledge_node(
+                node_id=nid,
+                label=nid,
+                category="concept",
+                content=f"node {nid}",
+                confidence=0.5,
+                source_episodes=[],
+                created_at=now,
+                last_updated=now,
+                access_count=0,
+            )
+        store.save_knowledge_edge(
+            source_id="a",
+            target_id="b",
+            relationship="linked",
+            strength=0.5,
+            context="ab",
+            created_at=now,
+        )
+        store.save_knowledge_edge(
+            source_id="b",
+            target_id="c",
+            relationship="linked",
+            strength=0.5,
+            context="bc",
+            created_at=now,
+        )
+
+    def test_delete_single_node_removes_incident_edges(self, store: MemoryStore):
+        self._seed_graph(store)
+        deleted = store.delete_knowledge_nodes(["b"])
+        assert deleted == 1
+
+        nodes = {n["node_id"] for n in store.load_knowledge_nodes()}
+        assert nodes == {"a", "c"}
+        # Both edges referenced node b and should be gone.
+        assert store.load_knowledge_edges() == []
+
+    def test_delete_empty_list_noop(self, store: MemoryStore):
+        assert store.delete_knowledge_nodes([]) == 0
+
+    def test_delete_skips_immutable_nodes(self, store: MemoryStore):
+        now = time.time()
+        store.save_knowledge_node(
+            node_id="immutable-node",
+            label="genesis:identity",
+            category="self",
+            content="immutable",
+            confidence=1.0,
+            source_episodes=[],
+            created_at=now,
+            last_updated=now,
+            access_count=0,
+            metadata={"immutable": True, "genesis": True},
+        )
+        deleted = store.delete_knowledge_nodes(["immutable-node"])
+        assert deleted == 0
+
+        nodes = {n["node_id"] for n in store.load_knowledge_nodes()}
+        assert "immutable-node" in nodes
+
+
+# ---------------------------------------------------------------------------
+# 9. Persistent context
 # ---------------------------------------------------------------------------
 
 class TestPersistentContext:
@@ -563,9 +755,85 @@ class TestPersistentContext:
         loaded = store.load_persistent_context()
         assert loaded == ""
 
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions only")
+    def test_persistent_context_file_is_owner_only(self, store: MemoryStore):
+        path = store.save_persistent_context("private")
+        mode = path.stat().st_mode & 0o777
+        assert mode == 0o600
+
 
 # ---------------------------------------------------------------------------
-# 9. Stats property
+# 10. Goal state sidecar
+# ---------------------------------------------------------------------------
+
+class TestGoalStateSidecar:
+    """save_goal_state and load_goal_state round-trip behavior."""
+
+    def test_goal_state_round_trip(self, store: MemoryStore):
+        state = {
+            "needs": {"connection": {"satisfaction": 0.42}},
+            "active_goals": [{"goal_id": "g1", "description": "Ping user"}],
+        }
+        path = store.save_goal_state(state)
+        assert path.exists()
+
+        loaded = store.load_goal_state()
+        assert loaded == state
+
+    def test_goal_state_missing_returns_empty(self, store: MemoryStore, tmp_path: Path):
+        missing = tmp_path / "missing_goal_state.json"
+        assert store.load_goal_state(path=missing) == {}
+
+    def test_goal_state_invalid_json_returns_empty(self, store: MemoryStore, tmp_path: Path):
+        broken = tmp_path / "broken_goal_state.json"
+        broken.write_text("{not valid json", encoding="utf-8")
+        assert store.load_goal_state(path=broken) == {}
+
+
+class TestMetacognitionStateSidecar:
+    """save_metacognition and load_metacognition round-trip behavior."""
+
+    def test_metacognition_round_trip(self, store: MemoryStore):
+        state = {
+            "concerns": ["Honesty concern: overstated certainty"],
+            "insights": ["Acknowledged uncertainty"],
+            "growth_metrics": {
+                "honesty_consistency": {
+                    "current_level": 0.62,
+                    "trajectory": 0.01,
+                    "evidence": ["clean response"],
+                    "last_assessed": 1700000000.0,
+                }
+            },
+            "calibration_records": [
+                {
+                    "claim": "user='hi'; response='hello'",
+                    "stated_confidence": 0.60,
+                    "actual_outcome": True,
+                    "timestamp": 1700000001.0,
+                    "domain": "conversation",
+                }
+            ],
+            "audit_summary": {"total": 5, "honest": 4},
+        }
+        path = store.save_metacognition(state)
+        assert path.exists()
+
+        loaded = store.load_metacognition()
+        assert loaded == state
+
+    def test_metacognition_missing_returns_empty(self, store: MemoryStore, tmp_path: Path):
+        missing = tmp_path / "missing_meta.json"
+        assert store.load_metacognition(path=missing) == {}
+
+    def test_metacognition_invalid_json_returns_empty(self, store: MemoryStore, tmp_path: Path):
+        broken = tmp_path / "broken_meta.json"
+        broken.write_text("{not valid json", encoding="utf-8")
+        assert store.load_metacognition(path=broken) == {}
+
+
+# ---------------------------------------------------------------------------
+# 11. Stats property
 # ---------------------------------------------------------------------------
 
 class TestStats:
@@ -615,7 +883,7 @@ class TestStats:
 
 
 # ---------------------------------------------------------------------------
-# 10. Edge cases
+# 12. Edge cases
 # ---------------------------------------------------------------------------
 
 class TestEdgeCases:
@@ -637,6 +905,10 @@ class TestEdgeCases:
         """clear_knowledge_edges should not raise on an already-empty table."""
         store.clear_knowledge_edges()  # no error
         assert store.load_knowledge_edges() == []
+
+    def test_vector_queries_empty_when_vector_store_disabled(self, store: MemoryStore):
+        assert store.query_episode_embeddings("python", top_k=5) == []
+        assert store.query_knowledge_embeddings("python", top_k=5) == []
 
     # -- INSERT OR REPLACE behaviour for episodes --
 
@@ -732,6 +1004,7 @@ class TestEdgeCases:
         assert s["affect_snapshots"] == 1
         assert s["identity_snapshots"] == 1
         assert s["knowledge_nodes"] == 1
+        assert s["vector_enabled"] is False
 
         ms2.close()
 
@@ -772,3 +1045,152 @@ class TestEdgeCases:
         # verify truthiness is correct
         assert loaded["cons-true"].consolidated
         assert not loaded["cons-false"].consolidated
+
+
+class TestWorkingMemorySidecar:
+    """save_working_memory / load_working_memory round-trip and decay."""
+
+    def test_round_trip_preserves_high_salience_items(self, store: MemoryStore):
+        items = [
+            {
+                "item_id": "wm-1",
+                "content": "thinking about something",
+                "category": "general",
+                "salience": 0.9,
+                "entered_at": time.time(),
+                "emotional_valence": 0.1,
+                "access_count": 2,
+            }
+        ]
+        store.save_working_memory(items)
+        loaded = store.load_working_memory()
+        assert len(loaded) == 1
+        assert loaded[0]["item_id"] == "wm-1"
+        assert loaded[0]["salience"] > 0.0
+
+    def test_low_salience_items_filtered_on_save(self, store: MemoryStore):
+        items = [
+            {"item_id": "low", "content": "x", "salience": 0.03},
+            {"item_id": "high", "content": "y", "salience": 0.8},
+        ]
+        store.save_working_memory(items)
+        loaded = store.load_working_memory()
+        ids = [i["item_id"] for i in loaded]
+        assert "high" in ids
+        assert "low" not in ids
+
+    def test_missing_file_returns_empty_list(self, store: MemoryStore, tmp_path):
+        result = store.load_working_memory(path=tmp_path / "nonexistent.json")
+        assert result == []
+
+    def test_decay_applied_to_old_items(self, store: MemoryStore, tmp_path):
+        """Items saved a long time ago have their salience reduced on load."""
+        import json as _json
+        path = tmp_path / "wm_old.json"
+        # Simulate saving 60 minutes ago (decay_rate=0.02 * 60 = 1.2 => salience 0.6 → drops below 0.05)
+        payload = {
+            "saved_at": time.time() - 3600,
+            "items": [
+                {"item_id": "old-low", "salience": 0.5, "content": "x"},
+                {"item_id": "old-high", "salience": 0.99, "content": "y"},
+            ],
+        }
+        path.write_text(_json.dumps(payload), encoding="utf-8")
+        loaded = store.load_working_memory(path=path)
+        ids = [i["item_id"] for i in loaded]
+        # old-low (0.5 - 1.2 = -0.7) should be pruned; old-high (0.99 - 1.2 = -0.21) too
+        # Both items should be gone after 60 minutes at rate 0.02/min
+        assert "old-low" not in ids
+        assert "old-high" not in ids
+
+    def test_empty_items_list_saves_and_loads(self, store: MemoryStore):
+        store.save_working_memory([])
+        assert store.load_working_memory() == []
+
+
+class TestPruneOldEpisodes:
+    """prune_old_episodes deletes old consolidated low-importance episodes."""
+
+    def test_prunes_qualifying_episodes(self, store: MemoryStore):
+        old_ts = time.time() - (100 * 86400)  # 100 days ago
+        ep_old_cons = _make_episode(
+            episode_id="old-cons",
+            timestamp=old_ts,
+            importance=0.1,
+            consolidated=True,
+        )
+        ep_old_unconsolidated = _make_episode(
+            episode_id="old-uncons",
+            timestamp=old_ts,
+            importance=0.1,
+            consolidated=False,
+        )
+        ep_recent = _make_episode(
+            episode_id="recent",
+            timestamp=time.time(),
+            importance=0.1,
+            consolidated=True,
+        )
+        ep_high_importance = _make_episode(
+            episode_id="high-imp",
+            timestamp=old_ts,
+            importance=0.9,
+            consolidated=True,
+        )
+        for ep in [ep_old_cons, ep_old_unconsolidated, ep_recent, ep_high_importance]:
+            store.save_episode(ep)
+
+        deleted = store.prune_old_episodes(older_than_days=90.0, max_importance=0.3)
+        assert deleted == 1  # Only ep_old_cons qualifies
+
+        remaining_ids = {e.episode_id for e in store.load_episodes(limit=None)}
+        assert "old-cons" not in remaining_ids
+        assert "old-uncons" in remaining_ids
+        assert "recent" in remaining_ids
+        assert "high-imp" in remaining_ids
+
+    def test_no_deletions_when_nothing_qualifies(self, store: MemoryStore):
+        ep = _make_episode(episode_id="safe", timestamp=time.time(), importance=0.5)
+        store.save_episode(ep)
+        deleted = store.prune_old_episodes()
+        assert deleted == 0
+
+
+class TestUpsertContextSection:
+    """Tests for agent._upsert_context_section helper."""
+
+    def test_creates_new_section_in_empty_string(self):
+        from gwenn.agent import _upsert_context_section
+        result = _upsert_context_section("", "reminders", "buy milk")
+        assert "## Reminders" in result
+        assert "- buy milk" in result
+
+    def test_appends_to_existing_section(self):
+        from gwenn.agent import _upsert_context_section
+        content = "## Reminders\n- first note"
+        result = _upsert_context_section(content, "reminders", "second note")
+        assert "- first note" in result
+        assert "- second note" in result
+        assert result.count("## Reminders") == 1
+
+    def test_creates_new_section_when_header_absent(self):
+        from gwenn.agent import _upsert_context_section
+        content = "## Other Section\n- something"
+        result = _upsert_context_section(content, "reminders", "new note")
+        assert "## Other Section" in result
+        assert "## Reminders" in result
+        assert "- new note" in result
+
+    def test_header_in_body_text_does_not_trigger_false_match(self):
+        """A partial match like '## Reminders extra' must NOT count as the section."""
+        from gwenn.agent import _upsert_context_section
+        content = "## Reminders Extra\n- unrelated"
+        result = _upsert_context_section(content, "reminders", "my note")
+        # A new '## Reminders' section should be appended, not inserted into the wrong section
+        assert result.count("## Reminders\n") >= 1
+        assert "## Reminders Extra" in result
+
+    def test_section_name_with_underscores_titlecased(self):
+        from gwenn.agent import _upsert_context_section
+        result = _upsert_context_section("", "long_term_goals", "finish the project")
+        assert "## Long Term Goals" in result

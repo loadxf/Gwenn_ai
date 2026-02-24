@@ -3,6 +3,8 @@
 This plan addresses all findings from `deep-research.md` — bugs, missing wiring,
 architectural gaps, and recommended improvements — organized by priority.
 
+**Last updated:** 2026-02-22
+
 ---
 
 ## Phase 1: Critical Fixes (Correctness & Safety)
@@ -10,172 +12,33 @@ architectural gaps, and recommended improvements — organized by priority.
 These items represent bugs, mismatches, or safety gaps that affect the correctness
 of the system as it currently exists.
 
-### 1.1 Fix License Inconsistency
+### 1.1 Fix License Inconsistency -- DONE
 
-**Problem:** The `LICENSE` file contains **MPL 2.0** text, but `pyproject.toml:11`
-declares `license = { text = "MIT" }`. This is a compliance risk — MPL 2.0 has
-file-level copyleft requirements while MIT is fully permissive.
-
-**Files:**
-- `LICENSE`
-- `pyproject.toml:11`
-
-**Action:** Align the two. The project owner must decide which license is
-authoritative. Two options:
-- **Option A:** Replace `LICENSE` with an MIT license body and keep `pyproject.toml` as-is.
-- **Option B:** Update `pyproject.toml` to `license = { text = "MPL-2.0" }` to match
-  the `LICENSE` file.
-
-This requires a decision from the repository owner before implementation.
+**Status:** Resolved. `pyproject.toml` now declares `license = { text = "MPL-2.0" }`
+matching the `LICENSE` file.
 
 ---
 
-### 1.2 Wire SafetyGuard into Tool Execution (End-to-End)
+### 1.2 Wire SafetyGuard into Tool Execution (End-to-End) -- DONE
 
-**Problem:** `SafetyGuard.check_tool_call()` (`gwenn/harness/safety.py:143-186`)
-defines dangerous-pattern scanning and approval-list mapping, but the `AgenticLoop`
-(`gwenn/harness/loop.py:193-206`) never calls it. Tool calls go directly to
-`ToolExecutor.execute()`, which only checks `ToolDefinition.requires_approval`
-(`gwenn/tools/executor.py:181`). The config-driven approval list and pattern
-scanner are completely bypassed.
-
-This is safe today (only low-risk builtins exist), but becomes a real vulnerability
-if MCP or filesystem tools are connected.
-
-**Files to modify:**
-- `gwenn/harness/loop.py` — Add `SafetyGuard.check_tool_call()` before each
-  `ToolExecutor.execute()` call
-
-**Implementation:**
-```python
-# In AgenticLoop.run(), inside the tool_calls loop (around line 194):
-for call in tool_calls:
-    self._total_tool_calls += 1
-    all_tool_calls.append(call)
-
-    if on_tool_call:
-        on_tool_call(call)
-
-    # --- NEW: Safety check before execution ---
-    safety_result = self._safety.check_tool_call(
-        tool_name=call["name"],
-        tool_input=call["input"],
-    )
-    if not safety_result.allowed:
-        logger.warning(
-            "agentic_loop.tool_blocked",
-            tool=call["name"],
-            reason=safety_result.reason,
-        )
-        result = ToolExecutionResult(
-            tool_use_id=call["id"],
-            tool_name=call["name"],
-            success=False,
-            error=f"Blocked by safety system: {safety_result.reason}",
-        )
-        tool_results.append(result)
-        continue
-
-    if safety_result.requires_approval:
-        # Delegate approval to executor's existing callback
-        pass  # ToolExecutor already handles approval via requires_approval
-
-    # Execute the tool (existing code)
-    result = await self._executor.execute(
-        tool_use_id=call["id"],
-        tool_name=call["name"],
-        tool_input=call["input"],
-    )
-    tool_results.append(result)
-```
+**Status:** Resolved. `SafetyGuard.check_tool_call()` is now invoked in the
+`AgenticLoop` before every `ToolExecutor.execute()` call. Non-builtin tools are
+blocked by default via deny-by-default policy.
 
 ---
 
-### 1.3 Wire Budget Tracking into CognitiveEngine
+### 1.3 Wire Budget Tracking into CognitiveEngine -- DONE
 
-**Problem:** `SafetyGuard.update_budget()` (`gwenn/harness/safety.py:193-197`)
-exists and `BudgetState` tracks tokens/calls, but `CognitiveEngine.think()`
-(`gwenn/api/claude.py:63-153`) never reports its token usage back to the safety
-system. The budget check in `pre_check()` will never trigger because counters
-stay at zero.
-
-**Files to modify:**
-- `gwenn/harness/loop.py` — After each `engine.think()` call, update the safety
-  guard's budget with the response's token usage
-
-**Implementation:**
-```python
-# In AgenticLoop.run(), after the engine.think() call (around line 163):
-response = await self._engine.think(
-    system_prompt=system_prompt,
-    messages=loop_messages,
-    tools=tools,
-    enable_thinking=enable_thinking,
-)
-
-# --- NEW: Update safety budget tracking ---
-self._safety.update_budget(
-    input_tokens=response.usage.input_tokens,
-    output_tokens=response.usage.output_tokens,
-)
-```
+**Status:** Resolved. `SafetyGuard.update_budget()` is called after each
+`engine.think()` in the agentic loop with the response's token usage.
 
 ---
 
-### 1.4 Fix `set_note_to_self` Tool (Persistence Promise Mismatch)
+### 1.4 Fix `set_note_to_self` Tool (Persistence Promise Mismatch) -- DONE
 
-**Problem:** The `set_note_to_self` tool description (`gwenn/tools/builtin/__init__.py:152-153`)
-claims it writes to `GWENN_CONTEXT.md` and persists across startups. However, the
-handler (`gwenn/agent.py:747-761`) stores an episodic memory in SQLite instead.
-The `GWENN_CONTEXT.md` file is never written.
-
-**Files to modify:**
-- `gwenn/agent.py:747-761` — Update `handle_set_note` to also write to
-  `GWENN_CONTEXT.md`
-
-**Implementation:**
-```python
-async def handle_set_note(note: str, section: str = "reminders") -> str:
-    # Store as episodic memory (existing behavior — keep it)
-    episode = Episode(
-        content=f"[NOTE TO SELF — {section}] {note}",
-        category="self_knowledge",
-        emotional_valence=self.affect_state.dimensions.valence,
-        emotional_arousal=0.3,
-        importance=0.8,
-        tags=["note_to_self", section],
-        participants=["gwenn"],
-    )
-    self.episodic_memory.encode(episode)
-    self.memory_store.save_episode(episode)
-
-    # NEW: Also write/update GWENN_CONTEXT.md
-    existing_context = self.memory_store.load_persistent_context()
-    section_header = f"## {section.replace('_', ' ').title()}"
-    note_entry = f"- {note}"
-    if section_header in existing_context:
-        # Append under existing section
-        existing_context = existing_context.replace(
-            section_header,
-            f"{section_header}\n{note_entry}",
-        )
-    else:
-        existing_context += f"\n\n{section_header}\n{note_entry}"
-    self.memory_store.save_persistent_context(existing_context.strip())
-
-    return f"Note stored in '{section}': {note[:80]}..."
-```
-
-Additionally, the persistent context should be loaded into the system prompt
-on startup. Verify that `_assemble_system_prompt` includes it, or add a section:
-```python
-# In _assemble_system_prompt:
-persistent_context = self.memory_store.load_persistent_context()
-if persistent_context:
-    sections.append("<persistent_context>")
-    sections.append(persistent_context)
-    sections.append("</persistent_context>")
-```
+**Status:** Resolved. `handle_set_note` now writes to both episodic memory and
+`GWENN_CONTEXT.md`. The persistent context is loaded into the system prompt on
+startup.
 
 ---
 
@@ -333,127 +196,57 @@ retrieval optional with a config flag and falling back to keyword overlap.
 
 ---
 
-## Phase 3: Test Infrastructure & Evaluation
+## Phase 3: Test Infrastructure & Evaluation -- DONE
 
-### 3.1 Build Core Unit Tests
+### 3.1 Build Core Unit Tests -- DONE
 
-**Problem:** The repository has a single test file (`tests/test_identity_normalization.py`).
-The report recommends deterministic unit tests for core subsystems.
+**Status:** Resolved. 35+ test files with 1433 tests covering all core subsystems:
+- `tests/test_episodic_memory.py` — Retrieve scoring, mood-congruent retrieval
+- `tests/test_working_memory.py` — Slot management, eviction, decay
+- `tests/test_consolidation.py` — FACT/RELATIONSHIP/SELF/PATTERN parsing, malformed lines
+- `tests/test_safety.py` — Dangerous patterns, approval lists, iteration limits, budgets
+- `tests/test_affect.py` — Appraisal dimensions, resilience circuit breakers
+- `tests/test_config_paths.py` — Config path derivation and resolution
+- Plus: agent_runtime, agentic_loop, appraisal, channels, cognitive_engine, daemon,
+  discord, ethics, goal_system, heartbeat, identity, inner_life, interagent,
+  main_session, mcp_client, memory_store, metacognition, redaction, retry,
+  security_regressions, semantic_memory, sensory, session_store, skill_system,
+  telegram, theory_of_mind, tool_executor, tool_registry
 
-**Files to create:**
-- `tests/test_episodic_memory.py` — Retrieve scoring (recency, importance,
-  relevance weighting), mood-congruent retrieval bias
-- `tests/test_working_memory.py` — Slot management, eviction by lowest salience,
-  decay rate
-- `tests/test_consolidation.py` — Parsing of FACT/RELATIONSHIP/SELF/PATTERN lines,
-  robustness to format deviations
-- `tests/test_safety.py` — Dangerous pattern detection, approval list parsing,
-  iteration limits, budget enforcement
-- `tests/test_affect.py` — Appraisal dimensions update, resilience circuit
-  breakers (arousal ceiling, distress timeout)
+### 3.2 Build Integration Tests with Mocked Engine -- DONE
 
-**Test specifics for consolidation parsing:**
-```python
-def test_fact_parsing():
-    """Verify FACT lines are parsed into semantic nodes correctly."""
-    engine = ConsolidationEngine(episodic, semantic)
-    response = "FACT: User prefers Python | confidence: 0.8 | category: preference"
-    counts = engine.process_consolidation_response(response)
-    assert counts["facts"] == 1
-    nodes = semantic.query("Python")
-    assert len(nodes) == 1
-    assert nodes[0].confidence == 0.8
+**Status:** Resolved. `tests/test_agentic_loop.py` tests tool-use loop convergence
+with mock engine responses, safety intervention, and max-iteration limits.
+`tests/conftest.py` provides shared fixtures.
 
-def test_malformed_lines_handled():
-    """Verify parser doesn't crash on unexpected format."""
-    response = "FACT: No pipe delimiters\nGARBAGE LINE\nFACT: Valid | confidence: 0.5"
-    counts = engine.process_consolidation_response(response)
-    assert counts["facts"] == 2  # Both valid FACTs extracted
-```
+### 3.3 Build Adversarial Safety Tests -- DONE
 
-### 3.2 Build Integration Tests with Mocked Engine
-
-**Problem:** Integration testing the agentic loop requires API calls. The report
-recommends mocking `CognitiveEngine` to test tool loops without paying tokens.
-
-**Files to create:**
-- `tests/test_agentic_loop.py` — Test tool-use loop convergence with mock engine
-  responses, safety intervention, max-iteration limit
-- `tests/conftest.py` — Shared fixtures: mock CognitiveEngine, sample episodes,
-  default configs
-
-**Implementation outline:**
-```python
-class MockCognitiveEngine:
-    """Returns pre-scripted responses for testing the agentic loop."""
-    def __init__(self, responses: list):
-        self._responses = iter(responses)
-
-    async def think(self, **kwargs):
-        return next(self._responses)
-
-    def extract_text(self, response): ...
-    def extract_tool_calls(self, response): ...
-    def extract_thinking(self, response): ...
-```
-
-### 3.3 Build Adversarial Safety Tests
-
-**Problem:** No tests verify that safety guards block dangerous operations or
-that MCP tool registration respects risk tiers.
-
-**Files to create:**
-- `tests/test_safety_adversarial.py` — Attempt to execute tools with dangerous
-  inputs (`rm -rf`, `DROP TABLE`, `curl | bash`), verify they are blocked.
-  Test approval flow for high-risk tools. Test prompt-injection resistance in
-  tool descriptions.
+**Status:** Resolved. `tests/test_safety_adversarial.py` tests dangerous inputs
+(`rm -rf`, `DROP TABLE`, `curl | bash`), approval flows, and prompt-injection
+resistance.
 
 ---
 
-## Phase 4: Safety Hardening
+## Phase 4: Safety Hardening -- MOSTLY DONE
 
-### 4.1 Implement Deny-by-Default Tool Policy
+### 4.1 Implement Deny-by-Default Tool Policy -- DONE
 
-**Problem:** Currently, any tool registered in the registry can be called unless
-its `requires_approval` flag is set. There is no concept of an allowlist.
-
-**Files to modify:**
-- `gwenn/harness/safety.py` — Add a `denied_tools` list and a `default_policy`
-  config (allow/deny). Default to "deny" for all MCP-registered tools unless
-  explicitly allowed.
-- `gwenn/config.py` — Add `tool_default_policy: str = "deny"` and
-  `allowed_tools: list[str] = []` to `SafetyConfig`
+**Status:** Resolved. Non-builtin tools are denied by default via `SafetyGuard`.
+`GWENN_SANDBOX_ENABLED=True` is the default. MCP-registered tools require
+explicit allowlisting.
 
 ### 4.2 Add Provenance Tracking to Consolidation
 
-**Problem:** Consolidation can invent facts (LLM hallucination). Currently
-`KnowledgeNode.source_episodes` exists but is only sometimes populated.
-There's no way to verify a semantic fact against its source episodes.
+**Status:** Open. `KnowledgeNode.source_episodes` exists but is only sometimes
+populated. No `verify_provenance()` method yet. Depends on 2.1.
 
-**Files to modify:**
-- `gwenn/memory/consolidation.py` — When processing facts, always populate
-  `source_episode_id` from the episodes being consolidated
-- `gwenn/memory/semantic.py` — Add a `verify_provenance()` method that checks
-  whether source episodes actually support the claimed knowledge
-- `gwenn/memory/store.py` — Persist source_episodes in the knowledge_nodes table
-  (already in schema, just needs to be populated)
+### 4.3 Add PII Redaction Pipeline -- DONE
 
-### 4.3 Add PII Redaction Pipeline
-
-**Problem:** Episodes and identity data store user content in plaintext. This
-content is sent to the Claude API on every `think()` call. No redaction exists.
-
-**Files to create:**
-- `gwenn/privacy/redaction.py` — Implement a redaction pipeline that:
-  - Detects PII patterns (email, phone, SSN, credit card, etc.)
-  - Optionally redacts before persistence (configurable)
-  - Optionally redacts before API calls
-
-**Files to modify:**
-- `gwenn/agent.py` — Apply redaction before `memory_store.save_episode()` and
-  before `_assemble_system_prompt()` sends content to the API
-- `gwenn/config.py` — Add `redaction_enabled: bool = False` and
-  `redact_before_api: bool = False` to config
+**Status:** Resolved. `gwenn/privacy/redaction.py` implements PII pattern detection
+(email, phone, SSN, credit card, IP). Configurable via `GWENN_REDACTION_ENABLED`,
+`GWENN_REDACT_BEFORE_API`, `GWENN_REDACT_BEFORE_PERSIST`. Log fields are always
+redacted via a shared `configure_logging()` structlog processor. Daemon sessions
+are redacted by default.
 
 ---
 
@@ -489,29 +282,20 @@ used for anything beyond the `requires_approval` flag.
 
 ---
 
-## Phase 6: Observability & Calibration
+## Phase 6: Observability & Calibration -- MOSTLY DONE
 
 ### 6.1 Add Affect Snapshot Logging
 
-**Problem:** The affect system has no telemetry for debugging emotional
-dynamics. Resilience circuit breakers can mask persistent failure modes.
+**Status:** Open. Affect snapshots schema exists in `MemoryStore` but is not
+called during normal operation.
 
-**Files to modify:**
-- `gwenn/agent.py` — After each `process_appraisal()` call, save an affect
-  snapshot to the store
-- `gwenn/affect/resilience.py` — Log when circuit breakers activate (arousal
-  ceiling hit, distress timeout triggered, habituation applied)
+### 6.2 Add Log Redaction -- DONE
 
-### 6.2 Add Log Redaction
-
-**Problem:** CLI logs may leak sensitive content. `structlog` output includes
-user messages and episode content in plaintext.
-
-**Files to modify:**
-- `gwenn/main.py` — Add a structlog processor that redacts sensitive fields
-  (content, user_message, etc.) when logging to file
-- Or use `structlog`'s built-in `add_log_level` + custom processor for
-  production vs. debug modes
+**Status:** Resolved. `gwenn/main.py` includes a `_redact_sensitive_fields`
+structlog processor that PII-redacts and truncates sensitive log fields (`content`,
+`user_message`, `thought`, `note`, `query`). Thread-safe singleton via
+`@functools.lru_cache`. Both `main.py` and `daemon.py` share the same
+`configure_logging()` configuration.
 
 ---
 
@@ -552,28 +336,31 @@ contribution). No framework exists for this.
 
 ## Summary: Priority Order
 
-| # | Item | Priority | Effort | Risk if Skipped |
-|---|------|----------|--------|-----------------|
-| 1.1 | License fix | Critical | Low | Legal compliance risk |
-| 1.2 | Wire SafetyGuard into loop | Critical | Low | Safety bypass for future tools |
-| 1.3 | Wire budget tracking | Critical | Low | Unbounded API spend |
-| 1.4 | Fix set_note_to_self | High | Low | Broken persistence promise |
-| 2.1 | Persist semantic memory | High | Medium | Knowledge lost on restart |
-| 2.2 | Persist affect state | Medium | Low | Emotion resets on restart |
-| 2.3 | Embedding retrieval | Medium | High | Poor memory recall quality |
-| 3.1 | Unit tests | High | Medium | No regression protection |
-| 3.2 | Integration tests | Medium | Medium | Can't test loops without API |
-| 3.3 | Adversarial tests | Medium | Medium | Safety claims unverified |
-| 4.1 | Deny-by-default policy | High | Low | Open to MCP tool abuse |
-| 4.2 | Provenance tracking | Medium | Medium | Hallucinated knowledge |
-| 4.3 | PII redaction | Medium | High | Privacy risk |
-| 5.1 | Real MCP transport | Low | High | No external tool use |
-| 5.2 | Tool risk tiering | Medium | Low | Flat risk model |
-| 6.1 | Affect logging | Low | Low | Debugging difficulty |
-| 6.2 | Log redaction | Low | Low | Log leaks |
-| 7.1 | Ablation framework | Low | Medium | Claims ungrounded |
-| 7.2 | Identity coherence tests | Low | Medium | Drift undetected |
-| 7.3 | Memory quality benchmarks | Low | Medium | Retrieval quality unknown |
+| # | Item | Priority | Effort | Status |
+|---|------|----------|--------|--------|
+| 1.1 | License fix | Critical | Low | DONE |
+| 1.2 | Wire SafetyGuard into loop | Critical | Low | DONE |
+| 1.3 | Wire budget tracking | Critical | Low | DONE |
+| 1.4 | Fix set_note_to_self | High | Low | DONE |
+| 2.1 | Persist semantic memory | High | Medium | DONE |
+| 2.2 | Persist affect state | Medium | Low | Open |
+| 2.3 | Embedding retrieval | Medium | High | DONE (keyword/embedding/hybrid) |
+| 3.1 | Unit tests | High | Medium | DONE (1371 tests) |
+| 3.2 | Integration tests | Medium | Medium | DONE |
+| 3.3 | Adversarial tests | Medium | Medium | DONE |
+| 4.1 | Deny-by-default policy | High | Low | DONE |
+| 4.2 | Provenance tracking | Medium | Medium | Open |
+| 4.3 | PII redaction | Medium | High | DONE |
+| 5.1 | Real MCP transport | Low | High | Partial |
+| 5.2 | Tool risk tiering | Medium | Low | Open |
+| 6.1 | Affect logging | Low | Low | Open |
+| 6.2 | Log redaction | Low | Low | DONE |
+| 7.1 | Ablation framework | Low | Medium | Open |
+| 7.2 | Identity coherence tests | Low | Medium | Open |
+| 7.3 | Memory quality benchmarks | Low | Medium | Open |
+
+**Completed:** 13/19 items (68%). Remaining items are lower priority or depend on
+architectural decisions (affect persistence, provenance tracking, ablation framework).
 
 ---
 

@@ -22,9 +22,8 @@ import time
 import pytest
 
 from gwenn.memory.episodic import Episode, EpisodicMemory
-from gwenn.memory.semantic import SemanticMemory, KnowledgeNode
-from gwenn.memory.working import WorkingMemory, WorkingMemoryItem
-from gwenn.affect.state import AffectiveState, EmotionalDimensions
+from gwenn.memory.semantic import SemanticMemory
+from gwenn.memory.working import WorkingMemoryItem
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +45,38 @@ def _recall_at_k(results: list[tuple[Episode, float]], expected_ids: set[str], k
     if not expected_ids:
         return 1.0
     return len(top_k_ids & expected_ids) / len(expected_ids)
+
+
+def _mean_reciprocal_rank(
+    results: list[tuple[Episode, float]],
+    relevant_ids: set[str],
+) -> float:
+    """
+    Compute MRR for a single ranked result list.
+
+    Returns 0.0 when no relevant item appears in the ranking.
+    """
+    for rank, (episode, _score) in enumerate(results, start=1):
+        if episode.episode_id in relevant_ids:
+            return 1.0 / rank
+    return 0.0
+
+
+def _false_positive_rate_at_k(
+    results: list[tuple[Episode, float]],
+    relevant_ids: set[str],
+    k: int,
+) -> float:
+    """
+    Compute false-positive rate over top-k results.
+
+    Defined as FP / max(k, 1), where FP are retrieved items not in relevant_ids.
+    """
+    top = results[:k]
+    if not top:
+        return 0.0
+    fp = sum(1 for episode, _score in top if episode.episode_id not in relevant_ids)
+    return fp / len(top)
 
 
 # ===========================================================================
@@ -111,6 +142,41 @@ class TestBasicRecallAtK:
         # The emotion_shift and insight episodes should be excluded
         assert "eval-sad-failure" not in ids
         assert "eval-critical-insight" not in ids
+
+
+class TestRetrievalMetrics:
+    """Explicit ranking metrics: MRR and false-positive rate."""
+
+    def test_mrr_for_first_ranked_relevant_item(self):
+        mem = EpisodicMemory(
+            importance_weight=0.0,
+            recency_weight=0.0,
+            relevance_weight=1.0,
+        )
+        now = time.time()
+        mem.encode(Episode(episode_id="r1", content="python decorators", timestamp=now))
+        mem.encode(Episode(episode_id="r2", content="advanced python typing", timestamp=now))
+        mem.encode(Episode(episode_id="n1", content="weather forecast", timestamp=now))
+
+        results = mem.retrieve(query="python", top_k=3)
+        mrr = _mean_reciprocal_rank(results, relevant_ids={"r1", "r2"})
+        assert mrr == pytest.approx(1.0)
+
+    def test_false_positive_rate_at_k(self):
+        mem = EpisodicMemory(
+            importance_weight=0.0,
+            recency_weight=0.0,
+            relevance_weight=1.0,
+        )
+        now = time.time()
+        mem.encode(Episode(episode_id="r1", content="python decorators", timestamp=now))
+        mem.encode(Episode(episode_id="r2", content="python generators", timestamp=now))
+        mem.encode(Episode(episode_id="n1", content="soccer standings", timestamp=now))
+
+        results = mem.retrieve(query="python", top_k=3)
+        fpr = _false_positive_rate_at_k(results, relevant_ids={"r1", "r2"}, k=3)
+        # Top-3 contains 1 non-relevant out of 3.
+        assert fpr == pytest.approx(1 / 3)
 
 
 # ===========================================================================
@@ -420,6 +486,37 @@ class TestSemanticMemoryQuality:
         assert "python" in context.lower()
         assert len(context) > 0
 
+    def test_embedding_mode_uses_vector_scores(self):
+        semantic = SemanticMemory(retrieval_mode="embedding")
+        a = semantic.store_knowledge("alpha", "alpha content", confidence=0.9)
+        b = semantic.store_knowledge("beta", "beta content", confidence=0.9)
+        semantic.set_vector_search(lambda _q, _k: [(b.node_id, 0.9), (a.node_id, 0.1)])
+
+        results = semantic.query("anything", top_k=2)
+        assert results[0].label == "beta"
+
+    def test_embedding_mode_falls_back_to_keyword_when_vector_empty(self):
+        semantic = SemanticMemory(retrieval_mode="embedding")
+        semantic.store_knowledge("python", "python decorators", confidence=0.8)
+        semantic.store_knowledge("weather", "forecast details", confidence=0.8)
+        semantic.set_vector_search(lambda _q, _k: [])
+
+        results = semantic.query("python decorators", top_k=2)
+        assert results[0].label == "python"
+
+    def test_hybrid_mode_blends_keyword_and_vector(self):
+        semantic = SemanticMemory(
+            retrieval_mode="hybrid",
+            hybrid_keyword_weight=0.2,
+            hybrid_embedding_weight=0.8,
+        )
+        kw = semantic.store_knowledge("python", "python decorators", confidence=0.8)
+        vec = semantic.store_knowledge("vectors", "unrelated text", confidence=0.8)
+        semantic.set_vector_search(lambda _q, _k: [(vec.node_id, 1.0), (kw.node_id, 0.0)])
+
+        results = semantic.query("python decorators", top_k=2)
+        assert results[0].label == "vectors"
+
 
 # ===========================================================================
 # 6. Working memory salience gating quality
@@ -539,6 +636,43 @@ class TestCrossSystemQuality:
         assert provenance["found_count"] == 0
         assert "ep-does-not-exist" in provenance["missing"]
 
+    def test_missing_node_provenance_shape_is_stable(self, semantic_memory, episodic_memory):
+        """Missing-node provenance should return all documented keys."""
+        provenance = semantic_memory.verify_provenance(
+            "does-not-exist",
+            episodic_memory,
+        )
+        assert provenance["supported"] is False
+        assert provenance["source_count"] == 0
+        assert provenance["found_count"] == 0
+        assert provenance["missing"] == []
+        assert provenance["best_overlap"] == pytest.approx(0.0)
+        assert provenance["supporting"] == []
+
+    def test_invalid_provenance_threshold_falls_back(self, semantic_memory):
+        """Invalid threshold input should not raise and should fall back safely."""
+        episodic = EpisodicMemory()
+        episodic.encode(
+            Episode(
+                episode_id="prov-ep-1",
+                content="Python decorators wrap functions cleanly.",
+                timestamp=time.time(),
+            )
+        )
+        node = semantic_memory.store_knowledge(
+            label="python_decorators",
+            content="Python decorators wrap functions.",
+            source_episode_id="prov-ep-1",
+        )
+        provenance = semantic_memory.verify_provenance(
+            node.node_id,
+            episodic,
+            min_support_overlap="invalid",
+        )
+        assert provenance["found_count"] == 1
+        assert provenance["supported"] is True
+        assert provenance["best_overlap"] > 0.0
+
     def test_emotional_trajectory_consistency(self, seeded_episodic_memory):
         """Emotional trajectory should be in chronological order with valid values."""
         trajectory = seeded_episodic_memory.get_emotional_trajectory(last_n=8)
@@ -547,3 +681,50 @@ class TestCrossSystemQuality:
         for point in trajectory:
             assert -1.0 <= point["valence"] <= 1.0
             assert 0.0 <= point["arousal"] <= 1.0
+
+
+# ===========================================================================
+# 8. Long-horizon memory quality
+# ===========================================================================
+
+class TestLongHorizonMemoryQuality:
+    """Long-horizon checks for retrieval quality under larger memory volumes."""
+
+    def test_important_old_memory_remains_retrievable_with_large_backlog(self):
+        em = EpisodicMemory()
+        now = time.time()
+
+        anchor = Episode(
+            episode_id="anchor-contract",
+            content=(
+                "Critical architecture decision: preserve backwards-compatible "
+                "tool contract for daemon memory APIs."
+            ),
+            category="insight",
+            emotional_valence=0.2,
+            importance=1.0,
+            tags=["architecture", "contract", "memory"],
+            timestamp=now - 86400,  # 24 hours old
+        )
+        em.encode(anchor)
+
+        # Add a large, recent backlog of low-importance routine chatter.
+        for idx in range(250):
+            em.encode(
+                Episode(
+                    episode_id=f"routine-{idx}",
+                    content=f"Routine status update number {idx}",
+                    category="conversation",
+                    emotional_valence=0.0,
+                    importance=0.1,
+                    tags=["routine", "status"],
+                    timestamp=now - idx,
+                )
+            )
+
+        results = em.retrieve(
+            query="backwards-compatible tool contract memory APIs",
+            top_k=5,
+        )
+        ids = _episode_ids(results)
+        assert "anchor-contract" in ids

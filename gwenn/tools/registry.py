@@ -19,8 +19,7 @@ bigger gains than architectural changes.
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Optional
 
@@ -39,19 +38,23 @@ class RiskTier(str, Enum):
     - HIGH: Require explicit human approval before execution
     - CRITICAL: Deny by default — must be explicitly unlocked per-session
     """
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
 
 
-# Default policies per risk tier
-RISK_TIER_POLICIES: dict[RiskTier, dict[str, Any]] = {
-    RiskTier.LOW: {"auto_allow": True, "log": False, "require_approval": False, "deny": False},
-    RiskTier.MEDIUM: {"auto_allow": True, "log": True, "require_approval": False, "deny": False},
-    RiskTier.HIGH: {"auto_allow": False, "log": True, "require_approval": True, "deny": False},
-    RiskTier.CRITICAL: {"auto_allow": False, "log": True, "require_approval": False, "deny": True},
+# Default policies per risk tier (enforced by harness/safety.py)
+RISK_TIER_POLICIES: dict[RiskTier, dict[str, bool]] = {
+    RiskTier.LOW: {"require_approval": False, "deny": False},
+    RiskTier.MEDIUM: {"require_approval": False, "deny": False},
+    RiskTier.HIGH: {"require_approval": True, "deny": False},
+    RiskTier.CRITICAL: {"require_approval": False, "deny": True},
 }
+
+
+_VALID_RISK_LEVELS = frozenset(tier.value for tier in RiskTier)
 
 
 @dataclass
@@ -64,14 +67,28 @@ class ToolDefinition:
     when Claude decides to use this tool. The risk_level determines
     whether human approval is needed before execution.
     """
+
     name: str
     description: str
-    input_schema: dict[str, Any]          # JSON Schema for tool parameters
-    handler: Optional[Callable] = None    # The function to call
-    risk_level: str = "low"               # "low", "medium", "high"
-    requires_approval: bool = False       # Whether human must approve
-    category: str = "general"             # For organizing in UI/logs
-    enabled: bool = True                  # Can be disabled without removal
+    input_schema: dict[str, Any]  # JSON Schema for tool parameters
+    handler: Optional[Callable] = None  # The function to call
+    risk_level: str = "low"  # "low", "medium", "high", "critical"
+    requires_approval: bool = False  # Whether human must approve
+    category: str = "general"  # For organizing in UI/logs
+    enabled: bool = True  # Can be disabled without removal
+    is_builtin: bool = False  # True for builtins and user-created skills.
+    # Bypasses the deny-by-default safety policy.
+    timeout: Optional[float] = None  # Per-tool timeout in seconds (None = use default)
+
+    def __post_init__(self) -> None:
+        if self.risk_level not in _VALID_RISK_LEVELS:
+            logger.warning(
+                "tool_definition.invalid_risk_level",
+                name=self.name,
+                risk_level=self.risk_level,
+                coerced_to="critical",
+            )
+            self.risk_level = RiskTier.CRITICAL.value
 
     def to_api_format(self) -> dict[str, Any]:
         """
@@ -110,8 +127,21 @@ class ToolRegistry:
         self._tools: dict[str, ToolDefinition] = {}
         logger.info("tool_registry.initialized")
 
-    def register(self, tool: ToolDefinition) -> None:
-        """Register a tool. Replaces any existing tool with the same name."""
+    def register(self, tool: ToolDefinition, *, allow_override: bool = False) -> None:
+        """Register a tool, blocking accidental name collisions by default."""
+        existing = self._tools.get(tool.name)
+        if existing is not None and not allow_override:
+            logger.warning(
+                "tool_registry.name_collision",
+                name=tool.name,
+                existing_category=existing.category,
+                new_category=tool.category,
+            )
+            raise ValueError(
+                f"Tool '{tool.name}' is already registered. "
+                "Use allow_override=True for an explicit replacement."
+            )
+
         self._tools[tool.name] = tool
         logger.info(
             "tool_registry.registered",
@@ -119,30 +149,6 @@ class ToolRegistry:
             risk_level=tool.risk_level,
             category=tool.category,
         )
-
-    def register_function(
-        self,
-        name: str,
-        description: str,
-        parameters: dict[str, Any],
-        handler: Callable,
-        risk_level: str = "low",
-        category: str = "general",
-    ) -> None:
-        """Convenience method to register a tool from a function."""
-        self.register(ToolDefinition(
-            name=name,
-            description=description,
-            input_schema={
-                "type": "object",
-                "properties": parameters,
-                "required": [k for k, v in parameters.items() if v.get("required", False)],
-            },
-            handler=handler,
-            risk_level=risk_level,
-            category=category,
-            requires_approval=risk_level in ("medium", "high"),
-        ))
 
     def unregister(self, name: str) -> bool:
         """Remove a tool from the registry."""
@@ -169,14 +175,15 @@ class ToolRegistry:
         and risk level allows different tool sets for different contexts
         (e.g., no high-risk tools during autonomous heartbeat cycles).
         """
-        risk_order = {"low": 0, "medium": 1, "high": 2}
+        risk_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
         max_risk_level = risk_order.get(max_risk, 2)
 
         tools = []
         for tool in self._tools.values():
             if not tool.enabled:
                 continue
-            if risk_order.get(tool.risk_level, 0) > max_risk_level:
+            # Unknown risk levels are treated as highest risk (fail closed).
+            if risk_order.get(tool.risk_level, 3) > max_risk_level:
                 continue
             if categories and tool.category not in categories:
                 continue
@@ -202,6 +209,40 @@ class ToolRegistry:
                 "requires_approval": tool.requires_approval,
             }
             for tool in self._tools.values()
+        ]
+
+    def get_tools_by_name(
+        self,
+        names: list[str],
+        max_risk: str = "high",
+    ) -> list[dict[str, Any]]:
+        """Return API-format tool definitions filtered by name and max risk level.
+
+        Used by the orchestrator to build restricted tool sets for subagents.
+        Tools with risk level above max_risk are excluded. CRITICAL risk tools
+        are never returned.
+        """
+        risk_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        max_risk_level = risk_order.get(max_risk, 2)
+
+        tools = []
+        for name in names:
+            tool = self._tools.get(name)
+            if tool is None or not tool.enabled:
+                continue
+            tool_risk = risk_order.get(tool.risk_level, 3)
+            if tool_risk > max_risk_level:
+                continue
+            # Never give subagents CRITICAL risk tools
+            if tool.risk_level == "critical":
+                continue
+            tools.append(tool.to_api_format())
+        return tools
+
+    def get_definitions_by_name(self, names: list[str]) -> list["ToolDefinition"]:
+        """Return ToolDefinition objects matching the given names."""
+        return [
+            self._tools[name] for name in names if name in self._tools and self._tools[name].enabled
         ]
 
     @property

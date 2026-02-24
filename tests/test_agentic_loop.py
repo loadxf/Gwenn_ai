@@ -11,6 +11,8 @@ pre-scripted responses so no network access is needed.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -18,7 +20,7 @@ from typing import Any, Optional
 from gwenn.harness.loop import AgenticLoop, LoopResult
 from gwenn.harness.safety import SafetyGuard
 from gwenn.harness.context import ContextManager
-from gwenn.tools.executor import ToolExecutor, ToolExecutionResult
+from gwenn.tools.executor import ToolExecutor
 from gwenn.tools.registry import ToolRegistry, ToolDefinition
 from gwenn.config import SafetyConfig, ContextConfig
 
@@ -134,6 +136,7 @@ def _make_safety_config(**overrides) -> SafetyConfig:
         max_tool_iterations=25,
         require_approval_for=["file_write"],
         sandbox_enabled=True,
+        tool_default_policy="allow",
     )
     defaults.update(overrides)
     return SafetyConfig(**defaults)
@@ -212,6 +215,9 @@ class TestToolUseLoopConvergence:
         assert result.iterations == 1
         assert result.tool_calls == []
         assert result.was_truncated is False
+        assert len(result.messages) == 2
+        assert result.messages[-1]["role"] == "assistant"
+        assert result.messages[-1]["content"][0].text == "Hello, world!"
 
     @pytest.mark.asyncio
     async def test_tool_call_then_end_turn(self):
@@ -426,6 +432,36 @@ class TestSafetyIntervention:
 
         assert result.text == "Echo succeeded."
         assert len(result.tool_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_requiring_approval_is_blocked_without_human_grant(self):
+        """If safety marks a tool as approval-gated, the loop blocks execution."""
+        engine = MockCognitiveEngine([
+            MockMessage(
+                content=[MockToolUseBlock(id="ap_1", name="echo", input={"text": "hello"})],
+                stop_reason="tool_use",
+            ),
+            MockMessage(
+                content=[MockTextBlock(text="Approval was required.")],
+                stop_reason="end_turn",
+            ),
+        ])
+        loop = _build_loop(
+            engine,
+            safety_overrides={"require_approval_for": ["echo"]},
+        )
+
+        result = await loop.run(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "Use echo"}],
+        )
+
+        assert result.iterations == 2
+        assert len(result.tool_calls) == 1
+        assert result.text == "Approval was required."
+        tool_result_blocks = result.messages[2]["content"]
+        assert tool_result_blocks[0]["is_error"] is True
+        assert "Blocked pending human approval" in tool_result_blocks[0]["content"]
 
     @pytest.mark.asyncio
     async def test_pre_check_safety_blocks_iteration(self):
@@ -660,38 +696,41 @@ class TestBudgetTracking:
     async def test_budget_exceeded_stops_loop(self):
         """If the budget is exceeded during the loop, subsequent iterations are blocked."""
         engine = MockCognitiveEngine([
-            # First call succeeds
+            # Iteration 1
             MockMessage(
                 content=[MockToolUseBlock(id="t1", name="echo", input={"text": "a"})],
                 stop_reason="tool_use",
-                usage=MockUsage(input_tokens=80, output_tokens=40),
+                usage=MockUsage(input_tokens=60, output_tokens=40),
             ),
-            # Second call would happen, but budget check should fail before think()
+            # Iteration 2
+            MockMessage(
+                content=[MockToolUseBlock(id="t2", name="echo", input={"text": "b"})],
+                stop_reason="tool_use",
+                usage=MockUsage(input_tokens=60, output_tokens=30),
+            ),
+            # This should never run because iteration 3 pre_check blocks first.
             MockMessage(
                 content=[MockTextBlock(text="Should not reach here")],
                 stop_reason="end_turn",
-                usage=MockUsage(input_tokens=50, output_tokens=25),
+                usage=MockUsage(input_tokens=10, output_tokens=5),
             ),
         ])
         loop = _build_loop(engine)
 
-        # Set a tight budget that will be exceeded after the first call
-        loop._safety._budget.max_input_tokens = 90
+        # Exceeded after the second think call, then blocked on next pre_check.
+        loop._safety._budget.max_input_tokens = 100
 
         result = await loop.run(
             system_prompt="Test",
             messages=[{"role": "user", "content": "Go"}],
         )
 
-        # After the first call, budget is 80 input tokens (within 90 limit)
-        # But the pre_check also increments iteration count, and the budget
-        # check depends on when update_budget is called relative to pre_check.
-        # The first call updates budget to 80, then pre_check on iteration 2
-        # checks budget (80 < 90, still ok), then second call updates to 130.
-        # The key: budget enforcement happens at pre_check time.
+        assert "Safety system intervened" in result.text
+        assert result.iterations == 3
+        assert loop._engine._call_count == 2
+
         budget = loop._safety._budget
-        # Budget was tracked regardless of outcome
-        assert budget.total_input_tokens > 0
+        assert budget.total_input_tokens == 120
 
     @pytest.mark.asyncio
     async def test_budget_zero_means_unlimited(self):
@@ -721,13 +760,36 @@ class TestBudgetTracking:
         assert budget.total_input_tokens == 100000
         assert budget.total_output_tokens == 50000
 
+    @pytest.mark.asyncio
+    async def test_loop_skips_budget_update_when_engine_accounts_usage(self):
+        """When engine reports external usage accounting, the loop should not double-count."""
+        engine = MockCognitiveEngine([
+            MockMessage(
+                content=[MockTextBlock(text="Done")],
+                stop_reason="end_turn",
+                usage=MockUsage(input_tokens=123, output_tokens=45),
+            ),
+        ])
+        engine.handles_usage_accounting = True
+        loop = _build_loop(engine)
+
+        await loop.run(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+
+        budget = loop._safety._budget
+        assert budget.total_input_tokens == 0
+        assert budget.total_output_tokens == 0
+        assert budget.total_api_calls == 0
+
 
 # ---------------------------------------------------------------------------
 # Tests: Callbacks
 # ---------------------------------------------------------------------------
 
 class TestCallbacks:
-    """Optional callbacks (on_tool_call, on_iteration) are invoked correctly."""
+    """Optional callbacks (on_tool_call, on_tool_result, on_iteration) are invoked correctly."""
 
     @pytest.mark.asyncio
     async def test_on_tool_call_callback_invoked(self):
@@ -745,7 +807,7 @@ class TestCallbacks:
         loop = _build_loop(engine)
 
         tool_calls_seen = []
-        result = await loop.run(
+        await loop.run(
             system_prompt="Test",
             messages=[{"role": "user", "content": "Go"}],
             on_tool_call=lambda call: tool_calls_seen.append(call),
@@ -770,7 +832,7 @@ class TestCallbacks:
         loop = _build_loop(engine)
 
         iterations_seen = []
-        result = await loop.run(
+        await loop.run(
             system_prompt="Test",
             messages=[{"role": "user", "content": "Go"}],
             on_iteration=lambda i, max_i: iterations_seen.append((i, max_i)),
@@ -779,6 +841,129 @@ class TestCallbacks:
         assert len(iterations_seen) == 2  # Two iterations
         assert iterations_seen[0] == (1, 25)
         assert iterations_seen[1] == (2, 25)
+
+    @pytest.mark.asyncio
+    async def test_on_tool_result_callback_invoked(self):
+        """on_tool_result receives execution outcomes for tool calls."""
+        engine = MockCognitiveEngine([
+            MockMessage(
+                content=[MockToolUseBlock(id="c1", name="echo", input={"text": "x"})],
+                stop_reason="tool_use",
+            ),
+            MockMessage(
+                content=[MockTextBlock(text="Done")],
+                stop_reason="end_turn",
+            ),
+        ])
+        loop = _build_loop(engine)
+
+        results_seen = []
+        await loop.run(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "Go"}],
+            on_tool_result=lambda call, result: results_seen.append((call, result)),
+        )
+
+        assert len(results_seen) == 1
+        call, result = results_seen[0]
+        assert call["name"] == "echo"
+        assert result.tool_name == "echo"
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_on_response_callback_invoked(self):
+        engine = MockCognitiveEngine([
+            MockMessage(
+                content=[MockTextBlock(text="Final callback text")],
+                stop_reason="end_turn",
+            ),
+        ])
+        loop = _build_loop(engine)
+
+        responses_seen: list[str] = []
+        result = await loop.run(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "Go"}],
+            on_response=lambda text: responses_seen.append(text),
+        )
+
+        assert result.text == "Final callback text"
+        assert responses_seen == ["Final callback text"]
+
+    @pytest.mark.asyncio
+    async def test_callback_exceptions_do_not_crash_loop(self):
+        engine = MockCognitiveEngine([
+            MockMessage(
+                content=[MockToolUseBlock(id="c1", name="echo", input={"text": "x"})],
+                stop_reason="tool_use",
+            ),
+            MockMessage(
+                content=[MockTextBlock(text="Done")],
+                stop_reason="end_turn",
+            ),
+        ])
+        loop = _build_loop(engine)
+
+        def _raise_iteration(*_args):
+            raise RuntimeError("iteration callback")
+
+        def _raise_tool_call(*_args):
+            raise RuntimeError("tool call callback")
+
+        def _raise_response(*_args):
+            raise RuntimeError("response callback")
+
+        result = await loop.run(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "Go"}],
+            on_iteration=_raise_iteration,
+            on_tool_call=_raise_tool_call,
+            on_response=_raise_response,
+        )
+
+        assert result.text == "Done"
+        assert result.iterations == 2
+
+
+class TestToolResultSerialization:
+    @pytest.mark.asyncio
+    async def test_structured_tool_result_is_json_serialized(self):
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(
+            name="structured",
+            description="Return structured data",
+            input_schema={
+                "type": "object",
+                "properties": {},
+            },
+            handler=lambda: {"ok": True, "items": [1, 2]},
+            risk_level="low",
+            category="test",
+        ))
+        loop = AgenticLoop(
+            engine=MockCognitiveEngine([
+                MockMessage(
+                    content=[MockToolUseBlock(id="s1", name="structured", input={})],
+                    stop_reason="tool_use",
+                ),
+                MockMessage(
+                    content=[MockTextBlock(text="Done")],
+                    stop_reason="end_turn",
+                ),
+            ]),
+            executor=ToolExecutor(registry=registry),
+            context_manager=ContextManager(config=_make_context_config()),
+            safety=SafetyGuard(_make_safety_config()),
+            max_iterations=25,
+        )
+
+        result = await loop.run(
+            system_prompt="Test",
+            messages=[{"role": "user", "content": "Return structured"}],
+        )
+
+        tool_result_text = result.messages[2]["content"][0]["content"]
+        assert json.loads(tool_result_text) == {"ok": True, "items": [1, 2]}
 
 
 # ---------------------------------------------------------------------------

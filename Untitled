@@ -1,0 +1,207 @@
+# =============================================================================
+# Gwenn Agent Configuration
+# Copy this to .env and fill in your values
+# =============================================================================
+
+# --- Claude API ---
+# Option A: Anthropic API key (paid API plan)
+# ANTHROPIC_API_KEY=  # leave unset to use Claude Code OAuth credentials
+
+# Option B: Claude Code OAuth token (Claude Pro/Max via `claude` CLI)
+# Leave ANTHROPIC_API_KEY unset to auto-detect from ~/.claude/.credentials.json
+# Or set explicitly:
+# ANTHROPIC_AUTH_TOKEN=sk-ant-oat01-your-oauth-token
+# CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-your-oauth-token
+#
+# Notes:
+# - If both ANTHROPIC_API_KEY and OAuth token are set, Gwenn uses ANTHROPIC_API_KEY.
+# - Claude Code OAuth uses https://api.anthropic.com plus anthropic-beta: oauth-2025-04-20.
+# - If you set ANTHROPIC_BASE_URL, ensure that header is forwarded.
+
+GWENN_MODEL=claude-opus-4-6
+# GWENN_MODEL=claude-sonnet-4-6
+# GWENN_MODEL=claude-haiku-4-5
+GWENN_MAX_TOKENS=8192
+GWENN_THINKING_BUDGET=16000
+GWENN_REQUEST_TIMEOUT_SECONDS=120.0
+GWENN_RETRY_MAX_RETRIES=3
+GWENN_RETRY_BASE_DELAY=0.5
+GWENN_RETRY_MAX_DELAY=8.0
+GWENN_RETRY_EXPONENTIAL_BASE=2.0
+GWENN_RETRY_JITTER_RANGE=0.25
+
+# --- Skills ---
+# Directory containing skill .md files (auto-created if missing)
+# GWENN_SKILLS_DIR=./gwenn_skills
+
+# --- Memory Persistence ---
+GWENN_DATA_DIR=./gwenn_data
+GWENN_EPISODIC_DB=./gwenn_data/episodic.db
+## Vector store directory (ChromaDB). Only used when GWENN_RETRIEVAL_MODE is
+## "embedding" or "hybrid"; ignored in the default "keyword" mode.
+GWENN_SEMANTIC_DB=./gwenn_data/semantic_vectors
+GWENN_RETRIEVAL_MODE=keyword
+GWENN_EMBEDDING_TOP_K=25
+GWENN_HYBRID_KEYWORD_WEIGHT=0.5
+GWENN_HYBRID_EMBEDDING_WEIGHT=0.5
+# 0 disables recent episode preload (unconsolidated episodes still load)
+GWENN_STARTUP_EPISODE_LIMIT=5000
+GWENN_SHUTDOWN_PERSIST_RECENT_EPISODES=0
+# Persist semantic graph after each consolidation pass
+GWENN_PERSIST_SEMANTIC_AFTER_CONSOLIDATION=True
+GWENN_WM_EVICTION_TO_EPISODIC=False
+
+# --- Memory Consolidation Tuning ---
+# Seconds between consolidation eligibility checks
+# GWENN_CONSOLIDATION_INTERVAL=600.0
+# Maximum episodes per consolidation batch
+# GWENN_CONSOLIDATION_MAX_EPISODES=200
+# Retrieval scoring weights for consolidation (must sum to ~1.0)
+# GWENN_CONSOLIDATION_RECENCY_DECAY=0.995
+# GWENN_CONSOLIDATION_IMPORTANCE_WEIGHT=0.4
+# GWENN_CONSOLIDATION_RECENCY_WEIGHT=0.3
+# GWENN_CONSOLIDATION_RELEVANCE_WEIGHT=0.3
+
+# --- Heartbeat (sec)---
+GWENN_HEARTBEAT_INTERVAL=30.0
+GWENN_HEARTBEAT_MIN_INTERVAL=5.0
+GWENN_HEARTBEAT_MAX_INTERVAL=120.0
+# Share significant autonomous thoughts with channel owners (true/false).
+GWENN_PROACTIVE_MESSAGES=false
+
+# --- Affect ---
+GWENN_AROUSAL_CEILING=0.92
+GWENN_DISTRESS_THRESHOLD=0.80
+GWENN_DISTRESS_DURATION_LIMIT=300
+# Emotional momentum — how quickly feelings carry forward each heartbeat (0-1)
+# GWENN_AFFECT_MOMENTUM_DECAY=0.85
+# How strongly emotions pull toward baseline each heartbeat (0-1)
+# GWENN_AFFECT_BASELINE_PULL=0.05
+
+# --- Context Window ---
+GWENN_CONTEXT_LIMIT=180000
+GWENN_COMPACTION_TRIGGER=0.85
+GWENN_WORKING_MEMORY_SLOTS=7
+
+# --- Safety ---
+GWENN_MAX_TOOL_ITERATIONS=25
+GWENN_REQUIRE_APPROVAL_FOR=["file_write","shell_exec","web_request"]
+GWENN_SANDBOX_ENABLED=True
+GWENN_MAX_INPUT_TOKENS=0
+GWENN_MAX_OUTPUT_TOKENS=0
+GWENN_MAX_API_CALLS=0
+GWENN_MAX_MODEL_CALLS_PER_SECOND=0
+GWENN_MAX_MODEL_CALLS_PER_MINUTE=0
+
+# --- Privacy ---
+GWENN_REDACTION_ENABLED=False
+GWENN_REDACT_BEFORE_API=False
+GWENN_REDACT_BEFORE_PERSIST=False
+GWENN_REDACTION_DISABLED_CATEGORIES=
+
+# --- Sensory Grounding (Layer 11) ---
+GWENN_MAX_PERCEPTS_PER_CHANNEL=10
+GWENN_PERCEPT_EXPIRY=300.0
+
+# --- Ethical Reasoning (Layer 12) ---
+GWENN_ETHICS_HISTORY_SIZE=100
+GWENN_ETHICS_CONCERN_THRESHOLD=0.3
+
+# --- Inter-Agent Communication (Layer 13) ---
+GWENN_AGENT_ID=gwenn
+GWENN_INTERAGENT_BUFFER_SIZE=100
+
+# --- Goal System ---
+# Multiplier for intrinsic need decay rate (1.0 = default speed)
+# GWENN_GOAL_DECAY_MULTIPLIER=1.0
+# Default amount of progress per goal advance call
+# GWENN_GOAL_ADVANCE_AMOUNT=0.35
+# Maximum completed goals to keep in history
+# GWENN_MAX_COMPLETED_GOALS=200
+
+# --- Inner Life ---
+# Seconds before an unused thinking mode gets a variety boost
+# GWENN_VARIETY_PRESSURE_SECONDS=300.0
+# Maximum variety boost multiplier
+# GWENN_VARIETY_BOOST_MAX=2.0
+
+# --- Metacognition ---
+# Maximum confidence-calibration records retained
+# GWENN_MAX_CALIBRATION_RECORDS=1000
+# Maximum honesty-audit records retained
+# GWENN_MAX_AUDIT_RECORDS=500
+# Maximum active metacognitive concerns
+# GWENN_MAX_CONCERNS=20
+# Maximum metacognitive insights carried forward
+# GWENN_MAX_INSIGHTS=20
+
+# --- Theory of Mind ---
+# Days before unconfirmed beliefs start decaying
+# GWENN_BELIEF_STALENESS_DAYS=30.0
+# Maximum topics tracked per user model
+# GWENN_MAX_TOPICS_PER_USER=50
+# Maximum user models before LRU eviction
+# GWENN_MAX_USER_MODELS=500
+
+# --- MCP ---
+GWENN_MCP_SERVERS=[]
+
+# =============================================================================
+# Channel Configuration
+# =============================================================================
+# GWENN_CHANNEL=cli  (default — original terminal behavior)
+# GWENN_CHANNEL=telegram | discord | all
+GWENN_CHANNEL=cli
+
+# --- Telegram (required if GWENN_CHANNEL=telegram or all) ---
+# Obtain from @BotFather → /newbot
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+# User IDs to whitelist ([] = public, no restriction).
+# Accepts: bare value (123), comma-separated (123,456), or JSON array (["123","456"]).
+TELEGRAM_ALLOWED_USER_IDS=[]
+# Owner user IDs — controls /setup and receives proactive messages.
+# Falls back to TELEGRAM_ALLOWED_USER_IDS if empty.
+TELEGRAM_OWNER_USER_IDS=[]
+TELEGRAM_MAX_HISTORY_LENGTH=50
+# Session TTL in seconds (default 3600 = 1 hour).
+# TELEGRAM_SESSION_TTL=3600.0
+# Session scope: per_user | per_chat | per_thread (forum topics).
+# TELEGRAM_SESSION_SCOPE=per_chat
+# Max concurrent update processing (0 = sequential, 64 recommended).
+# TELEGRAM_CONCURRENT_UPDATES=64
+# Enable photo/document/voice handling (requires Claude vision for images).
+# TELEGRAM_ENABLE_MEDIA=false
+
+# --- Discord (required if GWENN_CHANNEL=discord or all) ---
+# Obtain from Discord Developer Portal → Bot → Token
+# Required intents: Message Content (enable in portal)
+DISCORD_BOT_TOKEN=your_discord_bot_token_here
+# Guild IDs to restrict to ([] = all guilds allowed).
+# Accepts: bare value (111), comma-separated (111,222), or JSON array (["111","222"]).
+DISCORD_ALLOWED_GUILD_IDS=[]
+DISCORD_MAX_HISTORY_LENGTH=50
+DISCORD_SESSION_TTL=3600.0
+# Set to a guild ID for instant slash-command sync during development
+DISCORD_SYNC_GUILD_ID=
+
+# =============================================================================
+# Daemon — Persistent Background Process
+# =============================================================================
+# Unix socket for CLI ↔ daemon communication
+GWENN_DAEMON_SOCKET=./gwenn_data/gwenn.sock
+GWENN_DAEMON_PID_FILE=./gwenn_data/gwenn.pid
+# Optional shared token for daemon request authentication (recommended)
+GWENN_DAEMON_AUTH_TOKEN=
+# Channels the daemon manages: cli | cli,telegram | cli,discord | cli,telegram,discord
+GWENN_DAEMON_CHANNELS=cli
+GWENN_DAEMON_MAX_CONNECTIONS=10
+GWENN_DAEMON_CONNECTION_TIMEOUT=300.0
+
+# Session store (automatic conversation history for /resume)
+GWENN_DAEMON_SESSIONS_DIR=./gwenn_data/sessions
+GWENN_DAEMON_SESSION_MAX_COUNT=20
+GWENN_DAEMON_SESSION_MAX_MESSAGES=200
+# Show user-message previews in /resume listings (off by default to reduce data exposure)
+GWENN_DAEMON_SESSION_INCLUDE_PREVIEW=False
+# Redact PII-like patterns before persisting session transcripts
+GWENN_DAEMON_REDACT_SESSION_CONTENT=True

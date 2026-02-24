@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from gwenn.memory.consolidation import ConsolidationEngine
@@ -118,6 +120,30 @@ class TestParseRelationships:
         assert edge.relationship == "interested_in"
         assert "machine learning" in target.content.lower()
 
+    def test_relationship_with_unicode_arrows(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        response = "RELATIONSHIP: understanding → supports → connection | strength: 0.8"
+        counts = engine.process_consolidation_response(response)
+
+        assert counts["relationships"] == 1
+        rels = sm.get_relationships("understanding")
+        assert len(rels) == 1
+        edge, target = rels[0]
+        assert edge.relationship == "supports"
+        assert edge.strength == pytest.approx(0.8)
+        assert "connection" in target.content.lower()
+
+    def test_relationship_with_unicode_arrows_and_blank_strength_uses_default(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        response = "RELATIONSHIP: silent_presence → generates → warmth | strength:"
+        counts = engine.process_consolidation_response(response)
+
+        assert counts["relationships"] == 1
+        rels = sm.get_relationships("silent_presence")
+        assert len(rels) == 1
+        edge, _target = rels[0]
+        assert edge.strength == pytest.approx(0.5)
+
 
 # ---------------------------------------------------------------------------
 # Parsing SELF and PATTERN lines
@@ -168,6 +194,16 @@ class TestParsePatterns:
 
         assert counts["patterns"] == 1
 
+    def test_emotional_insight_is_parsed_and_stored(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        response = "EMOTIONAL_INSIGHT: Creative coding tasks increase engagement | confidence: 0.8"
+        counts = engine.process_consolidation_response(response)
+
+        assert counts["emotional_insights"] == 1
+        nodes = sm.query("creative coding engagement", category="emotional_insight", top_k=1)
+        assert len(nodes) >= 1
+        assert nodes[0].confidence == pytest.approx(0.8)
+
 
 # ---------------------------------------------------------------------------
 # Robustness to malformed lines
@@ -179,7 +215,15 @@ class TestMalformedLines:
     def test_empty_response(self):
         engine, em, sm = _fresh_engine_with_episodes()
         counts = engine.process_consolidation_response("")
-        assert counts == {"facts": 0, "relationships": 0, "self_knowledge": 0, "patterns": 0}
+        assert counts == {
+            "facts": 0,
+            "relationships": 0,
+            "self_knowledge": 0,
+            "patterns": 0,
+            "emotional_insights": 0,
+        }
+        # Empty parse should not silently discard unconsolidated episodes.
+        assert len(em.get_unconsolidated()) == 1
 
     def test_unrecognized_lines_are_skipped(self):
         engine, em, sm = _fresh_engine_with_episodes()
@@ -194,6 +238,7 @@ class TestMalformedLines:
         assert counts["relationships"] == 0
         assert counts["self_knowledge"] == 0
         assert counts["patterns"] == 0
+        assert counts["emotional_insights"] == 0
 
     def test_relationship_with_too_few_arrows_does_not_create_edge(self):
         engine, em, sm = _fresh_engine_with_episodes()
@@ -214,6 +259,43 @@ class TestMalformedLines:
         assert len(nodes) >= 1
         assert nodes[0].confidence == pytest.approx(0.5)
 
+    def test_empty_fact_content_is_rejected(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        counts = engine.process_consolidation_response(
+            "FACT:   | confidence: 0.9 | category: fact"
+        )
+        assert counts["facts"] == 0
+        assert sm.node_count == 0
+
+    def test_out_of_range_confidence_is_clamped(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        counts = engine.process_consolidation_response(
+            "FACT: confidence clamp test | confidence: 7.5 | category: fact"
+        )
+        assert counts["facts"] == 1
+        node = sm.query("confidence clamp test", top_k=1)[0]
+        assert node.confidence == pytest.approx(1.0)
+
+    def test_out_of_range_relationship_strength_is_clamped(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        counts = engine.process_consolidation_response(
+            "RELATIONSHIP: Alice -> likes -> Python | strength: 42"
+        )
+        assert counts["relationships"] == 1
+        rels = sm.get_relationships("Alice")
+        assert rels
+        edge, _target = rels[0]
+        assert edge.strength == pytest.approx(1.0)
+
+    def test_pipe_in_content_is_preserved(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        counts = engine.process_consolidation_response(
+            "FACT: use x | y separator in examples | confidence: 0.7 | category: fact"
+        )
+        assert counts["facts"] == 1
+        node = sm.query("separator examples", top_k=1)[0]
+        assert "x | y" in node.content
+
     def test_mixed_valid_and_invalid(self):
         engine, em, sm = _fresh_engine_with_episodes()
         response = (
@@ -231,6 +313,7 @@ class TestMalformedLines:
         assert sm.edge_count == 0
         assert counts["self_knowledge"] == 1
         assert counts["patterns"] == 1
+        assert counts["emotional_insights"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +332,11 @@ class TestMarkConsolidated:
 
         # After consolidation, it should be marked
         assert len(em.get_unconsolidated()) == 0
+
+    def test_episodes_not_marked_when_no_items_extracted(self):
+        engine, em, sm = _fresh_engine_with_episodes()
+        engine.process_consolidation_response("nonsense")
+        assert len(em.get_unconsolidated()) == 1
 
     def test_consolidated_episodes_not_reconsolidated(self):
         engine, em, sm = _fresh_engine_with_episodes()
@@ -273,6 +361,24 @@ class TestMarkConsolidated:
         engine.process_consolidation_response("FACT: another | confidence: 0.5")
         assert engine.stats["total_consolidations"] == 2
 
+    def test_only_prompt_episodes_marked_when_new_episode_arrives(self):
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine = ConsolidationEngine(episodic=em, semantic=sm)
+
+        em.encode(Episode(episode_id="ep-1", content="first episode"))
+        prompt = engine.get_consolidation_prompt()
+        assert prompt is not None
+
+        # New unconsolidated episode arrives after prompt generation.
+        em.encode(Episode(episode_id="ep-2", content="second episode"))
+
+        engine.process_consolidation_response("FACT: test | confidence: 0.5")
+
+        unconsolidated_ids = {ep.episode_id for ep in em.get_unconsolidated()}
+        assert "ep-1" not in unconsolidated_ids
+        assert "ep-2" in unconsolidated_ids
+
 
 # ---------------------------------------------------------------------------
 # Consolidation prompt generation
@@ -293,6 +399,20 @@ class TestConsolidationPrompt:
         prompt = engine.get_consolidation_prompt()
         assert prompt is None
 
+    def test_prompt_includes_older_unconsolidated_episodes(self):
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        old_episode = Episode(
+            episode_id="old-1",
+            content="older but still unconsolidated",
+            timestamp=time.time() - (48 * 3600),
+        )
+        em.encode(old_episode)
+        engine = ConsolidationEngine(episodic=em, semantic=sm)
+        prompt = engine.get_consolidation_prompt()
+        assert prompt is not None
+        assert "older but still unconsolidated" in prompt
+
     def test_should_consolidate_timing(self):
         em = EpisodicMemory()
         sm = SemanticMemory()
@@ -300,3 +420,44 @@ class TestConsolidationPrompt:
         # Just initialized, _last_consolidation is 0.0, so time.time() - 0.0 > 9999
         # Actually, 0.0 means it's been "infinite" time, so should_consolidate is True
         assert engine.should_consolidate() is True
+
+    def test_mark_checked_no_work_defers_next_due_time(self):
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine = ConsolidationEngine(episodic=em, semantic=sm, consolidation_interval=60.0)
+        engine.mark_checked_no_work()
+        assert engine.should_consolidate() is False
+
+    def test_get_consolidation_prompt_returns_none_when_batch_pending(self):
+        """Calling get_consolidation_prompt twice should return None the second time (P0-4)."""
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine = ConsolidationEngine(episodic=em, semantic=sm)
+
+        em.encode(Episode(episode_id="ep-1", content="first episode"))
+        prompt1 = engine.get_consolidation_prompt()
+        assert prompt1 is not None
+
+        # Second call before processing should be guarded
+        em.encode(Episode(episode_id="ep-2", content="second episode"))
+        prompt2 = engine.get_consolidation_prompt()
+        assert prompt2 is None
+
+    def test_retry_counter_marks_consolidated_after_max_retries(self):
+        """After max retries with no extraction, episodes should be marked consolidated."""
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine = ConsolidationEngine(episodic=em, semantic=sm)
+
+        em.encode(Episode(episode_id="ep-retry", content="retry me"))
+
+        # First two failures should leave episode unconsolidated
+        for _ in range(2):
+            engine.get_consolidation_prompt()
+            engine.process_consolidation_response("nonsense")
+            assert len(em.get_unconsolidated()) == 1
+
+        # Third failure should hit max_retries and mark consolidated
+        engine.get_consolidation_prompt()
+        engine.process_consolidation_response("still nonsense")
+        assert len(em.get_unconsolidated()) == 0

@@ -12,9 +12,12 @@ configurable length to prevent unbounded growth.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+import structlog
 
 
 @dataclass
@@ -23,12 +26,14 @@ class UserSession:
 
     user_id: str
     conversation_history: list[dict[str, Any]] = field(default_factory=list)
+    # Wall-clock time for display in get_session_info.
     created_at: float = field(default_factory=time.time)
-    last_activity: float = field(default_factory=time.time)
+    # Monotonic clock for TTL expiration — immune to NTP/clock adjustments.
+    last_activity: float = field(default_factory=time.monotonic)
     message_count: int = 0
 
     def touch(self) -> None:
-        self.last_activity = time.time()
+        self.last_activity = time.monotonic()
         self.message_count += 1
 
 
@@ -47,6 +52,8 @@ class SessionManager:
         self._sessions: dict[str, UserSession] = {}
         self._max_history = max_history_length
         self._ttl = session_ttl_seconds
+        self._cleanup_task: asyncio.Task | None = None
+        self._logger = structlog.get_logger(__name__)
 
     # ------------------------------------------------------------------
     # Public API
@@ -60,6 +67,9 @@ class SessionManager:
         is the same object stored in the session — mutations are reflected
         immediately without any write-back.
         """
+        # Apply TTL opportunistically on access so stale sessions don't accumulate.
+        self.expire_stale_sessions()
+
         if user_id not in self._sessions:
             self._sessions[user_id] = UserSession(user_id=user_id)
         session = self._sessions[user_id]
@@ -75,16 +85,35 @@ class SessionManager:
 
     def trim_history(self, user_id: str) -> None:
         """
-        Cap the conversation history at max_history_length *pairs* (user +
-        assistant).  We preserve whole turn pairs to avoid sending a partial
-        context to the model.
+        Cap the conversation history at max_history_length *turns*.
+
+        A turn is defined as a sequence of messages starting with a "user"
+        role message.  Tool-use exchanges (assistant tool_use + user
+        tool_result) are part of the same turn and are not double-counted.
         """
         if user_id not in self._sessions:
             return
         history = self._sessions[user_id].conversation_history
-        max_entries = self._max_history * 2  # each turn = 2 entries
-        if len(history) > max_entries:
-            del history[: len(history) - max_entries]
+        if not history:
+            return
+
+        # Find turn boundaries (indices of "user" role messages)
+        turn_starts: list[int] = []
+        for i, msg in enumerate(history):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                # A tool_result content is not a new turn
+                content = msg.get("content")
+                if isinstance(content, list) and all(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content
+                ):
+                    continue
+                turn_starts.append(i)
+
+        if len(turn_starts) > self._max_history:
+            # Keep only the last max_history turns
+            cut_index = turn_starts[-self._max_history]
+            del history[:cut_index]
 
     def expire_stale_sessions(self) -> int:
         """
@@ -93,7 +122,7 @@ class SessionManager:
         Returns the number of sessions removed.  Call this periodically
         (e.g. from the heartbeat or a background task).
         """
-        now = time.time()
+        now = time.monotonic()
         stale = [
             uid
             for uid, session in self._sessions.items()
@@ -118,5 +147,49 @@ class SessionManager:
             "history_length": len(session.conversation_history),
             "created_at": session.created_at,
             "last_activity": session.last_activity,
-            "idle_seconds": time.time() - session.last_activity,
+            "idle_seconds": time.monotonic() - session.last_activity,
         }
+
+    # ------------------------------------------------------------------
+    # Periodic cleanup
+    # ------------------------------------------------------------------
+
+    def start_cleanup_task(self, interval: float | None = None) -> None:
+        """
+        Start a background asyncio task that periodically expires stale sessions.
+
+        The interval defaults to half the TTL so sessions are reaped well before
+        they could accumulate significantly in a long-running daemon.
+        """
+        if self._cleanup_task is not None:
+            return
+        cleanup_interval = interval if interval is not None else max(30.0, self._ttl / 2)
+        self._cleanup_task = asyncio.create_task(
+            self._periodic_cleanup(cleanup_interval),
+            name="session_cleanup",
+        )
+
+    async def stop_cleanup_task(self) -> None:
+        """Cancel the periodic cleanup task."""
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+
+    async def _periodic_cleanup(self, interval: float) -> None:
+        """Background loop that expires stale sessions on a timer."""
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                removed = self.expire_stale_sessions()
+                if removed:
+                    self._logger.debug(
+                        "session_manager.cleanup",
+                        removed=removed,
+                        remaining=len(self._sessions),
+                    )
+        except asyncio.CancelledError:
+            pass

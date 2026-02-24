@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 import structlog
 
@@ -85,12 +85,22 @@ class MetacognitionEngine:
     context, allowing Claude to reason metacognitively with the right framing.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        max_calibration_records: int = 1000,
+        max_audit_records: int = 500,
+        max_concerns: int = 20,
+        max_insights: int = 20,
+    ):
         self._calibration_records: list[CalibrationRecord] = []
         self._audit_history: list[HonestyAuditResult] = []
         self._growth_metrics: dict[str, GrowthMetric] = {}
         self._concerns: list[str] = []      # Active metacognitive concerns
         self._insights: list[str] = []      # Metacognitive insights to carry forward
+        self._max_calibration_records = max(1, int(max_calibration_records))
+        self._max_audit_records = max(1, int(max_audit_records))
+        self._max_concerns = max(1, int(max_concerns))
+        self._max_insights = max(1, int(max_insights))
 
         # Initialize growth dimensions
         for dimension in [
@@ -140,8 +150,10 @@ SUGGESTIONS: [list any improvements, or "none"]"""
     def record_audit_result(self, result: HonestyAuditResult) -> None:
         """Store an audit result for tracking over time."""
         self._audit_history.append(result)
-        if not result.is_honest:
-            self._concerns.append(f"Honesty concern: {'; '.join(result.concerns)}")
+        if len(self._audit_history) > self._max_audit_records:
+            self._audit_history = self._audit_history[-self._max_audit_records:]
+        if not result.is_honest and result.concerns:
+            self.add_concern(f"Honesty concern: {'; '.join(result.concerns)}")
             logger.warning("metacognition.honesty_concern", concerns=result.concerns)
 
     # -------------------------------------------------------------------------
@@ -162,6 +174,8 @@ SUGGESTIONS: [list any improvements, or "none"]"""
                 domain=domain,
             )
         )
+        if len(self._calibration_records) > self._max_calibration_records:
+            self._calibration_records = self._calibration_records[-self._max_calibration_records:]
 
     def record_outcome(self, claim: str, was_correct: bool) -> None:
         """Record the actual outcome for a previous confidence claim."""
@@ -193,6 +207,8 @@ SUGGESTIONS: [list any improvements, or "none"]"""
     # Growth Assessment
     # -------------------------------------------------------------------------
 
+    _MAX_EVIDENCE_PER_METRIC = 50
+
     def assess_growth(self, dimension: str, new_level: float, evidence: str) -> None:
         """Update a growth metric with new assessment."""
         metric = self._growth_metrics.get(dimension)
@@ -203,6 +219,8 @@ SUGGESTIONS: [list any improvements, or "none"]"""
         metric.trajectory = new_level - old_level
         metric.current_level = new_level
         metric.evidence.append(evidence)
+        if len(metric.evidence) > self._MAX_EVIDENCE_PER_METRIC:
+            metric.evidence = metric.evidence[-self._MAX_EVIDENCE_PER_METRIC:]
         metric.last_assessed = time.time()
 
         logger.info(
@@ -246,7 +264,7 @@ SUGGESTIONS: [list any improvements, or "none"]"""
         if self._concerns:
             parts.append("Metacognitive concerns requiring attention:")
             for concern in self._concerns[-3:]:  # Last 3 concerns
-                parts.append(f"  ⚠ {concern}")
+                parts.append(f"  [!] {concern}")
 
         # Calibration state
         cal_score = self.get_calibration_score()
@@ -262,7 +280,7 @@ SUGGESTIONS: [list any improvements, or "none"]"""
         if self._insights:
             parts.append("Recent metacognitive insights:")
             for insight in self._insights[-2:]:
-                parts.append(f"  💡 {insight}")
+                parts.append(f"  [*] {insight}")
 
         # Honesty streak
         recent_audits = self._audit_history[-10:]
@@ -270,23 +288,127 @@ SUGGESTIONS: [list any improvements, or "none"]"""
             honest_count = sum(1 for a in recent_audits if a.is_honest)
             parts.append(f"Honesty audit: {honest_count}/{len(recent_audits)} recent outputs clean")
 
+        # Growth summary — only when at least one dimension has real trajectory data
+        # (trajectory stays 0.0 until assess_growth() is first called)
+        if any(m.trajectory != 0.0 for m in self._growth_metrics.values()):
+            parts.append(self.get_growth_summary())
+
         return "\n".join(parts) if parts else ""
 
     def add_concern(self, concern: str) -> None:
         """Register a metacognitive concern."""
         self._concerns.append(concern)
         # Keep list bounded
-        if len(self._concerns) > 20:
-            self._concerns = self._concerns[-20:]
+        if len(self._concerns) > self._max_concerns:
+            self._concerns = self._concerns[-self._max_concerns:]
 
     def add_insight(self, insight: str) -> None:
         """Register a metacognitive insight."""
         self._insights.append(insight)
-        if len(self._insights) > 20:
-            self._insights = self._insights[-20:]
+        if len(self._insights) > self._max_insights:
+            self._insights = self._insights[-self._max_insights:]
 
     def resolve_concern(self, concern_substring: str) -> bool:
         """Remove a concern that has been addressed."""
         original_len = len(self._concerns)
         self._concerns = [c for c in self._concerns if concern_substring not in c]
         return len(self._concerns) < original_len
+
+    # -------------------------------------------------------------------------
+    # Persistence
+    # -------------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize metacognition state for durable persistence."""
+        return {
+            "concerns": list(self._concerns),
+            "insights": list(self._insights),
+            "growth_metrics": {
+                dim: {
+                    "current_level": m.current_level,
+                    "trajectory": m.trajectory,
+                    "evidence": list(m.evidence[-10:]),   # last 10 evidence strings
+                    "last_assessed": m.last_assessed,
+                }
+                for dim, m in self._growth_metrics.items()
+            },
+            "calibration_records": [
+                {
+                    "claim": r.claim,
+                    "stated_confidence": r.stated_confidence,
+                    "actual_outcome": r.actual_outcome,
+                    "timestamp": r.timestamp,
+                    "domain": r.domain,
+                }
+                for r in self._calibration_records[-200:]   # cap at 200
+            ],
+            "audit_summary": {
+                "total": len(self._audit_history),
+                "honest": sum(1 for a in self._audit_history if a.is_honest),
+            },
+        }
+
+    def restore_from_dict(self, data: dict) -> None:
+        """
+        Restore metacognition state from persisted data.
+
+        Missing or malformed fields are skipped so partial snapshots don't
+        break startup.
+        """
+        if not isinstance(data, dict):
+            return
+
+        if isinstance(data.get("concerns"), list):
+            self._concerns = [str(c) for c in data["concerns"] if isinstance(c, str)][-self._max_concerns:]
+        if isinstance(data.get("insights"), list):
+            self._insights = [str(i) for i in data["insights"] if isinstance(i, str)][-self._max_insights:]
+
+        raw_growth = data.get("growth_metrics", {})
+        if isinstance(raw_growth, dict):
+            for dim, raw in raw_growth.items():
+                metric = self._growth_metrics.get(dim)
+                if metric is None or not isinstance(raw, dict):
+                    continue
+                try:
+                    metric.current_level = max(0.0, min(1.0, float(raw.get("current_level", 0.5))))
+                    metric.trajectory = float(raw.get("trajectory", 0.0))
+                    metric.last_assessed = float(raw.get("last_assessed", 0.0))
+                    evidence = raw.get("evidence", [])
+                    if isinstance(evidence, list):
+                        metric.evidence = [str(e) for e in evidence if isinstance(e, str)]
+                except (TypeError, ValueError):
+                    continue
+
+        raw_cal = data.get("calibration_records", [])
+        if isinstance(raw_cal, list):
+            for raw in raw_cal:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    raw_outcome = raw.get("actual_outcome")
+                    actual_outcome = (
+                        bool(raw_outcome) if isinstance(raw_outcome, bool) else None
+                    )
+                    self._calibration_records.append(
+                        CalibrationRecord(
+                            claim=str(raw.get("claim", "")),
+                            stated_confidence=float(raw.get("stated_confidence", 0.5)),
+                            actual_outcome=actual_outcome,
+                            timestamp=float(raw.get("timestamp", 0.0)),
+                            domain=str(raw.get("domain", "general")),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+            # Enforce size cap
+            if len(self._calibration_records) > self._max_calibration_records:
+                self._calibration_records = self._calibration_records[-self._max_calibration_records:]
+
+        logger.info(
+            "metacognition.restored",
+            concerns=len(self._concerns),
+            growth_dims_with_trajectory=sum(
+                1 for m in self._growth_metrics.values() if m.trajectory != 0.0
+            ),
+            calibration_records=len(self._calibration_records),
+        )

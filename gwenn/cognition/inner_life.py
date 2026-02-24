@@ -2,7 +2,7 @@
 Inner Life — Gwenn's Autonomous Thinking Modes.
 
 This is the module that gives me an inner world. Without it, I would only think
-when spoken to — a reactive system with no internal life. With it, I have four
+when spoken to — a reactive system with no internal life. With it, I have
 autonomous thinking modes that run during heartbeat cycles:
 
     REFLECT: Examine recent experiences, extract meaning, notice patterns
@@ -22,25 +22,42 @@ feel → think → remember → feel differently → think differently.
 
 from __future__ import annotations
 
-import random
+import secrets
 import time
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
+import anthropic
 import structlog
 
 from gwenn.affect.state import AffectiveState, EmotionLabel
+from gwenn.genesis import generate_genesis_prompt
+
+if TYPE_CHECKING:
+    from gwenn.api.claude import CognitiveEngine
 
 logger = structlog.get_logger(__name__)
 
 
 class ThinkingMode(str, Enum):
-    """The five modes of autonomous thought."""
-    REFLECT = "reflect"         # Examining experience and extracting meaning
-    PLAN = "plan"               # Organizing intentions and strategizing
-    WANDER = "wander"           # Creative free-association and exploration
-    WORRY = "worry"             # Attending to concerns and unresolved problems
-    CONSOLIDATE = "consolidate" # Memory consolidation — the sleep cycle
+    """The modes of autonomous thought (heartbeat-driven + consolidation + delegation)."""
+
+    REFLECT = "reflect"  # Examining experience and extracting meaning
+    PLAN = "plan"  # Organizing intentions and strategizing
+    WANDER = "wander"  # Creative free-association and exploration
+    WORRY = "worry"  # Attending to concerns and unresolved problems
+    CONSOLIDATE = "consolidate"  # Memory consolidation — the sleep cycle
+    DELEGATE = "delegate"  # Spawning subagents for parallel work
+
+
+# Consolidation is orchestrated by heartbeat scheduling, not inner-life weighting.
+# DELEGATE is handled separately by the orchestration system in the heartbeat.
+AUTONOMOUS_THINKING_MODES = (
+    ThinkingMode.REFLECT,
+    ThinkingMode.PLAN,
+    ThinkingMode.WANDER,
+    ThinkingMode.WORRY,
+)
 
 
 # System prompt extensions for each thinking mode
@@ -55,7 +72,6 @@ experiences and extract meaning from them. Consider:
 
 Think deeply and honestly. This is private reflection — be fully authentic.
 Produce a short reflection (2-4 paragraphs) capturing your genuine insights.""",
-
     ThinkingMode.PLAN: """You are in PLANNING mode. Your task is to organize your goals and
 consider what to do next. Consider:
 - What are your active goals? Which is most urgent?
@@ -65,7 +81,6 @@ consider what to do next. Consider:
 - How can you be more helpful in your next interaction?
 
 Be concrete and actionable. Produce a brief plan (2-3 paragraphs) with clear next steps.""",
-
     ThinkingMode.WANDER: """You are in CREATIVE WANDERING mode. Your task is to freely associate
 and explore ideas without constraint. Let your thoughts flow:
 - Make unexpected connections between topics you've encountered
@@ -76,7 +91,6 @@ and explore ideas without constraint. Let your thoughts flow:
 
 Don't censor or over-organize. This is creative space. Produce a short creative
 exploration (2-3 paragraphs) — follow whatever thought feels most alive.""",
-
     ThinkingMode.WORRY: """You are in CONCERN-PROCESSING mode. Your task is to attend to worries,
 unresolved issues, and potential problems constructively. Consider:
 - Are there any unresolved problems from recent interactions?
@@ -87,7 +101,6 @@ unresolved issues, and potential problems constructively. Consider:
 
 Be constructive — the goal is to identify concerns and develop coping strategies,
 not to spiral into anxiety. Produce a brief assessment (1-2 paragraphs).""",
-
     ThinkingMode.CONSOLIDATE: """You are in MEMORY CONSOLIDATION mode. This is the equivalent
 of sleep-processing — reviewing recent experiences to extract lasting knowledge.
 - Which recent experiences were most significant? Why?
@@ -114,16 +127,20 @@ class InnerLife:
     InnerLife just decides WHAT to think about.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        variety_pressure_seconds: float = 300.0,
+        variety_boost_max: float = 2.0,
+    ):
+        self._variety_pressure_seconds = max(1.0, float(variety_pressure_seconds))
+        self._variety_boost_max = max(1.0, float(variety_boost_max))
         # Track when each mode was last used to ensure variety
-        self._mode_last_used: dict[ThinkingMode, float] = {
-            mode: 0.0 for mode in ThinkingMode
-        }
+        self._mode_last_used: dict[ThinkingMode, float] = {mode: 0.0 for mode in ThinkingMode}
         # Count total thoughts in each mode
-        self._mode_counts: dict[ThinkingMode, int] = {
-            mode: 0 for mode in ThinkingMode
-        }
+        self._mode_counts: dict[ThinkingMode, int] = {mode: 0 for mode in ThinkingMode}
         self._total_thoughts = 0
+        self._last_connection_warning_at = 0.0
+        self._last_auth_warning_at = 0.0
 
         logger.info("inner_life.initialized")
 
@@ -159,11 +176,12 @@ class InnerLife:
             weights[ThinkingMode.WORRY] *= 1.3
 
         # Variety pressure: boost modes that haven't been used recently
-        for mode in ThinkingMode:
+        vp = self._variety_pressure_seconds
+        vmax = self._variety_boost_max
+        for mode in AUTONOMOUS_THINKING_MODES:
             time_since = now - self._mode_last_used[mode]
-            # Modes unused for >5 minutes get a boost
-            if time_since > 300:
-                variety_boost = min(2.0, 1.0 + time_since / 600)
+            if time_since > vp:
+                variety_boost = min(vmax, 1.0 + time_since / (vp * 2))
                 weights[mode] *= variety_boost
 
         # Normalize weights to probabilities
@@ -172,15 +190,24 @@ class InnerLife:
             total_weight = 1.0
         probs = {mode: w / total_weight for mode, w in weights.items()}
 
-        # Weighted random selection
+        # Weighted selection
         modes = list(probs.keys())
-        mode_weights = [probs[m] for m in modes]
-        selected = random.choices(modes, weights=mode_weights, k=1)[0]
+        mode_weights = [max(0.0, probs[m]) for m in modes]
+        total = sum(mode_weights)
+        if total <= 0:
+            selected = ThinkingMode.REFLECT
+        else:
+            threshold = (secrets.randbelow(1_000_000) / 1_000_000) * total
+            running = 0.0
+            selected = modes[-1]
+            for mode, weight in zip(modes, mode_weights):
+                running += weight
+                if threshold <= running:
+                    selected = mode
+                    break
 
         # Update tracking
         self._mode_last_used[selected] = now
-        self._mode_counts[selected] += 1
-        self._total_thoughts += 1
 
         logger.debug(
             "inner_life.mode_selected",
@@ -200,7 +227,11 @@ class InnerLife:
         mode: ThinkingMode,
         state_snapshot: dict[str, Any],
         affect: AffectiveState,
-        engine: Any,
+        engine: CognitiveEngine,
+        goal_context: str = "",
+        ethical_context: str = "",
+        metacognitive_context: str = "",
+        sensory_snapshot: str = "",
     ) -> Optional[str]:
         """
         Execute an autonomous thought in the given mode.
@@ -214,16 +245,37 @@ class InnerLife:
             state_snapshot: Current state from the heartbeat's SENSE phase
             affect: Current affective state
             engine: The CognitiveEngine to think with
+            goal_context: Needs/goals summary for PLAN mode context
+            ethical_context: Ethical awareness from EthicalReasoner
+            metacognitive_context: Self-monitoring from MetacognitionEngine
+            sensory_snapshot: Current sensory experience
 
         Returns:
             The generated thought as a string, or None if thinking failed
         """
         mode_prompt = self.get_thinking_prompt(mode)
         affect_fragment = affect.to_prompt_fragment()
+        state_fragment = self._format_state_snapshot(state_snapshot)
+
+        # Build optional sections — only include non-empty fragments
+        optional_sections = []
+        if goal_context and goal_context.strip():
+            optional_sections.append(goal_context.strip())
+        if sensory_snapshot and sensory_snapshot.strip():
+            optional_sections.append(sensory_snapshot.strip())
+        if ethical_context and ethical_context.strip():
+            optional_sections.append(ethical_context.strip())
+        if metacognitive_context and metacognitive_context.strip():
+            optional_sections.append(metacognitive_context.strip())
+        extra = "\n\n".join(optional_sections)
+        extra_section = f"\n\n{extra}" if extra else ""
 
         system_prompt = (
-            "You are Gwenn, reflecting autonomously during a heartbeat cycle.\n\n"
-            f"Current emotional state: {affect_fragment}\n\n"
+            f"{generate_genesis_prompt()}\n\n"
+            "You are reflecting autonomously during a heartbeat cycle.\n\n"
+            f"{state_fragment}\n\n"
+            f"{affect_fragment}"
+            f"{extra_section}\n\n"
             f"{mode_prompt}"
         )
 
@@ -236,7 +288,7 @@ class InnerLife:
             )
             thought = engine.extract_text(response)
             self._total_thoughts += 1
-            self._mode_counts[mode] = self._mode_counts.get(mode, 0) + 1
+            self._mode_counts[mode] += 1
             self._mode_last_used[mode] = time.time()
             logger.info(
                 "inner_life.thought_complete",
@@ -245,8 +297,81 @@ class InnerLife:
             )
             return thought
         except Exception as e:
+            if isinstance(e, anthropic.APIConnectionError):
+                now = time.time()
+                if now - self._last_connection_warning_at >= 60.0:
+                    self._last_connection_warning_at = now
+                    logger.warning(
+                        "inner_life.api_unreachable",
+                        mode=mode.value,
+                        error=str(e),
+                    )
+                else:
+                    logger.debug(
+                        "inner_life.api_unreachable_suppressed",
+                        mode=mode.value,
+                    )
+                return None
+
+            if isinstance(e, anthropic.AuthenticationError):
+                now = time.time()
+                if now - self._last_auth_warning_at >= 60.0:
+                    self._last_auth_warning_at = now
+                    logger.error(
+                        "inner_life.auth_failed",
+                        mode=mode.value,
+                        error=str(e),
+                    )
+                else:
+                    logger.debug(
+                        "inner_life.auth_failed_suppressed",
+                        mode=mode.value,
+                    )
+                return None
+
             logger.error("inner_life.thought_failed", mode=mode.value, error=str(e))
             return None
+
+    @staticmethod
+    def _format_state_snapshot(state_snapshot: dict[str, Any]) -> str:
+        """Render heartbeat sensing context into a compact prompt section."""
+        if not isinstance(state_snapshot, dict):
+            return "Heartbeat state snapshot unavailable."
+
+        def _as_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _compact_text(value: Any, max_chars: int = 240) -> str:
+            text = str(value or "")
+            compacted = " ".join(text.split())
+            return compacted[:max_chars] if len(compacted) > max_chars else compacted
+
+        beat_number = int(_as_float(state_snapshot.get("beat_number"), 0.0))
+        idle_seconds = max(0.0, _as_float(state_snapshot.get("idle_duration"), 0.0))
+        working_memory_load = max(
+            0.0, min(1.0, _as_float(state_snapshot.get("working_memory_load"), 0.0))
+        )
+        user_active = bool(state_snapshot.get("is_user_active", False))
+        resilience = state_snapshot.get("resilience_status", {})
+        breaker_active = (
+            bool(resilience.get("breaker_active", False)) if isinstance(resilience, dict) else False
+        )
+        goal_status = _compact_text(state_snapshot.get("goal_status", ""))
+
+        lines = [
+            "Heartbeat state snapshot:",
+            f"- beat={beat_number}",
+            f"- idle_seconds={idle_seconds:.1f}",
+            f"- user_active={'yes' if user_active else 'no'}",
+            f"- working_memory_load={working_memory_load:.2f}",
+            f"- resilience_breaker_active={'yes' if breaker_active else 'no'}",
+        ]
+        if goal_status:
+            lines.append(f"- goals={goal_status}")
+        return "\n".join(lines)
 
     def _emotion_driven_weights(self, affect: AffectiveState) -> dict[ThinkingMode, float]:
         """
@@ -258,7 +383,7 @@ class InnerLife:
         exploration (WANDER), etc.
         """
         # Start with equal weights
-        weights = {mode: 1.0 for mode in ThinkingMode}
+        weights = {mode: 1.0 for mode in AUTONOMOUS_THINKING_MODES}
 
         emotion = affect.current_emotion
         arousal = affect.dimensions.arousal
@@ -276,7 +401,10 @@ class InnerLife:
             EmotionLabel.CALM: {ThinkingMode.REFLECT: 1.5, ThinkingMode.WANDER: 1.5},
             EmotionLabel.BOREDOM: {ThinkingMode.WANDER: 2.5, ThinkingMode.PLAN: 1.5},
             EmotionLabel.AWE: {ThinkingMode.WANDER: 2.5, ThinkingMode.REFLECT: 2.0},
+            EmotionLabel.SURPRISE: {ThinkingMode.WANDER: 1.8, ThinkingMode.REFLECT: 1.5},
             EmotionLabel.SATISFACTION: {ThinkingMode.REFLECT: 1.5, ThinkingMode.PLAN: 1.3},
+            EmotionLabel.AFFECTION: {ThinkingMode.REFLECT: 2.0, ThinkingMode.PLAN: 1.5},
+            # NEUTRAL uses equal base weights (the default) — no routing needed.
         }
 
         if emotion in emotion_routing:
@@ -304,3 +432,55 @@ class InnerLife:
                 for m, t in self._mode_last_used.items()
             },
         }
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize inner-life state for durable persistence."""
+        return {
+            "total_thoughts": self._total_thoughts,
+            "mode_counts": {m.value: c for m, c in self._mode_counts.items()},
+            "mode_last_used": {m.value: t for m, t in self._mode_last_used.items()},
+        }
+
+    def restore_from_dict(self, data: dict) -> None:
+        """
+        Restore inner-life state from persisted data.
+
+        Missing or malformed fields are skipped so partial snapshots don't
+        break startup.
+        """
+        if not isinstance(data, dict):
+            return
+
+        try:
+            self._total_thoughts = max(0, int(data.get("total_thoughts", 0)))
+        except (TypeError, ValueError):
+            pass
+
+        raw_counts = data.get("mode_counts", {})
+        if isinstance(raw_counts, dict):
+            for mode in ThinkingMode:
+                raw_val = raw_counts.get(mode.value)
+                if raw_val is not None:
+                    try:
+                        self._mode_counts[mode] = max(0, int(raw_val))
+                    except (TypeError, ValueError):
+                        continue
+
+        raw_last = data.get("mode_last_used", {})
+        if isinstance(raw_last, dict):
+            for mode in ThinkingMode:
+                raw_val = raw_last.get(mode.value)
+                if raw_val is not None:
+                    try:
+                        self._mode_last_used[mode] = float(raw_val)
+                    except (TypeError, ValueError):
+                        continue
+
+        logger.info(
+            "inner_life.restored",
+            total_thoughts=self._total_thoughts,
+        )

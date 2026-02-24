@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import pytest
 
-from gwenn.harness.safety import SafetyGuard, SafetyCheckResult, BudgetState
+from gwenn.harness.safety import SafetyGuard
 from gwenn.config import SafetyConfig
-from gwenn.tools.registry import ToolRegistry, ToolDefinition, RiskTier
+from gwenn.tools.registry import ToolRegistry, ToolDefinition
 
 
 # ---------------------------------------------------------------------------
@@ -310,20 +310,14 @@ class TestDenyByDefaultPolicy:
 
         assert result.allowed is True
 
-    def test_deny_by_default_with_empty_allowlist_permits_all(self):
-        """With deny-by-default and an empty allowlist, the deny check is skipped.
-
-        The SafetyGuard code checks ``if allowed_tools and tool_name not in allowed_tools``.
-        When ``allowed_tools`` is an empty list, the condition is falsy, so the
-        deny-by-default branch does NOT activate. This is the actual behavior:
-        an empty allowlist means "no restrictions configured".
-        """
+    def test_deny_by_default_with_empty_allowlist_blocks_unlisted_tool(self):
+        """With deny-by-default and no allowlist entries, non-builtin tools are blocked."""
         guard = _guard(
             tool_default_policy="deny",
             allowed_tools=[],
         )
         result = guard.check_tool_call("any_tool", {})
-        assert result.allowed is True
+        assert result.allowed is False
 
     def test_deny_by_default_with_nonempty_allowlist_blocks_unlisted(self):
         """With a non-empty allowlist, only listed tools pass."""
@@ -544,15 +538,14 @@ class TestCombinedAdversarialScenarios:
         assert "Dangerous pattern" in result.reason
 
     def test_critical_tool_with_dangerous_input(self):
-        """CRITICAL risk tool with dangerous input: denied by risk tier (checked first after deny list)."""
+        """Dangerous input on a CRITICAL tool is blocked by pattern scan first."""
         registry = _make_registry_with_tool("critical_shell", risk_level="critical")
         guard = _guard(tool_registry=registry)
 
         result = guard.check_tool_call("critical_shell", {"cmd": "rm -rf /"})
 
         assert result.allowed is False
-        # Risk tier is checked before dangerous pattern scan
-        assert "CRITICAL" in result.reason
+        assert "Dangerous pattern" in result.reason
 
     def test_denied_tool_with_dangerous_input(self):
         """A tool on the deny list with dangerous input: denied by deny list (first check)."""
@@ -574,7 +567,7 @@ class TestCombinedAdversarialScenarios:
         assert result.allowed is True
 
     def test_all_mechanisms_layered(self):
-        """Exercise the full check order: deny list -> deny-by-default -> risk tier -> approval -> patterns."""
+        """Exercise the full check order: deny list -> deny-by-default -> patterns -> risk -> approval."""
         registry = ToolRegistry()
         registry.register(ToolDefinition(
             name="allowed_medium",

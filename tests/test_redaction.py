@@ -2,21 +2,23 @@
 Tests for gwenn.privacy.redaction — PII Redaction Pipeline.
 
 Covers:
-- Each PII type is detected and redacted (email, phone_us, ssn, credit_card, ip_address)
+- Each PII type is detected and redacted (email, phone_us, phone_intl, ssn,
+  credit_card (16-digit + Amex 15-digit), ip_address, ipv6_address)
 - Multiple PII instances in one string
 - Mixed PII types in one string
 - Disabled state: when enabled=False, text passes through unchanged
 - Disabled categories: specific patterns can be turned off
 - scan() returns correct RedactionResult (counts, categories, lengths)
 - redact() returns the redacted text
-- Stats tracking (total_redactions counter)
+- Stats tracking (total_redactions / total_redaction_passes / total_redacted_items)
 - Edge cases: empty string, no PII, partial matches, international phone formats
 - False positives: text that looks like PII but isn't
+- Luhn check utility
+- Thread-safe stats via locking
 """
 
 from __future__ import annotations
 
-import pytest
 
 from gwenn.privacy.redaction import PIIRedactor, RedactionResult, PII_PATTERNS
 
@@ -87,12 +89,14 @@ class TestPhoneRedaction:
     def test_with_country_code(self):
         r = _redactor()
         result = r.redact("call +1-555-123-4567")
-        assert "[REDACTED_PHONE]" in result
+        assert "[REDACTED_PHONE]" in result or "[REDACTED_PHONE_INTL]" in result
         assert "123-4567" not in result
 
     def test_with_country_code_no_dash(self):
         r = _redactor()
-        assert r.redact("call 1-555-123-4567") == "call [REDACTED_PHONE]"
+        result = r.redact("call 1-555-123-4567")
+        assert "[REDACTED_PHONE]" in result
+        assert "555-123-4567" not in result
 
     def test_spaces_as_separators(self):
         r = _redactor()
@@ -137,6 +141,22 @@ class TestCreditCardRedaction:
         assert r.redact("card 4111 1111 1111 1111") == "card [REDACTED_CC]"
 
 
+class TestAmexCreditCard:
+    """Amex 15-digit credit card numbers are detected and replaced with [REDACTED_CC]."""
+
+    def test_amex_plain_15_digits(self):
+        r = _redactor()
+        assert r.redact("amex: 371449635398431") == "amex: [REDACTED_CC]"
+
+    def test_amex_with_dashes(self):
+        r = _redactor()
+        assert r.redact("amex: 3714-496353-98431") == "amex: [REDACTED_CC]"
+
+    def test_amex_with_spaces(self):
+        r = _redactor()
+        assert r.redact("amex: 3714 496353 98431") == "amex: [REDACTED_CC]"
+
+
 class TestIPAddressRedaction:
     """IPv4 addresses are replaced with [REDACTED_IP]."""
 
@@ -151,6 +171,73 @@ class TestIPAddressRedaction:
     def test_public_ip(self):
         r = _redactor()
         assert r.redact("dns 8.8.8.8") == "dns [REDACTED_IP]"
+
+
+class TestIPv6Redaction:
+    """IPv6 addresses are replaced with [REDACTED_IPV6]."""
+
+    def test_full_ipv6(self):
+        r = _redactor()
+        result = r.redact("addr: 2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+        assert "[REDACTED_IPV6]" in result
+        assert "2001:0db8" not in result
+
+    def test_abbreviated_ipv6(self):
+        r = _redactor()
+        result = r.redact("addr: fe80::1")
+        assert "[REDACTED_IPV6]" in result
+        assert "fe80" not in result
+
+    def test_loopback_ipv6(self):
+        r = _redactor()
+        result = r.redact("localhost ::1")
+        assert "[REDACTED_IPV6]" in result
+
+
+class TestInternationalPhone:
+    """International phone numbers (+CC prefix) are replaced with [REDACTED_PHONE_INTL]."""
+
+    def test_uk_phone(self):
+        r = _redactor()
+        result = r.redact("call +44 20 7946 0958")
+        assert "[REDACTED_PHONE_INTL]" in result
+        assert "7946" not in result
+
+    def test_german_phone(self):
+        r = _redactor()
+        result = r.redact("call +49 30 123456")
+        assert "[REDACTED_PHONE_INTL]" in result
+        assert "123456" not in result
+
+    def test_japanese_phone(self):
+        r = _redactor()
+        result = r.redact("call +81 3 1234 5678")
+        assert "[REDACTED_PHONE_INTL]" in result
+        assert "1234" not in result
+
+
+class TestImprovedIPValidation:
+    """Octet-validated IP regex rejects invalid octets like 999."""
+
+    def test_invalid_octets_rejected(self):
+        r = _redactor()
+        result = r.redact("addr: 999.999.999.999")
+        assert "[REDACTED_IP]" not in result
+
+    def test_valid_edge_octets(self):
+        r = _redactor()
+        assert "[REDACTED_IP]" in r.redact("addr: 255.255.255.255")
+        assert "[REDACTED_IP]" in r.redact("addr: 0.0.0.0")
+
+    def test_valid_ip_still_matched(self):
+        r = _redactor()
+        assert "[REDACTED_IP]" in r.redact("addr: 192.168.1.1")
+        assert "[REDACTED_IP]" in r.redact("addr: 10.0.0.1")
+
+    def test_256_octet_rejected(self):
+        r = _redactor()
+        result = r.redact("addr: 256.1.1.1")
+        assert "[REDACTED_IP]" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +533,8 @@ class TestStatsTracking:
         s = r.stats
         assert s["enabled"] is True
         assert s["total_redactions"] == 0
+        assert s["total_redaction_passes"] == 0
+        assert s["total_redacted_items"] == 0
         assert s["active_patterns"] == len(PII_PATTERNS)
 
     def test_total_redactions_increments_on_redaction(self):
@@ -454,10 +543,16 @@ class TestStatsTracking:
         assert r.stats["total_redactions"] == 1
 
     def test_total_redactions_increments_per_call_not_per_match(self):
-        """_total_redactions increments once per redact() call that modifies text."""
+        """total_redaction_passes increments once per redact() call that modifies text."""
         r = _redactor()
         r.redact("a@b.com c@d.com 123-45-6789")
         assert r.stats["total_redactions"] == 1
+        assert r.stats["total_redaction_passes"] == 1
+
+    def test_total_redacted_items_counts_individual_matches(self):
+        r = _redactor()
+        r.redact("a@b.com c@d.com 123-45-6789")
+        assert r.stats["total_redacted_items"] == 3
 
     def test_total_redactions_does_not_increment_when_no_pii(self):
         r = _redactor()
@@ -611,17 +706,41 @@ class TestFalsePositives:
         r = _redactor()
         assert r.redact("hello @mention") == "hello @mention"
 
-    def test_ip_like_with_high_octets_still_matches(self):
-        """999.999.999.999 still matches the IP regex (no octet validation)."""
+    def test_ip_like_with_high_octets_no_longer_matches(self):
+        """999.999.999.999 no longer matches the IP regex (octet validation)."""
         r = _redactor()
         result = r.redact("addr: 999.999.999.999")
-        assert "[REDACTED_IP]" in result
+        assert "[REDACTED_IP]" not in result
 
     def test_hyphenated_numbers_not_ssn(self):
         """A longer hyphenated number should not match SSN (different grouping)."""
         r = _redactor()
         assert "[REDACTED_SSN]" not in r.redact("part: 1234-56-7890")
         assert "[REDACTED_SSN]" not in r.redact("ref: 12-345-6789")
+
+
+# ---------------------------------------------------------------------------
+# Luhn check utility
+# ---------------------------------------------------------------------------
+
+class TestLuhnCheck:
+    """PIIRedactor._luhn_check validates card numbers via Luhn algorithm."""
+
+    def test_valid_visa(self):
+        assert PIIRedactor._luhn_check("4111111111111111") is True
+
+    def test_valid_amex(self):
+        assert PIIRedactor._luhn_check("371449635398431") is True
+
+    def test_invalid_number(self):
+        assert PIIRedactor._luhn_check("1234567890123456") is False
+
+    def test_single_digit(self):
+        assert PIIRedactor._luhn_check("5") is False
+
+    def test_non_numeric_ignored(self):
+        # Luhn ignores non-digit characters
+        assert PIIRedactor._luhn_check("4111-1111-1111-1111") is True
 
 
 # ---------------------------------------------------------------------------
@@ -665,7 +784,7 @@ class TestPIIPatterns:
     """Verify the PII_PATTERNS constant is well-formed."""
 
     def test_pattern_count(self):
-        assert len(PII_PATTERNS) == 5
+        assert len(PII_PATTERNS) == 7
 
     def test_all_patterns_are_tuples_of_three(self):
         for entry in PII_PATTERNS:
@@ -682,4 +801,7 @@ class TestPIIPatterns:
 
     def test_expected_category_names(self):
         names = {name for name, _, _ in PII_PATTERNS}
-        assert names == {"email", "phone_us", "ssn", "credit_card", "ip_address"}
+        assert names == {
+            "email", "phone_us", "phone_intl", "ssn",
+            "credit_card", "ip_address", "ipv6_address",
+        }

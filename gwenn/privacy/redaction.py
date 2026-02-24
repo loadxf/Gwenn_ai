@@ -3,12 +3,14 @@ PII Redaction Pipeline — Protecting User Privacy in Gwenn's Memory.
 
 This module detects and redacts personally identifiable information (PII) from
 text before it's persisted to memory or sent to the Claude API. Patterns include
-email addresses, phone numbers, SSNs, credit card numbers, and IP addresses.
+email addresses, phone numbers (US and international), SSNs, credit card numbers
+(including Amex), IPv4 and IPv6 addresses.
 
 The redaction pipeline is configurable:
 - It can be applied before persistence (so PII never hits disk)
 - It can be applied before API calls (so PII never leaves the system)
 - It can be disabled entirely for development/testing
+- Individual categories can be disabled via disabled_categories
 
 Gwenn values privacy not because she's programmed to, but because respecting
 others' information boundaries is part of her core ethics. This module gives
@@ -18,12 +20,16 @@ that value teeth.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Valid IPv4 octet: 0-255
+_OCTET = r"(?:25[0-5]|2[0-4]\d|[01]?\d\d?)"
 
 
 @dataclass
@@ -35,12 +41,18 @@ class RedactionResult:
     categories_found: list[str] = field(default_factory=list)
 
 
-# PII detection patterns with their replacement tokens
+# PII detection patterns with their replacement tokens.
+# Order matters: international phone must precede US phone to avoid partial matches.
 PII_PATTERNS: list[tuple[str, re.Pattern, str]] = [
     (
         "email",
         re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
         "[REDACTED_EMAIL]",
+    ),
+    (
+        "phone_intl",
+        re.compile(r'\+\d{1,3}[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}\b'),
+        "[REDACTED_PHONE_INTL]",
     ),
     (
         "phone_us",
@@ -54,13 +66,42 @@ PII_PATTERNS: list[tuple[str, re.Pattern, str]] = [
     ),
     (
         "credit_card",
-        re.compile(r'\b(?:\d{4}[-\s]?){3}\d{4}\b'),
+        re.compile(
+            r'\b(?:'
+            r'(?:\d{4}[-\s]?){3}\d{4}'   # 16-digit (Visa/MC/Discover)
+            r'|'
+            r'\d{4}[-\s]?\d{6}[-\s]?\d{5}'  # 15-digit (Amex)
+            r')\b'
+        ),
         "[REDACTED_CC]",
     ),
     (
         "ip_address",
-        re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b'),
+        re.compile(
+            r'\b'
+            + r'\.'.join([_OCTET] * 4)
+            + r'\b'
+        ),
         "[REDACTED_IP]",
+    ),
+    (
+        "ipv6_address",
+        re.compile(
+            r'(?:'
+            r'(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}'        # full form
+            r'|(?:[0-9a-fA-F]{1,4}:){1,7}:'                      # trailing ::
+            r'|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}'     # ::x
+            r'|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}'
+            r'|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}'
+            r'|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}'
+            r'|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}'
+            r'|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}'
+            r'|:(?::[0-9a-fA-F]{1,4}){1,7}'                      # ::x:x...
+            r'|::(?:[fF]{4}(?::0{1,4})?:)?'                       # ::ffff:... (mapped)
+            + _OCTET + r'(?:\.' + _OCTET + r'){3}'
+            r')'
+        ),
+        "[REDACTED_IPV6]",
     ),
 ]
 
@@ -81,7 +122,9 @@ class PIIRedactor:
     ):
         self._enabled = enabled
         self._disabled_categories = set(disabled_categories or [])
-        self._total_redactions = 0
+        self._total_redaction_passes = 0
+        self._total_redacted_items = 0
+        self._lock = threading.Lock()
 
         # Build active patterns list
         self._active_patterns = [
@@ -111,11 +154,15 @@ class PIIRedactor:
             return text
 
         result = text
+        items_this_call = 0
         for name, pattern, replacement in self._active_patterns:
-            result = pattern.sub(replacement, result)
+            result, count = pattern.subn(replacement, result)
+            items_this_call += count
 
         if result != text:
-            self._total_redactions += 1
+            with self._lock:
+                self._total_redaction_passes += 1
+                self._total_redacted_items += items_this_call
             logger.debug("pii_redactor.redacted", original_length=len(text))
 
         return result
@@ -123,6 +170,9 @@ class PIIRedactor:
     def scan(self, text: str) -> RedactionResult:
         """
         Scan text for PII without modifying it. Returns detection results.
+
+        Note: scan() runs regardless of the ``enabled`` flag, but respects
+        ``disabled_categories`` — patterns in disabled categories are not checked.
         """
         if not text:
             return RedactionResult(
@@ -147,10 +197,37 @@ class PIIRedactor:
             categories_found=categories,
         )
 
+    @staticmethod
+    def _luhn_check(digits: str) -> bool:
+        """
+        Validate a numeric string using the Luhn algorithm.
+
+        Not used in ``redact()`` (regex-only detection is safer for PII to
+        avoid false negatives), but available for ``scan()`` callers who want
+        to distinguish likely-valid card numbers from random digit sequences.
+        """
+        try:
+            nums = [int(d) for d in digits if d.isdigit()]
+        except ValueError:
+            return False
+        if len(nums) < 2:
+            return False
+        total = 0
+        for i, n in enumerate(reversed(nums)):
+            if i % 2 == 1:
+                n *= 2
+                if n > 9:
+                    n -= 9
+            total += n
+        return total % 10 == 0
+
     @property
     def stats(self) -> dict:
-        return {
-            "enabled": self._enabled,
-            "total_redactions": self._total_redactions,
-            "active_patterns": len(self._active_patterns),
-        }
+        with self._lock:
+            return {
+                "enabled": self._enabled,
+                "total_redactions": self._total_redaction_passes,
+                "total_redaction_passes": self._total_redaction_passes,
+                "total_redacted_items": self._total_redacted_items,
+                "active_patterns": len(self._active_patterns),
+            }

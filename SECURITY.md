@@ -48,13 +48,31 @@ details. Key components:
   processing.
 - **Tool risk tiers** — every tool is classified as low / medium / high /
   critical. MCP-sourced tools are deny-by-default.
+- **Sandbox policy enforcement** — with `GWENN_SANDBOX_ENABLED=True`, non-builtin
+  tools are blocked unless explicitly allowlisted.
 - **Rate limits & budget tracking** — API call budgets are enforced with a
   hard kill switch.
 - **PII redaction** — configurable redaction of emails, phone numbers, SSNs,
   credit card numbers, and IP addresses in logs (disabled by default, enable
   via `GWENN_REDACTION_ENABLED`).
-- **Sandboxed tool execution** — tools run through a controlled executor with
-  provenance tracking.
+- **Daemon auth + local ACLs** — Unix socket permissions are owner-only, and
+  optional protocol auth is available via `GWENN_DAEMON_AUTH_TOKEN`. Clients
+  are disconnected after 3 consecutive auth failures to prevent brute-force.
+- **Session privacy defaults** — daemon session previews are disabled by default
+  and session content redaction defaults to enabled.
+- **Media handling** — image downloads from Telegram/Discord are size-capped
+  (20 MB), format-restricted (JPEG/PNG/GIF/WebP), and gated behind opt-in config
+  flags (`TELEGRAM_ENABLE_MEDIA`, `DISCORD_ENABLE_MEDIA`). Image content blocks
+  are preserved through redaction (no base64 corruption) and stripped from old
+  messages during context compaction.
+- **Data-at-rest hardening** — memory and session persistence applies restrictive
+  file permissions on supported filesystems.
+- **Identity deserialization safety** — crash-safe loading that gracefully
+  ignores unknown or extra JSON keys from newer/older versions.
+- **Heartbeat circuit breaker** — exponential backoff (60s base, 15-minute cap)
+  prevents cascading failures; resets on success.
+- **Thread-safe logging** — PII redaction in log fields uses a `lru_cache`
+  singleton shared across entry points (main + daemon).
 
 ## Scope
 

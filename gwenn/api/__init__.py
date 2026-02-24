@@ -1,4 +1,4 @@
 """Claude API interface — Gwenn's cognitive substrate."""
-from gwenn.api.claude import CognitiveEngine
+from gwenn.api.claude import CognitiveEngine, CognitiveEngineInitError
 
-__all__ = ["CognitiveEngine"]
+__all__ = ["CognitiveEngine", "CognitiveEngineInitError"]

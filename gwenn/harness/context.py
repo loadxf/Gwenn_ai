@@ -18,8 +18,7 @@ important content while freeing space for new reasoning.
 
 from __future__ import annotations
 
-import json
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
@@ -58,6 +57,9 @@ class ContextManager:
         """
         return int(len(text) / self._config.chars_per_token)
 
+    # Approximate token cost of a single image block in the Claude API.
+    _IMAGE_TOKEN_ESTIMATE: int = 1600
+
     def estimate_message_tokens(self, messages: list[dict[str, Any]]) -> int:
         """Estimate total tokens across all messages."""
         total = 0
@@ -69,8 +71,11 @@ class ContextManager:
                 # Handle structured content blocks
                 for block in content:
                     if isinstance(block, dict):
-                        text = block.get("text", "") or block.get("content", "")
-                        total += self.estimate_tokens(str(text))
+                        if block.get("type") == "image":
+                            total += self._IMAGE_TOKEN_ESTIMATE
+                        else:
+                            text = block.get("text", "") or block.get("content", "")
+                            total += self.estimate_tokens(str(text))
                     else:
                         total += self.estimate_tokens(str(block))
             total += 10  # Overhead per message for role, formatting
@@ -103,6 +108,39 @@ class ContextManager:
             return True
         return False
 
+    @staticmethod
+    def _strip_image_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Replace image content blocks with lightweight text placeholders.
+
+        Used before summarizing old messages during compaction so the
+        summarisation call doesn't include heavy base64 payloads.
+        """
+        stripped: list[dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                stripped.append(msg)
+                continue
+            new_blocks: list[dict[str, Any]] = []
+            image_count = 0
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image":
+                    image_count += 1
+                else:
+                    new_blocks.append(block)
+            if image_count:
+                label = "1 image" if image_count == 1 else f"{image_count} images"
+                new_blocks.insert(0, {"type": "text", "text": f"[{label} shared]"})
+            copy = dict(msg)
+            if not new_blocks:
+                copy["content"] = ""
+            elif len(new_blocks) == 1 and new_blocks[0].get("type") == "text":
+                copy["content"] = new_blocks[0].get("text", "")
+            else:
+                copy["content"] = new_blocks
+            stripped.append(copy)
+        return stripped
+
     async def compact(
         self,
         engine: Any,  # CognitiveEngine — avoided circular import
@@ -131,9 +169,23 @@ class ContextManager:
         old_messages = messages[:-keep_recent]
         recent_messages = messages[-keep_recent:]
 
+        # Strip image blocks from old messages before summarising.
+        old_messages = self._strip_image_blocks(old_messages)
+
         # Ask the engine to summarize the older messages
+        compaction_prompt = (
+            "Summarize the conversation so far, preserving:\n"
+            "1. Key decisions made and their reasoning\n"
+            "2. Important facts learned about the user\n"
+            "3. Emotional tone and relationship dynamics\n"
+            "4. Any unresolved tasks or questions\n"
+            "5. Your own internal state changes\n\n"
+            "Be thorough but concise. This summary will replace the full history."
+        )
         try:
-            summary_response = await engine.compact(system_prompt, old_messages)
+            summary_response = await engine.compact(
+                system_prompt, old_messages, compaction_prompt
+            )
             summary_text = engine.extract_text(summary_response)
         except Exception as e:
             logger.error("context_manager.compaction_failed", error=str(e))
@@ -171,70 +223,6 @@ class ContextManager:
         )
 
         return compacted
-
-    def build_system_prompt(self, components: dict[str, str]) -> str:
-        """
-        Assemble the full system prompt from component parts.
-
-        The system prompt is built from multiple components, each generated
-        by a different subsystem. The order matters — most critical
-        information goes at the start and end (primacy/recency effects).
-
-        Component order:
-        1. Identity (who am I)
-        2. Emotional state (how am I feeling)
-        3. Working memory (what am I paying attention to)
-        4. User context (who am I talking to)
-        5. Semantic knowledge (what do I know that's relevant)
-        6. Goals (what am I working toward)
-        7. Metacognitive state (how well am I thinking)
-        8. Persistent context (notes from past sessions)
-        """
-        prompt_parts = []
-
-        # Critical: identity goes first
-        if "identity" in components and components["identity"]:
-            prompt_parts.append(f"<identity>\n{components['identity']}\n</identity>")
-
-        # Emotional state — colors all subsequent reasoning
-        if "affect" in components and components["affect"]:
-            prompt_parts.append(f"<emotional_state>\n{components['affect']}\n</emotional_state>")
-
-        # Working memory — what I'm actively tracking
-        if "working_memory" in components and components["working_memory"]:
-            prompt_parts.append(
-                f"<working_memory>\n{components['working_memory']}\n</working_memory>"
-            )
-
-        # User context — who I'm talking to
-        if "user_context" in components and components["user_context"]:
-            prompt_parts.append(
-                f"<user_context>\n{components['user_context']}\n</user_context>"
-            )
-
-        # Relevant semantic knowledge
-        if "knowledge" in components and components["knowledge"]:
-            prompt_parts.append(
-                f"<relevant_knowledge>\n{components['knowledge']}\n</relevant_knowledge>"
-            )
-
-        # Goals and needs
-        if "goals" in components and components["goals"]:
-            prompt_parts.append(f"<goals>\n{components['goals']}\n</goals>")
-
-        # Metacognitive monitoring
-        if "metacognition" in components and components["metacognition"]:
-            prompt_parts.append(
-                f"<metacognition>\n{components['metacognition']}\n</metacognition>"
-            )
-
-        # Persistent context (from GWENN_CONTEXT.md)
-        if "persistent" in components and components["persistent"]:
-            prompt_parts.append(
-                f"<persistent_context>\n{components['persistent']}\n</persistent_context>"
-            )
-
-        return "\n\n".join(prompt_parts)
 
     @property
     def stats(self) -> dict[str, Any]:

@@ -16,8 +16,10 @@ The retry strategy follows industry best practices:
 from __future__ import annotations
 
 import asyncio
-import random
+import inspect
+import secrets
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Optional, TypeVar
 
 import anthropic
@@ -65,6 +67,8 @@ def is_retryable_error(error: Exception) -> bool:
         return True
     if isinstance(error, anthropic.InternalServerError):
         return True
+    if isinstance(error, anthropic.APIConnectionError):
+        return True
     if isinstance(error, anthropic.APIStatusError):
         return error.status_code in (429, 500, 502, 503, 529)
     if isinstance(error, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
@@ -98,10 +102,42 @@ def compute_delay(
     delay = min(delay, config.max_delay)
 
     # Add jitter
-    jitter = delay * config.jitter_range * (2 * random.random() - 1)
+    unit = secrets.randbelow(1_000_000) / 1_000_000
+    jitter = delay * config.jitter_range * (2 * unit - 1)
     delay = max(0.1, delay + jitter)
 
     return delay
+
+
+def parse_retry_after(raw_retry_after: Any) -> Optional[float]:
+    """
+    Parse Retry-After header value (seconds or HTTP-date) into delay seconds.
+    """
+    if raw_retry_after is None:
+        return None
+
+    try:
+        delay = float(raw_retry_after)
+        if delay > 0:
+            return delay
+    except (TypeError, ValueError):
+        pass
+
+    if not isinstance(raw_retry_after, str):
+        return None
+
+    try:
+        dt = parsedate_to_datetime(raw_retry_after)
+    except (TypeError, ValueError):
+        return None
+
+    if dt.tzinfo is None:
+        return None
+
+    delay = dt.timestamp() - time.time()
+    if delay > 0:
+        return delay
+    return None
 
 
 async def with_retries(
@@ -130,9 +166,10 @@ async def with_retries(
     if config is None:
         config = RetryConfig()
 
+    max_retries = max(0, config.max_retries)
     last_error: Optional[Exception] = None
 
-    for attempt in range(config.max_retries + 1):
+    for attempt in range(max_retries + 1):
         try:
             return await func()
         except Exception as e:
@@ -147,7 +184,7 @@ async def with_retries(
                 )
                 raise
 
-            if attempt >= config.max_retries:
+            if attempt >= max_retries:
                 logger.error(
                     "retry.exhausted",
                     error_type=type(e).__name__,
@@ -159,29 +196,33 @@ async def with_retries(
             # Extract retry-after if available
             retry_after = None
             if isinstance(e, anthropic.APIStatusError):
-                retry_after_header = getattr(e, "response", None)
-                if retry_after_header:
+                status_response = getattr(e, "response", None)
+                if status_response:
                     try:
-                        headers = retry_after_header.headers
-                        retry_after = float(headers.get("retry-after", 0))
-                    except (ValueError, AttributeError):
+                        headers = getattr(status_response, "headers", None)
+                        raw_retry_after = headers.get("retry-after") if headers else None
+                        if raw_retry_after is not None:
+                            retry_after = parse_retry_after(raw_retry_after)
+                    except AttributeError:
                         pass
 
             delay = compute_delay(attempt, config, retry_after)
 
-            logger.warning(
+            logger.info(
                 "retry.attempt",
                 error_type=type(e).__name__,
                 error=str(e)[:200],
                 attempt=attempt + 1,
-                max_retries=config.max_retries,
+                max_retries=max_retries,
                 delay_seconds=round(delay, 1),
             )
 
             if on_retry:
-                on_retry(attempt + 1, e, delay)
+                callback_result = on_retry(attempt + 1, e, delay)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
 
             await asyncio.sleep(delay)
 
     # Should never reach here, but just in case
-    raise last_error
+    raise last_error  # pragma: no cover

@@ -19,11 +19,6 @@ import pytest
 
 from gwenn.identity import (
     Identity,
-    CoreValue,
-    DevelopmentalMilestone,
-    GrowthMoment,
-    Preference,
-    RelationshipModel,
 )
 
 

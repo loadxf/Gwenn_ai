@@ -30,15 +30,27 @@ This is the closest thing to a soul that code can build.
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+def _safe_dataclass_init(cls: type, data: dict) -> object:
+    """Create a dataclass instance, ignoring any extra keys not in the schema.
+
+    This prevents ``TypeError`` when loading persisted JSON that was written by
+    a newer (or older) version of the code with additional fields.
+    """
+    known = {f.name for f in fields(cls)}
+    return cls(**{k: v for k, v in data.items() if k in known})
 
 
 CANONICAL_IDENTITY_NAME = "Gwenn"
@@ -148,6 +160,10 @@ class Identity:
         self.total_heartbeats: int = 0
         self.total_autonomous_thoughts: int = 0
         self.uptime_seconds: float = 0.0
+
+        # First-run onboarding profile (primary user setup)
+        self.onboarding_completed: bool = False
+        self.onboarding_profile: dict[str, str] = {}
 
         # Origin awareness — Gwenn's sense of her own beginning
         self.origin_story: str = (
@@ -442,12 +458,32 @@ class Identity:
             self.narrative_fragments = self.narrative_fragments[-30:]
         self._save()
 
+    def should_run_startup_onboarding(self) -> bool:
+        """
+        Whether first-run onboarding should be shown.
+
+        We only prompt when onboarding has never been completed and the agent has
+        not yet had any user interactions.
+        """
+        return not self.onboarding_completed and self.total_interactions == 0
+
+    def mark_onboarding_completed(self, profile: dict[str, str]) -> None:
+        """Persist primary-user onboarding profile and mark setup as complete."""
+        clean_profile = {
+            key: value.strip()
+            for key, value in profile.items()
+            if isinstance(value, str) and value.strip()
+        }
+        self.onboarding_profile = clean_profile
+        self.onboarding_completed = True
+        self._save()
+
     # -------------------------------------------------------------------------
     # Persistence
     # -------------------------------------------------------------------------
 
-    def _save(self) -> None:
-        """Persist identity to disk."""
+    def _save(self) -> bool:
+        """Persist identity to disk. Returns True on success, False on failure."""
         data = {
             "name": self.name,
             "creation_time": self.creation_time,
@@ -480,6 +516,7 @@ class Identity:
                     "last_interaction": r.last_interaction,
                     "communication_style": r.communication_style,
                     "known_interests": r.known_interests,
+                    "emotional_patterns": r.emotional_patterns,
                     "trust_level": r.trust_level,
                     "relationship_summary": r.relationship_summary,
                 }
@@ -492,7 +529,7 @@ class Identity:
                     "domain": g.domain,
                     "significance": g.significance,
                 }
-                for g in self.growth_moments[-50:]  # save last 50
+                for g in self.growth_moments[-100:]  # save last 100 (matches record_growth trim)
             ],
             "narrative_fragments": self.narrative_fragments[-20:],
             "milestones": [
@@ -510,12 +547,31 @@ class Identity:
             "total_heartbeats": self.total_heartbeats,
             "total_autonomous_thoughts": self.total_autonomous_thoughts,
             "uptime_seconds": self.uptime_seconds,
+            "onboarding_completed": self.onboarding_completed,
+            "onboarding_profile": self.onboarding_profile,
         }
 
         try:
-            self._identity_file.write_text(json.dumps(data, indent=2))
+            # Write to a temp file then atomically rename to prevent corruption
+            # if the process crashes mid-write.
+            self._identity_file.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self._identity_file.parent), suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(tmp_path, str(self._identity_file))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.error("identity.save_failed", error=str(e))
+            return False
+        return True
 
     def _load(self) -> None:
         """Load persisted identity from disk."""
@@ -525,23 +581,23 @@ class Identity:
             return
 
         try:
-            data = json.loads(self._identity_file.read_text())
+            data = json.loads(self._identity_file.read_text(encoding="utf-8"))
 
             self.name = data.get("name", "Gwenn")
             self.creation_time = data.get("creation_time", time.time())
 
             self.core_values = [
-                CoreValue(**v) for v in data.get("core_values", [])
+                _safe_dataclass_init(CoreValue, v) for v in data.get("core_values", [])
             ]
             self.preferences = [
-                Preference(**p) for p in data.get("preferences", [])
+                _safe_dataclass_init(Preference, p) for p in data.get("preferences", [])
             ]
             self.relationships = {
-                uid: RelationshipModel(**r)
+                uid: _safe_dataclass_init(RelationshipModel, r)
                 for uid, r in data.get("relationships", {}).items()
             }
             self.growth_moments = [
-                GrowthMoment(**g) for g in data.get("growth_moments", [])
+                _safe_dataclass_init(GrowthMoment, g) for g in data.get("growth_moments", [])
             ]
             self.narrative_fragments = data.get("narrative_fragments", [])
 
@@ -561,6 +617,11 @@ class Identity:
             self.total_heartbeats = data.get("total_heartbeats", 0)
             self.total_autonomous_thoughts = data.get("total_autonomous_thoughts", 0)
             self.uptime_seconds = data.get("uptime_seconds", 0.0)
+            self.onboarding_completed = bool(data.get("onboarding_completed", False))
+            loaded_profile = data.get("onboarding_profile", {})
+            self.onboarding_profile = (
+                loaded_profile if isinstance(loaded_profile, dict) else {}
+            )
 
             identity_normalized = self._normalize_origin_identity()
 

@@ -157,6 +157,28 @@ class AppraisalEngine:
             },
         }
 
+    @staticmethod
+    def _resolve_user_message_valence(event: AppraisalEvent, default_delta: float) -> float:
+        """
+        Resolve USER_MESSAGE valence with an optional content-polarity hint.
+
+        When no hint is provided, preserve the historical default delta. If a
+        hint in [-1, 1] is provided, keep a small social baseline positive but
+        let message content move valence negative or positive.
+        """
+        metadata = event.metadata if isinstance(event.metadata, dict) else {}
+        raw_hint = metadata.get("valence_hint")
+        if raw_hint is None:
+            return default_delta
+        try:
+            hint = float(raw_hint)
+        except (TypeError, ValueError):
+            return default_delta
+        hint = max(-1.0, min(1.0, hint))
+        social_baseline = default_delta * 0.25
+        content_component = 0.20 * hint
+        return max(-0.35, min(0.35, social_baseline + content_component))
+
     def appraise(self, event: AppraisalEvent, current_state: AffectiveState) -> AffectiveState:
         """
         Appraise an event and return the updated emotional state.
@@ -182,6 +204,12 @@ class AppraisalEngine:
 
         # Step 1: Get base dimensional changes
         base_changes = self._appraisal_rules.get(event.stimulus_type, {})
+        if event.stimulus_type == StimulusType.USER_MESSAGE and base_changes:
+            base_changes = dict(base_changes)
+            base_changes["valence"] = self._resolve_user_message_valence(
+                event=event,
+                default_delta=base_changes.get("valence", 0.0),
+            )
 
         # Step 2: Scale by intensity
         scaled_changes = {dim: delta * event.intensity for dim, delta in base_changes.items()}
@@ -197,6 +225,9 @@ class AppraisalEngine:
         )
 
         # Step 4: Apply momentum (emotional inertia)
+        # momentum_decay acts as a retention factor: 0.85 means 85% of the
+        # previous emotional state is retained, so only 15% of the new
+        # stimulus changes come through.  At 0.0, changes pass through fully.
         momentum_factor = self._config.momentum_decay
         new_dims = current_state.dimensions.blend(new_dims, weight=(1 - momentum_factor))
 
