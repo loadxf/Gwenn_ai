@@ -361,7 +361,8 @@ def _register_all_builtins(registry: ToolRegistry) -> None:
                 "you need to remember something from a past interaction, check what "
                 "you know about a topic, or retrieve context that isn't in the "
                 "current conversation. The query should describe what you're looking "
-                "for in natural language."
+                "for in natural language. Set sort_by to 'oldest' or 'newest' to "
+                "retrieve memories chronologically instead of by relevance."
             ),
             input_schema={
                 "type": "object",
@@ -389,6 +390,24 @@ def _register_all_builtins(registry: ToolRegistry) -> None:
                         "minimum": 1,
                         "maximum": 20,
                         "default": 5,
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "description": (
+                            "How to sort results. 'relevance' (default): scored by recency + "
+                            "importance + semantic relevance. 'oldest': chronological, oldest "
+                            "first. 'newest': chronological, newest first."
+                        ),
+                        "enum": ["relevance", "oldest", "newest"],
+                        "default": "relevance",
+                    },
+                    "landmarks_only": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, only return landmark memories (foundational, "
+                            "protected memories). Currently reserved for future use."
+                        ),
+                        "default": False,
                     },
                 },
                 "required": ["query"],

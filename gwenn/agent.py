@@ -2558,19 +2558,37 @@ class SentientAgent:
                 query: str,
                 category: str | None = None,
                 max_results: int = 5,
+                sort_by: str = "relevance",
+                landmarks_only: bool = False,
             ) -> str:
-                results = self.episodic_memory.retrieve(
-                    query=query,
-                    top_k=max_results,
-                    category=category,
-                    mood_valence=self.affect_state.dimensions.valence,
-                )
-                if not results:
-                    return "No relevant memories found."
-                parts = []
-                for episode, score in results:
-                    parts.append(f"[{score:.2f}] {episode.content[:200]}")
-                return "\n".join(parts)
+                if sort_by in ("oldest", "newest"):
+                    results = self.episodic_memory.retrieve_chronological(
+                        top_k=max_results,
+                        oldest_first=(sort_by == "oldest"),
+                        category=category,
+                        landmarks_only=landmarks_only,
+                    )
+                    if not results:
+                        return "No memories found."
+                    import datetime
+                    parts = []
+                    for episode in results:
+                        ts = datetime.datetime.fromtimestamp(episode.timestamp)
+                        parts.append(f"[{ts.strftime('%Y-%m-%d %H:%M')}] {episode.content[:200]}")
+                    return "\n".join(parts)
+                else:
+                    results = self.episodic_memory.retrieve(
+                        query=query,
+                        top_k=max_results,
+                        category=category,
+                        mood_valence=self.affect_state.dimensions.valence,
+                    )
+                    if not results:
+                        return "No relevant memories found."
+                    parts = []
+                    for episode, score in results:
+                        parts.append(f"[{score:.2f}] {episode.content[:200]}")
+                    return "\n".join(parts)
 
             recall_tool.handler = handle_recall
 

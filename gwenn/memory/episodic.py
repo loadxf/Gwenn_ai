@@ -328,6 +328,22 @@ class EpisodicMemory:
         matches.sort(key=lambda e: e.timestamp, reverse=True)
         return matches[:top_k]
 
+    def retrieve_chronological(
+        self,
+        top_k: int = 10,
+        oldest_first: bool = True,
+        category: Optional[str] = None,
+        landmarks_only: bool = False,
+    ) -> list[Episode]:
+        """Retrieve episodes sorted by timestamp (oldest or newest first)."""
+        candidates = self._episodes
+        if category:
+            candidates = [e for e in candidates if e.category == category]
+        if landmarks_only:
+            candidates = [e for e in candidates if getattr(e, 'landmark', False)]
+        sorted_eps = sorted(candidates, key=lambda e: e.timestamp, reverse=not oldest_first)
+        return sorted_eps[:top_k]
+
     def get_unconsolidated(self, max_age_hours: Optional[float] = 24.0) -> list[Episode]:
         """Get episodes that haven't been consolidated into semantic memory yet."""
         cutoff = None if max_age_hours is None else (time.time() - (max_age_hours * 3600))
