@@ -523,7 +523,7 @@ class DiscordChannel(BaseChannel):
                     # Only the first chunk is a reply (anchors the context);
                     # subsequent chunks are plain channel sends to avoid a
                     # wall of reply arrows pointing at the original message.
-                    chunks = format_for_discord(response)
+                    chunks = format_for_discord(str(response))
                     try:
                         for i, chunk in enumerate(chunks):
                             if i == 0:

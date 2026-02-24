@@ -40,3 +40,30 @@ class UserMessage:
         if self.text:
             blocks.append({"type": "text", "text": self.text})
         return blocks
+
+
+@dataclass
+class ButtonSpec:
+    """A single inline button specification for channel rendering."""
+
+    label: str
+    value: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            self.value = self.label
+
+
+@dataclass
+class AgentResponse:
+    """Structured response from ``SentientAgent.respond()``.
+
+    Carries the text reply and optional inline button rows for channels
+    that support interactive keyboards (e.g. Telegram).
+    """
+
+    text: str
+    buttons: list[list[ButtonSpec]] | None = None
+
+    def __str__(self) -> str:
+        return self.text

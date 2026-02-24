@@ -211,7 +211,7 @@ async def test_respond_passes_tools_and_redacts_api_payload():
         user_id="user-1",
     )
 
-    assert response == "ok"
+    assert str(response) == "ok"
     assert len(loop.calls) == 1
     call = loop.calls[0]
     assert call["tools"] == [{"name": "echo"}]

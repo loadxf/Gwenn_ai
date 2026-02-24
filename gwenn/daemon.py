@@ -379,7 +379,7 @@ class GwennDaemon:
                 return {
                     "type": "response",
                     "req_id": req_id,
-                    "text": response_text,
+                    "text": str(response_text),
                     "emotion": emotion,
                 }
 

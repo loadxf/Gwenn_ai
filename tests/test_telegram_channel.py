@@ -15,6 +15,7 @@ import pytest
 import gwenn.channels.telegram_channel as tg_mod
 from gwenn.channels.session import SessionManager
 from gwenn.channels.telegram_channel import TelegramChannel
+from gwenn.types import AgentResponse, ButtonSpec
 
 
 def make_config(
@@ -44,7 +45,7 @@ def make_channel(
 ):
     """Create a TelegramChannel with mocked agent and sessions."""
     agent = AsyncMock()
-    agent.respond = AsyncMock(return_value="Hello from Gwenn")
+    agent.respond = AsyncMock(return_value=AgentResponse(text="Hello from Gwenn"))
     agent.apply_startup_onboarding = MagicMock()
     agent.status = {
         "name": "Gwenn",
@@ -462,7 +463,7 @@ class TestOnMessage:
     async def test_long_response_sends_multiple_chunks(self):
         ch, agent, _ = make_channel()
         # Response longer than TELEGRAM_MAX_LEN
-        agent.respond = AsyncMock(return_value="word " * 1500)
+        agent.respond = AsyncMock(return_value=AgentResponse(text="word " * 1500))
         update = make_update(user_id="88", text="write a lot")
         ctx = make_context()
 
@@ -492,7 +493,7 @@ class TestOnMessage:
     @pytest.mark.asyncio
     async def test_chunk_send_error_is_handled(self):
         ch, agent, _ = make_channel()
-        agent.respond = AsyncMock(return_value="word " * 1500)
+        agent.respond = AsyncMock(return_value=AgentResponse(text="word " * 1500))
         update = make_update(user_id="99", text="write a lot")
         # First chunk: HTML succeeds.
         # Second chunk: HTML fails, plain-text fallback also fails → break.
@@ -509,7 +510,7 @@ class TestOnMessage:
     @pytest.mark.asyncio
     async def test_chunk_html_fallback_to_plain_text(self):
         ch, agent, _ = make_channel()
-        agent.respond = AsyncMock(return_value="word " * 1500)
+        agent.respond = AsyncMock(return_value=AgentResponse(text="word " * 1500))
         update = make_update(user_id="99", text="write a lot")
         # First chunk: HTML succeeds.
         # Second chunk: HTML fails, plain-text fallback succeeds.
@@ -526,7 +527,7 @@ class TestOnMessage:
     async def test_empty_response_sends_fallback(self):
         """Empty agent responses should produce a user-visible fallback (#24)."""
         ch, agent, _ = make_channel()
-        agent.respond = AsyncMock(return_value="")
+        agent.respond = AsyncMock(return_value=AgentResponse(text=""))
         update = make_update(user_id="55", text="hi")
         ctx = make_context()
 
@@ -539,7 +540,7 @@ class TestOnMessage:
     @pytest.mark.asyncio
     async def test_whitespace_only_response_sends_fallback(self):
         ch, agent, _ = make_channel()
-        agent.respond = AsyncMock(return_value="   \n  ")
+        agent.respond = AsyncMock(return_value=AgentResponse(text="   \n  "))
         update = make_update(user_id="55", text="hi")
         ctx = make_context()
 
@@ -557,7 +558,7 @@ class TestOnMessage:
         async def slow_respond(**kwargs):
             # Simulate cancel being set during processing.
             ch._cancel_flags["55"] = True
-            return "This should not be delivered"
+            return AgentResponse(text="This should not be delivered")
 
         agent.respond = AsyncMock(side_effect=slow_respond)
         update = make_update(user_id="55", text="hi")
@@ -1018,3 +1019,147 @@ class TestRateLimitInMessage:
         await ch._on_message(update2, ctx)
         # Should still be 1 — second message was throttled
         assert agent.respond.call_count == 1
+
+
+# ============================================================================
+# Inline button (present_choices) tests
+# ============================================================================
+
+
+def _make_callback_query(user_id="12345", data="btn:opt1", chat_id=None):
+    """Create a minimal CallbackQuery mock for button callback tests."""
+    query = MagicMock()
+    query.from_user.id = int(user_id)
+    query.data = data
+    query.answer = AsyncMock()
+    query.edit_message_reply_markup = AsyncMock()
+    msg = MagicMock()
+    msg.chat_id = int(chat_id if chat_id is not None else user_id)
+    msg.message_thread_id = None
+    msg.text = "Pick one"
+    msg.reply_text = AsyncMock()
+    query.message = msg
+    return query
+
+
+def _make_callback_update(query):
+    """Wrap a CallbackQuery mock into an Update mock."""
+    update = MagicMock()
+    update.callback_query = query
+    update.effective_user = query.from_user
+    update.effective_chat = MagicMock()
+    update.effective_chat.id = query.message.chat_id
+    return update
+
+
+class TestInlineButtons:
+    @pytest.mark.asyncio
+    async def test_response_with_buttons_attaches_keyboard(self):
+        """reply_markup should be set when AgentResponse has buttons."""
+        ch, agent, _ = make_channel()
+        buttons = [[ButtonSpec(label="Yes"), ButtonSpec(label="No")]]
+        agent.respond = AsyncMock(
+            return_value=AgentResponse(text="Pick one", buttons=buttons)
+        )
+        update = make_update(user_id="55", text="choose")
+        ctx = make_context()
+
+        await ch._on_message(update, ctx)
+
+        # The last reply_text call should have reply_markup set.
+        last_call = update.message.reply_text.call_args
+        assert last_call.kwargs.get("reply_markup") is not None or (
+            len(last_call.args) > 1 and last_call.args[1] is not None
+        )
+
+    @pytest.mark.asyncio
+    async def test_response_without_buttons_no_keyboard(self):
+        """No reply_markup when buttons=None."""
+        ch, agent, _ = make_channel()
+        agent.respond = AsyncMock(
+            return_value=AgentResponse(text="Just text", buttons=None)
+        )
+        update = make_update(user_id="55", text="hello")
+        ctx = make_context()
+
+        await ch._on_message(update, ctx)
+
+        last_call = update.message.reply_text.call_args
+        markup = last_call.kwargs.get("reply_markup")
+        assert markup is None
+
+    @pytest.mark.asyncio
+    async def test_button_callback_routes_selection(self):
+        """Clicking a button sends [Selected: ...] to the agent."""
+        ch, agent, _ = make_channel()
+        query = _make_callback_query(user_id="55", data="btn:option_a")
+        update = _make_callback_update(query)
+        ctx = make_context()
+
+        await ch._on_button_callback(update, ctx)
+
+        # query.answer() must be called to dismiss the spinner.
+        query.answer.assert_called_once()
+        # The keyboard should be removed.
+        query.edit_message_reply_markup.assert_called_once()
+        # Agent should have been called with the selected value.
+        agent.respond.assert_called_once()
+        call_kwargs = agent.respond.call_args.kwargs
+        from gwenn.types import UserMessage
+        assert isinstance(call_kwargs["user_message"], UserMessage)
+        assert "[Selected: option_a]" in call_kwargs["user_message"].text
+
+    @pytest.mark.asyncio
+    async def test_button_callback_unauthorized_user(self):
+        """Non-allowed user's button press is rejected."""
+        ch, agent, _ = make_channel(allowed_user_ids=["999"])
+        query = _make_callback_query(user_id="55", data="btn:x")
+        update = _make_callback_update(query)
+        ctx = make_context()
+
+        await ch._on_button_callback(update, ctx)
+
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args.args[0].lower()
+        agent.respond.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_approval_flow_still_works(self):
+        """The approval handler should still match approve:/deny: prefixes."""
+        ch, agent, _ = make_channel(owner_user_ids=["55"])
+        query = MagicMock()
+        query.from_user.id = 55
+        query.data = "approve:abc123"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.message = MagicMock()
+        query.message.text = "Tool approval required"
+        update = MagicMock()
+        update.callback_query = query
+
+        await ch._on_approval_callback(update, MagicMock())
+
+        # approval_id "abc123" doesn't exist, so it should answer with "expired".
+        query.answer.assert_called_once()
+        assert "expired" in query.answer.call_args.args[0].lower() or \
+               "handled" in query.answer.call_args.args[0].lower()
+
+    def test_build_inline_keyboard_truncates_long_values(self):
+        """Callback data must not exceed 64 bytes."""
+        long_value = "x" * 200
+        rows = [[ButtonSpec(label="Click", value=long_value)]]
+        markup = TelegramChannel._build_inline_keyboard(rows)
+        assert markup is not None
+        # Extract the callback_data from the first button.
+        button = markup.inline_keyboard[0][0]
+        assert len(button.callback_data.encode("utf-8")) <= 64
+
+    def test_build_inline_keyboard_truncates_multibyte(self):
+        """Multi-byte UTF-8 values must still respect the 64-byte limit."""
+        # Each emoji is 4 bytes UTF-8; 20 emojis + "btn:" prefix > 64 bytes.
+        long_value = "\U0001f600" * 20
+        rows = [[ButtonSpec(label="Emoji", value=long_value)]]
+        markup = TelegramChannel._build_inline_keyboard(rows)
+        assert markup is not None
+        button = markup.inline_keyboard[0][0]
+        assert len(button.callback_data.encode("utf-8")) <= 64

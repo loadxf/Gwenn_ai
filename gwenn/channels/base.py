@@ -9,7 +9,7 @@ and SentientAgent.respond().  It:
   1. Constructs a canonical user_id prefixed with the channel name.
   2. Fetches (or creates) the user's conversation history from the SessionManager.
   3. Calls agent.respond() with that history, mutating it in place.
-  4. Returns the response string for the subclass to deliver.
+  4. Returns the AgentResponse for the subclass to deliver.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from gwenn.config import _normalize_session_scope_mode
-from gwenn.types import UserMessage
+from gwenn.types import AgentResponse, UserMessage
 
 if TYPE_CHECKING:
     from gwenn.agent import SentientAgent
@@ -254,12 +254,12 @@ class BaseChannel(ABC):
         message: UserMessage | str,
         *,
         session_scope_key: str | None = None,
-    ) -> str:
+    ) -> AgentResponse:
         """
         Bridge between a platform callback and SentientAgent.
 
         Fetches the per-user conversation history and passes it to respond(),
-        which appends the new turn in-place.  Returns Gwenn's response string.
+        which appends the new turn in-place.  Returns an ``AgentResponse``.
 
         *message* may be a plain string (backward-compatible) or a
         ``UserMessage`` carrying optional image data.

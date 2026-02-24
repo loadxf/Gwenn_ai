@@ -2493,7 +2493,7 @@ class TestRespondWithExternalHistory:
         result = await SentientAgent.respond(
             agent, "hello", user_id="u1", conversation_history=ext_history,
         )
-        assert result == "response"
+        assert str(result) == "response"
         assert len(ext_history) == 2  # user + assistant
 
 
@@ -5661,7 +5661,7 @@ class TestRespondGroundEnvExceptionDirect:
         )
 
         result = await SentientAgent.respond(agent, "hello", user_id="u1")
-        assert "done" in result
+        assert "done" in str(result)
         assert call_count[0] > 0  # ground_env was called and raised (but was caught)
 
     def test_valence_marker_not_found(self):

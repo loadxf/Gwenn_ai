@@ -1184,7 +1184,7 @@ class GwennSession:
                 )
             emotion = self._agent.affect_state.current_emotion.value
             console.print(f"[bold cyan]Gwenn[/bold cyan] [dim]({markup_escape(emotion)})[/dim]:")
-            console.print(Markdown(response))
+            console.print(Markdown(str(response)))
             console.print()
             return "handled"
         if cmd == "/agents":
@@ -1346,7 +1346,7 @@ class GwennSession:
                 console.print(
                     f"[bold cyan]Gwenn[/bold cyan] [dim]({markup_escape(emotion)})[/dim]:"
                 )
-                console.print(Markdown(response))
+                console.print(Markdown(str(response)))
                 console.print()
 
             except EOFError:

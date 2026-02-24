@@ -1208,6 +1208,63 @@ def _register_all_builtins(registry: ToolRegistry) -> None:
         )
     )
 
+    # ---- Interactive Choice Tool ----
+    registry.register(
+        ToolDefinition(
+            name="present_choices",
+            description=(
+                "Present interactive choice buttons to the user. The buttons are "
+                "rendered as an inline keyboard on platforms that support it (e.g. Telegram). "
+                "On other platforms, the choices are shown as a numbered list "
+                "in the text response.\n\n"
+                "Use this when you want the user to pick from a small set of discrete options "
+                "(e.g. confirming an action, selecting a category, choosing a next step).\n\n"
+                "Guidelines:\n"
+                "- Keep labels short (under 40 characters).\n"
+                "- Use 2–6 choices for best results.\n"
+                "- The 'value' field is what gets sent back when the user clicks; "
+                "if omitted it defaults to the label."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "A short message to display above the buttons, explaining "
+                            "what the user should choose."
+                        ),
+                    },
+                    "choices": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {
+                                    "type": "string",
+                                    "description": "Button text shown to the user.",
+                                },
+                                "value": {
+                                    "type": "string",
+                                    "description": (
+                                        "Value sent back when clicked. "
+                                        "Defaults to the label if omitted."
+                                    ),
+                                },
+                            },
+                            "required": ["label"],
+                        },
+                        "description": "List of choices to present.",
+                    },
+                },
+                "required": ["prompt", "choices"],
+            },
+            handler=None,  # Wired by agent._wire_builtin_tool_handlers()
+            risk_level="low",
+            category="utility",
+        )
+    )
+
     # ---- Filesystem Tools (subagent-only) ----
     _register_filesystem_tools(registry)
 

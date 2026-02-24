@@ -37,7 +37,7 @@ from typing import Any, TYPE_CHECKING
 import structlog
 
 from gwenn.channels.base import BaseChannel
-from gwenn.types import UserMessage
+from gwenn.types import AgentResponse, ButtonSpec, UserMessage
 
 if TYPE_CHECKING:
     from gwenn.agent import SentientAgent
@@ -301,6 +301,9 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(
             CallbackQueryHandler(self._on_approval_callback, pattern=r"^(approve|deny):")
         )
+        self._app.add_handler(
+            CallbackQueryHandler(self._on_button_callback, pattern=r"^btn:")
+        )
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("help", self._on_help))
         self._app.add_handler(CommandHandler("setup", self._on_setup))
@@ -417,6 +420,118 @@ class TelegramChannel(BaseChannel):
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _build_inline_keyboard(
+        button_rows: list[list[ButtonSpec]],
+    ):
+        """Convert ``ButtonSpec`` rows into a Telegram ``InlineKeyboardMarkup``."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        rows = []
+        for row in button_rows:
+            buttons = []
+            for spec in row:
+                cb_data = f"btn:{spec.value}"
+                # Telegram callback_data is limited to 64 bytes (UTF-8 encoded).
+                if len(cb_data.encode("utf-8")) > 64:
+                    cb_data = cb_data.encode("utf-8")[:64].decode("utf-8", errors="ignore")
+                buttons.append(InlineKeyboardButton(spec.label, callback_data=cb_data))
+            if buttons:
+                rows.append(buttons)
+        return InlineKeyboardMarkup(rows) if rows else None
+
+    async def _on_button_callback(self, update, context) -> None:
+        """Handle ``btn:`` callback queries from present_choices inline keyboards."""
+        query = update.callback_query
+        if query is None:
+            return
+
+        raw_id = str(query.from_user.id)
+        if not self._is_allowed(raw_id):
+            await query.answer("You are not authorized.", show_alert=True)
+            return
+
+        data = query.data or ""
+        if not data.startswith("btn:"):
+            await query.answer("Unknown action.")
+            return
+
+        value = data[4:]  # Strip "btn:" prefix.
+        await query.answer()  # Dismiss loading spinner.
+
+        # Remove the inline keyboard from the original message (best-effort).
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        # Route the selection back through the agent as a new message.
+        selection_text = f"[Selected: {value}]"
+        lock = self._get_user_lock(raw_id)
+        try:
+            async with lock:
+                thread_id = getattr(query.message, "message_thread_id", None)
+                typing_task = asyncio.create_task(
+                    self._keep_typing(query.message.chat_id, thread_id)
+                )
+                try:
+                    session_scope_key = self._session_scope_key_for_callback(
+                        query, raw_id
+                    )
+                    response = await self.handle_message(
+                        raw_id,
+                        selection_text,
+                        session_scope_key=session_scope_key,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "telegram_channel.button_callback_error",
+                        error=str(exc),
+                        exc_info=True,
+                    )
+                    try:
+                        await query.message.reply_text(
+                            "I encountered an error processing your selection. "
+                            "Please try again."
+                        )
+                    except Exception:
+                        pass
+                    return
+                finally:
+                    typing_task.cancel()
+
+                response_text = (
+                    response.text if isinstance(response, AgentResponse) else str(response)
+                )
+                if not response_text or not response_text.strip():
+                    await query.message.reply_text(_EMPTY_RESPONSE_FALLBACK)
+                    return
+
+                button_rows = (
+                    response.buttons if isinstance(response, AgentResponse) else None
+                )
+                chunks = format_for_telegram(response_text)
+                await self._send_chunks_to_message(
+                    query.message, chunks, button_rows=button_rows
+                )
+        finally:
+            self._release_user_lock(raw_id)
+
+    def _session_scope_key_for_callback(self, query, raw_id: str) -> str:
+        """Derive a session scope key from a callback query, mirroring _session_scope_key_for_update."""
+        chat_id = self._normalize_optional_id(query.message.chat_id) if query.message else None
+        thread_id = (
+            self._normalize_optional_id(getattr(query.message, "message_thread_id", None))
+            if query.message
+            else None
+        )
+        return self.make_session_scope_key(
+            raw_user_id=raw_id,
+            raw_chat_id=chat_id,
+            raw_thread_id=thread_id,
+            scope_mode=self._session_scope_mode(),
+        )
 
     async def request_approval(
         self,
@@ -540,15 +655,29 @@ class TelegramChannel(BaseChannel):
         except Exception:
             pass  # Typing indicator is best-effort; don't propagate.
 
-    async def _send_chunks(self, update, chunks: list[str]) -> None:
-        """Send pre-formatted HTML chunks as replies, with plain-text fallback (#10)."""
+    async def _send_chunks_to_message(
+        self,
+        message,
+        chunks: list[str],
+        button_rows: list[list[ButtonSpec]] | None = None,
+    ) -> None:
+        """Send pre-formatted HTML chunks as replies, with plain-text fallback (#10).
+
+        If *button_rows* is provided, the last chunk gets an inline keyboard
+        built from the button specs.
+        """
+        reply_markup = self._build_inline_keyboard(button_rows) if button_rows else None
         for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            markup = reply_markup if is_last else None
             try:
-                await update.message.reply_text(chunk, parse_mode=TELEGRAM_PARSE_MODE)
+                await message.reply_text(
+                    chunk, parse_mode=TELEGRAM_PARSE_MODE, reply_markup=markup
+                )
             except Exception:
                 # HTML formatting rejected — strip tags and retry as plain text.
                 try:
-                    await update.message.reply_text(strip_html_tags(chunk))
+                    await message.reply_text(strip_html_tags(chunk), reply_markup=markup)
                 except Exception as exc:
                     logger.error(
                         "telegram_channel.send_error",
@@ -558,8 +687,12 @@ class TelegramChannel(BaseChannel):
                         exc_info=True,
                     )
                     break
-            if i < len(chunks) - 1:
+            if not is_last:
                 await asyncio.sleep(0.5)
+
+    async def _send_chunks(self, update, chunks: list[str]) -> None:
+        """Convenience wrapper: reply to an update's message with HTML chunks."""
+        await self._send_chunks_to_message(update.message, chunks)
 
     # ------------------------------------------------------------------
     # Command handlers
@@ -800,12 +933,16 @@ class TelegramChannel(BaseChannel):
                     return
 
                 # Guard against empty responses (#24).
-                if not response or not response.strip():
+                response_text = response.text if isinstance(response, AgentResponse) else str(response)
+                if not response_text or not response_text.strip():
                     await update.message.reply_text(_EMPTY_RESPONSE_FALLBACK)
                     return
 
-                chunks = format_for_telegram(response)
-                await self._send_chunks(update, chunks)
+                button_rows = response.buttons if isinstance(response, AgentResponse) else None
+                chunks = format_for_telegram(response_text)
+                await self._send_chunks_to_message(
+                    update.message, chunks, button_rows=button_rows
+                )
 
                 # Clear the "received" reaction now that we've replied.
                 await self._clear_reaction(update.message)

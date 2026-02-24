@@ -48,7 +48,7 @@ from gwenn.cognition.metacognition import HonestyAuditResult, MetacognitionEngin
 from gwenn.cognition.sensory import SensoryIntegrator
 from gwenn.cognition.theory_of_mind import TheoryOfMind
 from gwenn.config import GwennConfig
-from gwenn.types import UserMessage
+from gwenn.types import AgentResponse, ButtonSpec, UserMessage
 from gwenn.harness.context import ContextManager
 from gwenn.harness.loop import AgenticLoop
 from gwenn.harness.safety import SafetyGuard
@@ -933,7 +933,7 @@ class SentientAgent:
         user_id: str = "default_user",
         conversation_history: list[dict[str, Any]] | None = None,
         session_id: str = "",
-    ) -> str:
+    ) -> AgentResponse:
         """
         Process a user message and generate Gwenn's response.
 
@@ -958,7 +958,7 @@ class SentientAgent:
                 omit this argument and the instance history is used as before.
 
         Returns:
-            Gwenn's response as a string.
+            An ``AgentResponse`` containing the text reply and optional button data.
         """
         if not self._initialized:
             raise RuntimeError("Agent must be initialized before responding")
@@ -1078,6 +1078,40 @@ class SentientAgent:
         # Reset safety iteration counter for this new agentic run
         self.safety.reset_iteration_count()
 
+        # Closure-scoped mutable list for present_choices button data.
+        pending_buttons: list[list[ButtonSpec]] = []
+
+        def _on_tool_call(tool_call: dict[str, Any]) -> None:
+            """Intercept present_choices to capture button specs."""
+            if tool_call.get("name") != "present_choices":
+                return
+            tool_input = tool_call.get("input", {})
+            raw_choices = tool_input.get("choices", [])
+            if not raw_choices:
+                return
+            specs = [
+                ButtonSpec(
+                    label=str(c.get("label", ""))[:40],
+                    value=str(c.get("value") or ""),
+                )
+                for c in raw_choices
+                if c.get("label")
+            ]
+            if not specs:
+                return
+            # Auto-layout into rows.
+            if len(specs) <= 3:
+                pending_buttons.clear()
+                pending_buttons.append(specs)
+            elif len(specs) <= 6:
+                pending_buttons.clear()
+                for i in range(0, len(specs), 2):
+                    pending_buttons.append(specs[i : i + 2])
+            else:
+                pending_buttons.clear()
+                for i in range(0, len(specs), 3):
+                    pending_buttons.append(specs[i : i + 3])
+
         def _on_tool_result(tool_call: dict[str, Any], tool_result: Any) -> None:
             """Integrate tool outcomes into affect and sensory systems in real time."""
             succeeded = bool(getattr(tool_result, "success", False))
@@ -1135,6 +1169,7 @@ class SentientAgent:
             system_prompt=api_system_prompt,
             messages=api_messages,
             tools=available_tools,
+            on_tool_call=_on_tool_call,
             on_tool_result=_on_tool_result,
             on_approval_request=_on_approval_request,
             max_iterations=run_max_iterations,
@@ -1177,7 +1212,10 @@ class SentientAgent:
             emotion=self.affect_state.current_emotion.value,
         )
 
-        return response_text
+        return AgentResponse(
+            text=response_text,
+            buttons=pending_buttons if pending_buttons else None,
+        )
 
     # =========================================================================
     # SYSTEM PROMPT ASSEMBLY — Where identity becomes thought
@@ -3583,6 +3621,15 @@ class SentientAgent:
                 return f"[Inner thought shared]: {thought}"
 
             think_tool.handler = handle_think_aloud
+
+        # present_choices → handler is a no-op; interception happens in respond()
+        pc_tool = self.tool_registry.get("present_choices")
+        if pc_tool:
+
+            async def handle_present_choices(prompt: str, choices: list) -> str:
+                return "Choices will be presented to the user alongside your response."
+
+            pc_tool.handler = handle_present_choices
 
         # ---- Filesystem tool handlers (subagent-only) ----
         self._wire_filesystem_tool_handlers()
