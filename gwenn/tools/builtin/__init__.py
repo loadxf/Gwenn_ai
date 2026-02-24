@@ -77,7 +77,10 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
                     "filesystem_paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "File paths the subagent can read (Docker only).",
+                        "description": (
+                            "Directory paths the subagent may access via "
+                            "read_file / write_file tools."
+                        ),
                     },
                 },
                 "required": ["task_description"],
@@ -215,6 +218,79 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
             handler=None,
             risk_level="low",
             category="orchestration",
+        )
+    )
+
+
+def _register_filesystem_tools(registry: ToolRegistry) -> None:
+    """Register the subagent filesystem tools (read_file / write_file)."""
+
+    registry.register(
+        ToolDefinition(
+            name="read_file",
+            description=(
+                "Read the contents of a file. Only works within directories "
+                "explicitly granted via filesystem_paths when spawning a "
+                "subagent. Returns the file text with a header showing path "
+                "and line count."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to the file to read.",
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to return. Default 500.",
+                        "default": 500,
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Line number to start reading from (0-based). Default 0.",
+                        "default": 0,
+                    },
+                },
+                "required": ["path"],
+            },
+            handler=None,
+            risk_level="medium",
+            category="filesystem",
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="write_file",
+            description=(
+                "Write or append content to a file. Only works within "
+                "directories explicitly granted via filesystem_paths when "
+                "spawning a subagent. Creates parent directories if needed."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to the file to write.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The text content to write to the file.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["write", "append"],
+                        "description": "Write mode: 'write' (overwrite) or 'append'. Default 'write'.",
+                        "default": "write",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+            handler=None,
+            risk_level="medium",
+            category="filesystem",
         )
     )
 
@@ -1051,6 +1127,9 @@ def _register_all_builtins(registry: ToolRegistry) -> None:
             category="skills",
         )
     )
+
+    # ---- Filesystem Tools (subagent-only) ----
+    _register_filesystem_tools(registry)
 
     # ---- Orchestration Tools ----
     _register_orchestration_tools(registry)

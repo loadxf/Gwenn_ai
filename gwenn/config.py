@@ -128,6 +128,9 @@ class ClaudeConfig(BaseSettings):
     def normalize_runtime_limits(self) -> "ClaudeConfig":
         self.max_tokens = max(1, int(self.max_tokens))
         self.thinking_budget = max(0, int(self.thinking_budget))
+        # API requires max_tokens > thinking.budget_tokens
+        if self.thinking_budget > 0 and self.max_tokens <= self.thinking_budget:
+            self.max_tokens = self.thinking_budget + 1024
         self.request_timeout_seconds = max(1.0, float(self.request_timeout_seconds))
         self.retry_max_retries = max(0, int(self.retry_max_retries))
         self.retry_base_delay = max(0.05, float(self.retry_base_delay))

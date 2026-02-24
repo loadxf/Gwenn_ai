@@ -100,6 +100,7 @@ class SafetyGuard:
         "format_json", "encode_decode", "hash_text", "text_stats",
         "get_system_info", "skill_builder", "list_skills",
         "delete_skill", "update_skill", "reload_skills", "search_knowledge",
+        "read_file", "write_file",
     })
 
     def __init__(self, config: SafetyConfig, tool_registry=None):
