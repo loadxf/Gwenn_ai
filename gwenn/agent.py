@@ -3501,8 +3501,84 @@ class SentientAgent:
 
             think_tool.handler = handle_think_aloud
 
+        # ---- Filesystem tool handlers (subagent-only) ----
+        self._wire_filesystem_tool_handlers()
+
         # ---- Orchestration tool handlers ----
         self._wire_orchestration_tool_handlers()
+
+    def _wire_filesystem_tool_handlers(self) -> None:
+        """Connect read_file / write_file tool definitions to handlers.
+
+        The ALLOWED_FS_PATHS contextvar controls access scope:
+          - Main agent (default=None): unrestricted system-wide access.
+          - Subagents: runners set the contextvar to the granted
+            ``filesystem_access`` directories before the loop starts,
+            scoping access to those paths.
+        """
+        from gwenn.tools.filesystem_context import validate_path
+
+        read_tool = self.tool_registry.get("read_file")
+        if read_tool:
+
+            async def handle_read_file(
+                path: str,
+                max_lines: int = 500,
+                offset: int = 0,
+            ) -> str:
+                resolved, err = validate_path(path, require_exists=True)
+                if err:
+                    return err
+                if not resolved.is_file():
+                    return f"Not a regular file: '{resolved}'."
+                try:
+                    text = resolved.read_text(encoding="utf-8", errors="replace")
+                except OSError as exc:
+                    return f"Error reading file: {exc}"
+                lines = text.splitlines(keepends=True)
+                total = len(lines)
+                selected = lines[offset : offset + max_lines]
+                content = "".join(selected)
+                # Cap at 100k chars
+                if len(content) > 100_000:
+                    content = content[:100_000] + "\n... [truncated at 100 000 chars]"
+                return (
+                    f"# {resolved}  (lines {offset}–{offset + len(selected) - 1}"
+                    f" of {total})\n{content}"
+                )
+
+            read_tool.handler = handle_read_file
+
+        write_tool = self.tool_registry.get("write_file")
+        if write_tool:
+
+            async def handle_write_file(
+                path: str,
+                content: str,
+                mode: str = "write",
+            ) -> str:
+                resolved, err = validate_path(path)
+                if err:
+                    return err
+                if mode not in ("write", "append"):
+                    return f"Invalid mode '{mode}'. Must be 'write' or 'append'."
+                # Cap content
+                if len(content) > 100_000:
+                    content = content[:100_000]
+                try:
+                    resolved.parent.mkdir(parents=True, exist_ok=True)
+                    if mode == "append":
+                        with resolved.open("a", encoding="utf-8") as f:
+                            f.write(content)
+                    else:
+                        resolved.write_text(content, encoding="utf-8")
+                except OSError as exc:
+                    return f"Error writing file: {exc}"
+                byte_count = len(content.encode("utf-8"))
+                verb = "Appended to" if mode == "append" else "Wrote"
+                return f"{verb} {resolved} ({byte_count} bytes)."
+
+            write_tool.handler = handle_write_file
 
     def _wire_orchestration_tool_handlers(self) -> None:
         """Connect orchestration tool definitions to the orchestrator."""

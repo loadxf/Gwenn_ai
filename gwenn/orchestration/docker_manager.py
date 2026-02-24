@@ -172,7 +172,7 @@ class DockerManager:
             for path_str in spec.filesystem_access:
                 path = Path(path_str).resolve()
                 if self._is_mount_allowed(path):
-                    cmd.extend(["-v", f"{path}:{path}:ro"])
+                    cmd.extend(["-v", f"{path}:{path}:rw"])
                 else:
                     logger.warning(
                         "docker.mount_denied",

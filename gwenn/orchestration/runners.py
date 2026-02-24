@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -88,6 +89,13 @@ class InProcessSubagentRunner(SubagentRunnerBase):
         )
 
         try:
+            # Set filesystem access paths for this subagent task
+            from gwenn.tools.filesystem_context import ALLOWED_FS_PATHS
+
+            ALLOWED_FS_PATHS.set(
+                tuple(Path(p).resolve() for p in spec.filesystem_access)
+            )
+
             # Build per-subagent safety guard with restricted budget
             safety_cfg = SafetyConfig(
                 GWENN_MAX_TOOL_ITERATIONS=spec.max_iterations,
@@ -238,6 +246,13 @@ class DockerSubagentRunner(SubagentRunnerBase):
 
         container_name = None
         try:
+            # Set filesystem access paths for proxied tool calls
+            from gwenn.tools.filesystem_context import ALLOWED_FS_PATHS
+
+            ALLOWED_FS_PATHS.set(
+                tuple(Path(p).resolve() for p in spec.filesystem_access)
+            )
+
             # Launch container
             container_name, proc = await self._docker.run_container(spec, self._api_key)
 
