@@ -346,7 +346,7 @@ class ToolExecutor:
                 try:
                     loop.call_soon_threadsafe(done.set)
                     loop.call_soon_threadsafe(self._sync_slot.release)
-                except RuntimeError:
+                except RuntimeError:  # pragma: no cover – shutdown race
                     # Loop may already be closed if shutdown races tool completion.
                     try:
                         self._sync_slot.release()
@@ -369,7 +369,7 @@ class ToolExecutor:
             # release() again; guard against ValueError from double-release.
             try:
                 self._sync_slot.release()
-            except ValueError:
+            except ValueError:  # pragma: no cover – thread may have already released
                 pass
             raise RuntimeError(
                 f"Synchronous tool handler timed out after {effective_timeout}s"

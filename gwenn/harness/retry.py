@@ -225,4 +225,4 @@ async def with_retries(
             await asyncio.sleep(delay)
 
     # Should never reach here, but just in case
-    raise last_error
+    raise last_error  # pragma: no cover

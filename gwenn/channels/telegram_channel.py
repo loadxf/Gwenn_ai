@@ -1050,22 +1050,23 @@ class TelegramChannel(BaseChannel):
             )
             return
 
+        if isinstance(error, BadRequest):
+            # Invalid API call — log the full error for debugging.
+            # Check before NetworkError because BadRequest is a subclass.
+            logger.error(
+                "telegram_channel.bad_request",
+                error=str(error),
+                update_id=update_id,
+                exc_info=error,
+            )
+            return
+
         if isinstance(error, NetworkError):
             # Transient network issue — log at warning, PTB handles reconnection.
             logger.warning(
                 "telegram_channel.network_error",
                 error=str(error),
                 update_id=update_id,
-            )
-            return
-
-        if isinstance(error, BadRequest):
-            # Invalid API call — log the full error for debugging.
-            logger.error(
-                "telegram_channel.bad_request",
-                error=str(error),
-                update_id=update_id,
-                exc_info=error,
             )
             return
 

@@ -471,7 +471,7 @@ class GoalSystem:
                 if not isinstance(raw_need, dict):
                     continue
                 need = self._needs.get(need_type)
-                if need is None:
+                if need is None:  # pragma: no cover – all NeedType members are initialized in __init__
                     continue
                 need.satisfaction = self._clamp01(
                     raw_need.get("satisfaction", need.satisfaction),

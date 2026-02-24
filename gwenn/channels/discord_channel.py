@@ -498,7 +498,7 @@ class DiscordChannel(BaseChannel):
                         if not msg_text:
                             if image_blocks:
                                 msg_text = "[The user sent an image]"
-                            else:
+                            else:  # pragma: no cover – msg_text always set by text/attachment handlers above
                                 msg_text = "[The user sent a message]"
                         user_msg = UserMessage(
                             text=msg_text,
