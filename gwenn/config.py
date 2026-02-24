@@ -443,7 +443,7 @@ class OrchestrationConfig(BaseSettings):
     max_active_swarms: int = Field(3, alias="GWENN_MAX_ACTIVE_SWARMS")
     max_concurrent_api_calls: int = Field(3, alias="GWENN_MAX_CONCURRENT_API_CALLS")
     default_tools: StrList = Field(default_factory=list, alias="GWENN_SUBAGENT_DEFAULT_TOOLS")
-    default_runtime: str = Field("docker", alias="GWENN_SUBAGENT_RUNTIME")
+    default_runtime: str = Field("in_process", alias="GWENN_SUBAGENT_RUNTIME")
     # Docker settings
     docker_image: str = Field("gwenn-subagent:latest", alias="GWENN_SUBAGENT_DOCKER_IMAGE")
     docker_network: str = Field("none", alias="GWENN_SUBAGENT_DOCKER_NETWORK")
@@ -469,7 +469,7 @@ class OrchestrationConfig(BaseSettings):
         self.autonomous_spawn_cooldown = max(0.0, float(self.autonomous_spawn_cooldown))
         self.autonomous_spawn_max_per_hour = max(0, int(self.autonomous_spawn_max_per_hour))
         if self.default_runtime not in {"docker", "in_process"}:
-            self.default_runtime = "docker"
+            self.default_runtime = "in_process"
         return self
 
 

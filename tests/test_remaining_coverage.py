@@ -270,12 +270,12 @@ class TestMCPConfigGetServerList:
 
 
 class TestOrchestrationConfigNormalize:
-    def test_invalid_runtime_defaults_to_docker(self, monkeypatch):
+    def test_invalid_runtime_defaults_to_in_process(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
         monkeypatch.setenv("GWENN_DEFAULT_RUNTIME", "invalid_runtime")
         from gwenn.config import OrchestrationConfig
         cfg = OrchestrationConfig()
-        assert cfg.default_runtime == "docker"
+        assert cfg.default_runtime == "in_process"
 
 
 class TestDiscordConfigNormalize:

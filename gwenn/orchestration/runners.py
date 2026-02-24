@@ -16,7 +16,7 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import structlog
 
@@ -344,3 +344,34 @@ class DockerSubagentRunner(SubagentRunnerBase):
                 error=str(exc),
                 elapsed_seconds=round(elapsed, 2),
             )
+
+
+class FallbackSubagentRunner(SubagentRunnerBase):
+    """Runner that selects backend per-spec and falls back on failure.
+
+    Routes each SubagentSpec to the appropriate backend based on its
+    ``runtime_tier``. When Docker execution fails (status ``"failed"``,
+    **not** timeout or cancelled), automatically retries with in-process.
+    """
+
+    def __init__(
+        self,
+        in_process_runner: InProcessSubagentRunner,
+        docker_runner: Optional[DockerSubagentRunner] = None,
+    ):
+        self._in_process = in_process_runner
+        self._docker = docker_runner
+
+    async def run(self, spec: SubagentSpec) -> SubagentResult:
+        if spec.runtime_tier == "docker" and self._docker is not None:
+            result = await self._docker.run(spec)
+            if result.status == "failed":
+                logger.warning(
+                    "orchestration.fallback.docker_to_inprocess",
+                    task_id=spec.task_id,
+                    docker_error=result.error,
+                )
+                return await self._in_process.run(spec)
+            return result
+
+        return await self._in_process.run(spec)

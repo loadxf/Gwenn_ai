@@ -32,7 +32,7 @@ class TestSubagentSpec:
         assert spec.tools == []
         assert spec.timeout_seconds == 120.0
         assert spec.filesystem_access == []
-        assert spec.runtime_tier == "docker"
+        assert spec.runtime_tier == "in_process"
         assert spec.priority == 0
         assert spec.parent_task_id is None
         assert spec.depth == 0

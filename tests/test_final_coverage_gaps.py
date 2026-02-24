@@ -198,11 +198,11 @@ class TestMetacognitionRestoreBadMetric:
 # ---------------------------------------------------------------------------
 class TestConfigEdgeCases:
     def test_orchestration_config_invalid_runtime(self):
-        """Line 469: invalid default_runtime reset to 'docker'."""
+        """Line 469: invalid default_runtime reset to 'in_process'."""
         from gwenn.config import OrchestrationConfig
 
         cfg = OrchestrationConfig(default_runtime="invalid_runtime")
-        assert cfg.default_runtime == "docker"
+        assert cfg.default_runtime == "in_process"
 
     def test_telegram_config_bracket_token(self):
         """Line 524: bot_token with bracket wrapper inside quotes → nested unwrap."""

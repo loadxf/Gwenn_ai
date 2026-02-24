@@ -561,14 +561,42 @@ class SentientAgent:
         # ---- Layer 15: Orchestration ----
         if self._config.orchestration.enabled:
             from gwenn.orchestration.orchestrator import Orchestrator
-            from gwenn.orchestration.runners import InProcessSubagentRunner
+            from gwenn.orchestration.runners import (
+                FallbackSubagentRunner,
+                InProcessSubagentRunner,
+            )
 
-            runner = InProcessSubagentRunner(
+            in_proc = InProcessSubagentRunner(
                 engine=self.engine,
                 tool_registry=self.tool_registry,
                 tool_executor=self.tool_executor,
                 parent_model=self._config.claude.model,
             )
+
+            if self._config.orchestration.default_runtime == "docker":
+                from gwenn.orchestration.docker_manager import DockerManager
+                from gwenn.orchestration.runners import DockerSubagentRunner
+
+                docker_mgr = DockerManager(
+                    image=self._config.orchestration.docker_image,
+                    network=self._config.orchestration.docker_network,
+                    memory_limit=self._config.orchestration.docker_memory_limit,
+                    cpu_limit=self._config.orchestration.docker_cpu_limit,
+                )
+                docker_runner = DockerSubagentRunner(
+                    docker_manager=docker_mgr,
+                    tool_registry=self.tool_registry,
+                    tool_executor=self.tool_executor,
+                    api_key=self._config.claude.api_key,
+                )
+                runner = FallbackSubagentRunner(
+                    in_process_runner=in_proc,
+                    docker_runner=docker_runner,
+                )
+                logger.info("agent.orchestrator_runtime", mode="docker+fallback")
+            else:
+                runner = in_proc
+
             self.orchestrator = Orchestrator(
                 config=self._config.orchestration,
                 runner=runner,

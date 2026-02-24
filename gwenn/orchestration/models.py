@@ -31,7 +31,7 @@ class SubagentSpec(BaseModel):
     tool_schemas: dict[str, dict[str, Any]] = Field(default_factory=dict)
     timeout_seconds: float = 120.0
     filesystem_access: list[str] = Field(default_factory=list)
-    runtime_tier: Literal["docker", "in_process"] = "docker"
+    runtime_tier: Literal["docker", "in_process"] = "in_process"
     priority: int = 0
     parent_task_id: Optional[str] = None
     depth: int = 0
