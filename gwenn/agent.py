@@ -3676,6 +3676,9 @@ class SentientAgent:
                 model: str = "",
                 timeout_seconds: float = 120.0,
                 filesystem_paths: list[str] | None = None,
+                isolation: str = "",
+                system_prompt: str = "",
+                max_iterations: int = 10,
             ) -> str:
                 if not self.orchestrator:
                     return "Orchestration is not initialized."
@@ -3690,6 +3693,12 @@ class SentientAgent:
                                 "description": tdef.description,
                                 "input_schema": tdef.input_schema,
                             }
+                    # Resolve isolation: explicit param > config default
+                    runtime = (
+                        isolation
+                        if isolation in ("in_process", "docker")
+                        else self._config.orchestration.default_runtime
+                    )
                     spec = SubagentSpec(
                         task_description=task_description,
                         tools=tool_names,
@@ -3697,7 +3706,9 @@ class SentientAgent:
                         model=model,
                         timeout_seconds=timeout_seconds,
                         filesystem_access=filesystem_paths or [],
-                        runtime_tier=self._config.orchestration.default_runtime,
+                        runtime_tier=runtime,
+                        system_prompt=system_prompt or None,
+                        max_iterations=min(max_iterations, 50),
                     )
                     task_id = await self.orchestrator.spawn(spec)
                     return f"Subagent spawned with task_id: {task_id}"
@@ -3732,12 +3743,25 @@ class SentientAgent:
                         task_desc = task_def.get("task_description", "")
                         if not task_desc:
                             return "Each task must have a 'task_description' field."
+                        # Resolve per-task isolation: explicit > config default
+                        task_isolation = task_def.get("isolation", "")
+                        runtime = (
+                            task_isolation
+                            if task_isolation in ("in_process", "docker")
+                            else self._config.orchestration.default_runtime
+                        )
+                        task_sys_prompt = task_def.get("system_prompt", "")
+                        task_max_iter = task_def.get("max_iterations", 10)
+                        task_timeout = task_def.get("timeout_seconds", 120.0)
                         agents.append(
                             SubagentSpec(
                                 task_description=task_desc,
                                 tools=task_tools,
                                 tool_schemas=task_schemas,
-                                runtime_tier=self._config.orchestration.default_runtime,
+                                runtime_tier=runtime,
+                                system_prompt=task_sys_prompt or None,
+                                max_iterations=min(task_max_iter, 50),
+                                timeout_seconds=float(task_timeout),
                             )
                         )
                     swarm = SwarmSpec(

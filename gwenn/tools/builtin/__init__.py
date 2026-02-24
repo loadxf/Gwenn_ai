@@ -82,6 +82,36 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
                             "read_file / write_file tools."
                         ),
                     },
+                    "isolation": {
+                        "type": "string",
+                        "enum": ["in_process", "docker"],
+                        "description": (
+                            "Execution isolation level for this subagent. "
+                            "'in_process' (default): fast, shares host process — use for "
+                            "trusted tasks like API calls, calculations, and file I/O. "
+                            "'docker': containerised with network isolation, memory cap, "
+                            "and CPU limits — use for untrusted input, arbitrary code "
+                            "execution, or tasks where blast-radius containment matters."
+                        ),
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": (
+                            "Custom system prompt that defines the subagent's persona "
+                            "and behavioural rules. Overrides the default worker prompt. "
+                            "Use this to create expert subagents with specialised roles "
+                            "(e.g. architect, reviewer, tester)."
+                        ),
+                    },
+                    "max_iterations": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum agentic loop iterations for the subagent. "
+                            "Higher values allow more complex multi-step tasks. "
+                            "Default 10, max 50."
+                        ),
+                        "default": 10,
+                    },
                 },
                 "required": ["task_description"],
             },
@@ -117,6 +147,37 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
                                 "tools": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                },
+                                "isolation": {
+                                    "type": "string",
+                                    "enum": ["in_process", "docker"],
+                                    "description": (
+                                        "Per-task isolation level. Overrides the swarm "
+                                        "default. 'in_process' for trusted work; "
+                                        "'docker' for untrusted input or code execution."
+                                    ),
+                                },
+                                "timeout_seconds": {
+                                    "type": "number",
+                                    "description": (
+                                        "Per-task timeout in seconds. Default 120."
+                                    ),
+                                    "default": 120,
+                                },
+                                "system_prompt": {
+                                    "type": "string",
+                                    "description": (
+                                        "Custom system prompt for this specific task's "
+                                        "subagent. Defines expert persona and rules."
+                                    ),
+                                },
+                                "max_iterations": {
+                                    "type": "integer",
+                                    "description": (
+                                        "Max agentic loop iterations for this task. "
+                                        "Default 10, max 50."
+                                    ),
+                                    "default": 10,
                                 },
                             },
                             "required": ["task_description"],
