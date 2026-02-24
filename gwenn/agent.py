@@ -2859,6 +2859,7 @@ class SentientAgent:
                     )
                     if parsed.scheme == "https":
                         tls_context = ssl.create_default_context()
+                        tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
                         sock = tls_context.wrap_socket(sock, server_hostname=host)
 
                     request = (
