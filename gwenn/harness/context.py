@@ -132,9 +132,12 @@ class ContextManager:
                 label = "1 image" if image_count == 1 else f"{image_count} images"
                 new_blocks.insert(0, {"type": "text", "text": f"[{label} shared]"})
             copy = dict(msg)
-            copy["content"] = new_blocks if len(new_blocks) > 1 else (
-                new_blocks[0].get("text", "") if new_blocks else ""
-            )
+            if not new_blocks:
+                copy["content"] = ""
+            elif len(new_blocks) == 1 and new_blocks[0].get("type") == "text":
+                copy["content"] = new_blocks[0].get("text", "")
+            else:
+                copy["content"] = new_blocks
             stripped.append(copy)
         return stripped
 

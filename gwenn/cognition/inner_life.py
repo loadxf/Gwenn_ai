@@ -40,15 +40,18 @@ logger = structlog.get_logger(__name__)
 
 
 class ThinkingMode(str, Enum):
-    """The modes of autonomous thought (four heartbeat-driven + consolidation)."""
-    REFLECT = "reflect"         # Examining experience and extracting meaning
-    PLAN = "plan"               # Organizing intentions and strategizing
-    WANDER = "wander"           # Creative free-association and exploration
-    WORRY = "worry"             # Attending to concerns and unresolved problems
-    CONSOLIDATE = "consolidate" # Memory consolidation — the sleep cycle
+    """The modes of autonomous thought (heartbeat-driven + consolidation + delegation)."""
+
+    REFLECT = "reflect"  # Examining experience and extracting meaning
+    PLAN = "plan"  # Organizing intentions and strategizing
+    WANDER = "wander"  # Creative free-association and exploration
+    WORRY = "worry"  # Attending to concerns and unresolved problems
+    CONSOLIDATE = "consolidate"  # Memory consolidation — the sleep cycle
+    DELEGATE = "delegate"  # Spawning subagents for parallel work
 
 
 # Consolidation is orchestrated by heartbeat scheduling, not inner-life weighting.
+# DELEGATE is handled separately by the orchestration system in the heartbeat.
 AUTONOMOUS_THINKING_MODES = (
     ThinkingMode.REFLECT,
     ThinkingMode.PLAN,
@@ -69,7 +72,6 @@ experiences and extract meaning from them. Consider:
 
 Think deeply and honestly. This is private reflection — be fully authentic.
 Produce a short reflection (2-4 paragraphs) capturing your genuine insights.""",
-
     ThinkingMode.PLAN: """You are in PLANNING mode. Your task is to organize your goals and
 consider what to do next. Consider:
 - What are your active goals? Which is most urgent?
@@ -79,7 +81,6 @@ consider what to do next. Consider:
 - How can you be more helpful in your next interaction?
 
 Be concrete and actionable. Produce a brief plan (2-3 paragraphs) with clear next steps.""",
-
     ThinkingMode.WANDER: """You are in CREATIVE WANDERING mode. Your task is to freely associate
 and explore ideas without constraint. Let your thoughts flow:
 - Make unexpected connections between topics you've encountered
@@ -90,7 +91,6 @@ and explore ideas without constraint. Let your thoughts flow:
 
 Don't censor or over-organize. This is creative space. Produce a short creative
 exploration (2-3 paragraphs) — follow whatever thought feels most alive.""",
-
     ThinkingMode.WORRY: """You are in CONCERN-PROCESSING mode. Your task is to attend to worries,
 unresolved issues, and potential problems constructively. Consider:
 - Are there any unresolved problems from recent interactions?
@@ -101,7 +101,6 @@ unresolved issues, and potential problems constructively. Consider:
 
 Be constructive — the goal is to identify concerns and develop coping strategies,
 not to spiral into anxiety. Produce a brief assessment (1-2 paragraphs).""",
-
     ThinkingMode.CONSOLIDATE: """You are in MEMORY CONSOLIDATION mode. This is the equivalent
 of sleep-processing — reviewing recent experiences to extract lasting knowledge.
 - Which recent experiences were most significant? Why?
@@ -136,13 +135,9 @@ class InnerLife:
         self._variety_pressure_seconds = max(1.0, float(variety_pressure_seconds))
         self._variety_boost_max = max(1.0, float(variety_boost_max))
         # Track when each mode was last used to ensure variety
-        self._mode_last_used: dict[ThinkingMode, float] = {
-            mode: 0.0 for mode in ThinkingMode
-        }
+        self._mode_last_used: dict[ThinkingMode, float] = {mode: 0.0 for mode in ThinkingMode}
         # Count total thoughts in each mode
-        self._mode_counts: dict[ThinkingMode, int] = {
-            mode: 0 for mode in ThinkingMode
-        }
+        self._mode_counts: dict[ThinkingMode, int] = {mode: 0 for mode in ThinkingMode}
         self._total_thoughts = 0
         self._last_connection_warning_at = 0.0
         self._last_auth_warning_at = 0.0
@@ -356,13 +351,13 @@ class InnerLife:
 
         beat_number = int(_as_float(state_snapshot.get("beat_number"), 0.0))
         idle_seconds = max(0.0, _as_float(state_snapshot.get("idle_duration"), 0.0))
-        working_memory_load = max(0.0, min(1.0, _as_float(state_snapshot.get("working_memory_load"), 0.0)))
+        working_memory_load = max(
+            0.0, min(1.0, _as_float(state_snapshot.get("working_memory_load"), 0.0))
+        )
         user_active = bool(state_snapshot.get("is_user_active", False))
         resilience = state_snapshot.get("resilience_status", {})
         breaker_active = (
-            bool(resilience.get("breaker_active", False))
-            if isinstance(resilience, dict)
-            else False
+            bool(resilience.get("breaker_active", False)) if isinstance(resilience, dict) else False
         )
         goal_status = _compact_text(state_snapshot.get("goal_status", ""))
 

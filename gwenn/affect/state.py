@@ -229,4 +229,11 @@ class AffectiveState:
             "emotion": self.current_emotion.value,
             "momentum": self.momentum,
             "timestamp": self.timestamp,
+            "baseline": {
+                "valence": self.baseline.valence,
+                "arousal": self.baseline.arousal,
+                "dominance": self.baseline.dominance,
+                "certainty": self.baseline.certainty,
+                "goal_congruence": self.baseline.goal_congruence,
+            },
         }

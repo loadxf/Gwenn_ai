@@ -132,6 +132,7 @@ async def test_think_adaptive_mode_omits_budget_tokens(monkeypatch):
     engine._auth_method = "api_key"
     engine._oauth_expires_at = 0.0
     engine._oauth_refresh_buffer = 300.0
+    engine._thinking_budget = 0  # 0 means use adaptive mode
 
     response = SimpleNamespace(
         usage=SimpleNamespace(input_tokens=10, output_tokens=5),
@@ -172,6 +173,7 @@ def test_oauth_client_uses_sdk_base_url_with_oauth_beta_header(monkeypatch):
         retry_max_delay=8.0,
         retry_exponential_base=2.0,
         retry_jitter_range=0.25,
+        thinking_budget=0,
     )
 
     engine = CognitiveEngine(cfg)
@@ -200,6 +202,7 @@ def test_api_key_preferred_when_both_credentials_present(monkeypatch):
         retry_max_delay=8.0,
         retry_exponential_base=2.0,
         retry_jitter_range=0.25,
+        thinking_budget=0,
     )
 
     engine = CognitiveEngine(cfg)
@@ -227,6 +230,7 @@ def test_oauth_client_dns_failure_does_not_abort_startup(monkeypatch):
         retry_max_delay=8.0,
         retry_exponential_base=2.0,
         retry_jitter_range=0.25,
+        thinking_budget=0,
     )
 
     engine = CognitiveEngine(cfg)

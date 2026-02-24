@@ -500,7 +500,8 @@ class SemanticMemory:
             if claim_terms:
                 overlap = len(claim_terms & episode_terms) / len(claim_terms)
             else:
-                overlap = 1.0 if getattr(episode, "content", "").strip() else 0.0
+                # No meaningful claim terms — cannot verify provenance
+                overlap = 0.0
             if overlap > best_overlap:
                 best_overlap = overlap
             if overlap >= threshold:

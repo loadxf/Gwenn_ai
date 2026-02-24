@@ -112,6 +112,7 @@ class ConsolidationEngine:
         consolidation when the episodic queue is empty.
         """
         self._last_consolidation = time.time()
+        self._pending_episode_ids = []
 
     def get_consolidation_prompt(self) -> Optional[str]:
         """
@@ -137,7 +138,8 @@ class ConsolidationEngine:
 
         if len(episodes) > self._max_episodes_per_pass:
             skipped = len(episodes) - self._max_episodes_per_pass
-            episodes = sorted(episodes, key=lambda ep: ep.timestamp, reverse=True)[
+            # Process oldest-first to prevent starvation of older episodes
+            episodes = sorted(episodes, key=lambda ep: ep.timestamp)[
                 : self._max_episodes_per_pass
             ]
             logger.info(

@@ -38,6 +38,7 @@ class RiskTier(str, Enum):
     - HIGH: Require explicit human approval before execution
     - CRITICAL: Deny by default — must be explicitly unlocked per-session
     """
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -66,17 +67,18 @@ class ToolDefinition:
     when Claude decides to use this tool. The risk_level determines
     whether human approval is needed before execution.
     """
+
     name: str
     description: str
-    input_schema: dict[str, Any]          # JSON Schema for tool parameters
-    handler: Optional[Callable] = None    # The function to call
-    risk_level: str = "low"               # "low", "medium", "high", "critical"
-    requires_approval: bool = False       # Whether human must approve
-    category: str = "general"             # For organizing in UI/logs
-    enabled: bool = True                  # Can be disabled without removal
-    is_builtin: bool = False              # True for builtins and user-created skills.
-                                          # Bypasses the deny-by-default safety policy.
-    timeout: Optional[float] = None       # Per-tool timeout in seconds (None = use default)
+    input_schema: dict[str, Any]  # JSON Schema for tool parameters
+    handler: Optional[Callable] = None  # The function to call
+    risk_level: str = "low"  # "low", "medium", "high", "critical"
+    requires_approval: bool = False  # Whether human must approve
+    category: str = "general"  # For organizing in UI/logs
+    enabled: bool = True  # Can be disabled without removal
+    is_builtin: bool = False  # True for builtins and user-created skills.
+    # Bypasses the deny-by-default safety policy.
+    timeout: Optional[float] = None  # Per-tool timeout in seconds (None = use default)
 
     def __post_init__(self) -> None:
         if self.risk_level not in _VALID_RISK_LEVELS:
@@ -240,9 +242,7 @@ class ToolRegistry:
     def get_definitions_by_name(self, names: list[str]) -> list["ToolDefinition"]:
         """Return ToolDefinition objects matching the given names."""
         return [
-            self._tools[name]
-            for name in names
-            if name in self._tools and self._tools[name].enabled
+            self._tools[name] for name in names if name in self._tools and self._tools[name].enabled
         ]
 
     @property

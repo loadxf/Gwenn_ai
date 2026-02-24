@@ -225,6 +225,9 @@ class AppraisalEngine:
         )
 
         # Step 4: Apply momentum (emotional inertia)
+        # momentum_decay acts as a retention factor: 0.85 means 85% of the
+        # previous emotional state is retained, so only 15% of the new
+        # stimulus changes come through.  At 0.0, changes pass through fully.
         momentum_factor = self._config.momentum_decay
         new_dims = current_state.dimensions.blend(new_dims, weight=(1 - momentum_factor))
 

@@ -138,9 +138,9 @@ def configure_logging() -> None:
     )
 
 
-# Eagerly configure when main.py is the entry point (python -m gwenn.main).
-# Other callers (daemon, tests) should call configure_logging() explicitly.
-configure_logging()
+# NOTE: configure_logging() is called explicitly in main() and run_daemon(),
+# NOT at module level, so that importers (daemon, tests) can configure logging
+# differently before the first call locks in the settings.
 
 logger = structlog.get_logger(__name__)
 console = Console()
@@ -1796,6 +1796,7 @@ def _run_show_status() -> None:
 
 def main():
     """Entry point for the gwenn command."""
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Gwenn - Genesis Woven from Evolved Neural Networks"
     )

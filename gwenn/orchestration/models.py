@@ -28,6 +28,7 @@ class SubagentSpec(BaseModel):
     max_tokens: int = 4096
     max_iterations: int = 10
     tools: list[str] = Field(default_factory=list)
+    tool_schemas: dict[str, dict[str, Any]] = Field(default_factory=dict)
     timeout_seconds: float = 120.0
     filesystem_access: list[str] = Field(default_factory=list)
     runtime_tier: Literal["docker", "in_process"] = "docker"

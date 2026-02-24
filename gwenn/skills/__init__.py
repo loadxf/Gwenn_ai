@@ -182,8 +182,17 @@ class SkillRegistry:
             lines.append(f"## {category.replace('_', ' ').title()}")
             lines.append("")
             for skill in skills:
-                required = [p for p, v in skill.parameters.items() if v.get("required")]
-                optional = [p for p, v in skill.parameters.items() if not v.get("required")]
+                # Support both normalized (top-level "required" array
+                # inside a JSON Schema with "properties") and legacy
+                # (per-property "required": true) parameter formats.
+                props = skill.parameters
+                if "properties" in props:
+                    req_set = set(props.get("required", []))
+                    props = props["properties"]
+                else:
+                    req_set = {p for p, v in props.items() if isinstance(v, dict) and v.get("required")}
+                required = [p for p in props if p in req_set]
+                optional = [p for p in props if p not in req_set]
                 param_parts = (
                     [f"`{p}`*" for p in required] + [f"`{p}`" for p in optional]
                 )

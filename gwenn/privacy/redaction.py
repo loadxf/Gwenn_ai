@@ -171,9 +171,8 @@ class PIIRedactor:
         """
         Scan text for PII without modifying it. Returns detection results.
 
-        Note: scan() always runs regardless of the ``enabled`` flag. This
-        allows callers to audit text for PII even when automatic redaction
-        is turned off.
+        Note: scan() runs regardless of the ``enabled`` flag, but respects
+        ``disabled_categories`` — patterns in disabled categories are not checked.
         """
         if not text:
             return RedactionResult(

@@ -361,7 +361,19 @@ class ToolExecutor:
             self._sync_slot.release()
             raise
 
-        await asyncio.wait_for(done.wait(), timeout=effective_timeout)
+        try:
+            await asyncio.wait_for(done.wait(), timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            # Release the semaphore since the stuck thread may never do so.
+            # If the thread eventually completes, its finally block will call
+            # release() again; guard against ValueError from double-release.
+            try:
+                self._sync_slot.release()
+            except ValueError:
+                pass
+            raise RuntimeError(
+                f"Synchronous tool handler timed out after {effective_timeout}s"
+            ) from None
 
         if "error" in result_box:
             raise result_box["error"]

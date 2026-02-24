@@ -166,9 +166,10 @@ async def with_retries(
     if config is None:
         config = RetryConfig()
 
+    max_retries = max(0, config.max_retries)
     last_error: Optional[Exception] = None
 
-    for attempt in range(config.max_retries + 1):
+    for attempt in range(max_retries + 1):
         try:
             return await func()
         except Exception as e:
@@ -183,7 +184,7 @@ async def with_retries(
                 )
                 raise
 
-            if attempt >= config.max_retries:
+            if attempt >= max_retries:
                 logger.error(
                     "retry.exhausted",
                     error_type=type(e).__name__,
@@ -212,7 +213,7 @@ async def with_retries(
                 error_type=type(e).__name__,
                 error=str(e)[:200],
                 attempt=attempt + 1,
-                max_retries=config.max_retries,
+                max_retries=max_retries,
                 delay_seconds=round(delay, 1),
             )
 

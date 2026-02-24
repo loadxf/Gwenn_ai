@@ -74,9 +74,11 @@ class WorkingMemoryItem:
 
     def decay(self, rate: float = DEFAULT_DECAY_RATE) -> None:
         """Apply temporal decay to salience. Items fade if not refreshed."""
-        elapsed = time.time() - self.last_refreshed
+        now = time.time()
+        elapsed = now - self.last_refreshed
         decay_amount = rate * (elapsed / 60.0)  # Decay per minute
         self.salience = max(0.0, self.salience - decay_amount)
+        self.last_refreshed = now
 
 
 class WorkingMemory:

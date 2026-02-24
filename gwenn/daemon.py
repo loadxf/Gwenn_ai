@@ -161,7 +161,7 @@ class GwennDaemon:
         logger.error(
             "daemon.channels_task_failed",
             error=self._redact_channel_error(str(exc)),
-            exc_info=True,
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
         self._request_shutdown("daemon_channels_task_failed")
 
@@ -218,7 +218,11 @@ class GwennDaemon:
     def _is_nonfatal_channel_error(exc: Exception) -> bool:
         """Return True for channel startup errors that should not stop the daemon."""
         if isinstance(exc, ImportError):
-            return True
+            # Only treat ImportError as nonfatal if it mentions optional deps
+            msg = str(exc).lower()
+            if "telegram" in msg or "discord" in msg:
+                return True
+            return False
         err_type = type(exc).__name__
         err_mod = type(exc).__module__
         if err_type == "InvalidToken" and err_mod.startswith("telegram"):
@@ -337,7 +341,7 @@ class GwennDaemon:
                         failures=auth_failures,
                     )
                     break
-            else:
+            elif msg_type == "chat" and response.get("type") != "error":
                 auth_failures = 0
 
             if msg_type == "stop":
@@ -471,7 +475,7 @@ class GwennDaemon:
 
         except Exception as e:
             logger.error("daemon.dispatch_error", msg_type=msg_type, error=str(e), exc_info=True)
-            return {"type": "error", "req_id": req_id, "message": str(e)}
+            return {"type": "error", "req_id": req_id, "message": "internal error"}
 
     def _is_authorized(self, msg: dict) -> bool:
         """Validate optional daemon auth token using constant-time comparison."""

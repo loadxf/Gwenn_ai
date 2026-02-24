@@ -274,7 +274,13 @@ class _StdioTransport(_BaseTransport):
                         f"{self._config.timeout_seconds}s on server '{self._config.name}'."
                     ) from exc
                 if message.get("id") != request_id:
-                    # Notifications or responses to other request IDs are ignored.
+                    logger.debug(
+                        "mcp.stdio.unexpected_message",
+                        expected_id=request_id,
+                        received_id=message.get("id"),
+                        method=message.get("method"),
+                        server=self._config.name,
+                    )
                     continue
                 return _extract_jsonrpc_result(message)
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -83,6 +84,7 @@ def _make_agent_for_full_beat():
         metacognition=SimpleNamespace(resolve_concern=lambda s: False),
         ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
         interagent=SimpleNamespace(get_pending_messages=lambda: []),
+        _respond_lock=asyncio.Lock(),
     )
 
 
@@ -175,6 +177,7 @@ async def test_integrate_persists_autonomous_thought_episode():
         metacognition=SimpleNamespace(resolve_concern=lambda s: False),
         ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
         interagent=SimpleNamespace(get_pending_messages=lambda: []),
+        _respond_lock=asyncio.Lock(),
     )
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 
@@ -210,6 +213,7 @@ async def test_integrate_calls_autonomous_skill_development_hook():
         metacognition=SimpleNamespace(resolve_concern=lambda s: False),
         ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
         interagent=SimpleNamespace(get_pending_messages=lambda: []),
+        _respond_lock=asyncio.Lock(),
     )
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 
@@ -266,6 +270,7 @@ async def test_consolidation_mode_does_not_stick_when_no_work():
         process_appraisal=lambda event: None,
         episodic_memory=SimpleNamespace(encode=lambda ep: None),
         memory_store=SimpleNamespace(save_episode=lambda ep: None),
+        _respond_lock=asyncio.Lock(),
     )
 
     async def _consolidate_memories():

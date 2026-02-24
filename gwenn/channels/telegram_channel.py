@@ -226,6 +226,11 @@ class TelegramChannel(BaseChannel):
 
     async def stop(self) -> None:
         """Stop polling and shut down the PTB application."""
+        if self._audio_transcriber is not None:
+            try:
+                await self._audio_transcriber.close()
+            except Exception:
+                logger.debug("telegram_channel.audio_transcriber_close_error", exc_info=True)
         if self._app is None:
             return
         try:
@@ -476,7 +481,11 @@ class TelegramChannel(BaseChannel):
                     desc = desc[:77] + "..."
                 lines.append(f"/{skill.name} — {desc}")
         lines.append("\nJust send a message to talk with me.")
-        await update.message.reply_text("\n".join(lines))
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            # Truncate skills list to fit Telegram's 4096-char limit
+            text = text[:4000] + "\n..."
+        await update.message.reply_text(text)
 
     async def _on_setup(self, update, context) -> None:
         raw_id = str(update.effective_user.id)
@@ -621,9 +630,9 @@ class TelegramChannel(BaseChannel):
             message = UserMessage(text=message)
         # Per-user lock prevents concurrent requests from the same user.
         lock = self._get_user_lock(raw_id)
-        self._cancel_flags.pop(raw_id, None)
         try:
             async with lock:
+                self._cancel_flags.pop(raw_id, None)
                 # Acknowledge receipt with a reaction so the user knows we saw it.
                 await self._acknowledge_received(update.message)
 

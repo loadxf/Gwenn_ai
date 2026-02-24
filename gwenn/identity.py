@@ -581,7 +581,7 @@ class Identity:
             return
 
         try:
-            data = json.loads(self._identity_file.read_text())
+            data = json.loads(self._identity_file.read_text(encoding="utf-8"))
 
             self.name = data.get("name", "Gwenn")
             self.creation_time = data.get("creation_time", time.time())

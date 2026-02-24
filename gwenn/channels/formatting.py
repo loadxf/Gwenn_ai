@@ -38,6 +38,8 @@ _STRIKETHROUGH_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
 _HEADER_RE = re.compile(r"^#{1,6} (.+)$", re.MULTILINE)
 # Blockquote: lines starting with '> ' (consecutive lines grouped).
 _BLOCKQUOTE_RE = re.compile(r"(?:^> .+(?:\n|$))+", re.MULTILINE)
+# After HTML-escaping, '>' becomes '&gt;' — match blockquote lines in escaped text.
+_BLOCKQUOTE_ESCAPED_RE = re.compile(r"(?:^&gt; .+(?:\n|$))+", re.MULTILINE)
 
 # Regex matching HTML entities (&amp; &lt; &gt; &quot; &#…;).
 _HTML_ENTITY_RE = re.compile(r"&(?:#[0-9]+|#x[0-9a-fA-F]+|[a-zA-Z]+);")
@@ -53,12 +55,13 @@ def markdown_to_telegram_html(text: str) -> str:
     Processing order:
       1. Extract fenced code blocks → <pre language="…">…</pre>  (HTML-escaped)
       2. Extract inline code        → <code>…</code>             (HTML-escaped)
-      3. HTML-escape all remaining plain text
+      3. HTML-escape all remaining plain text (incl. '>' → '&gt;')
       4. Convert **bold** → <b>…</b>
       5. Convert ~~strikethrough~~ → <s>…</s>
       6. Convert _italic_ → <i>…</i>   (underscore form only)
       7. Convert ## headings → <b>…</b>
-      8. Convert > blockquotes → <blockquote>…</blockquote>
+      8. Convert &gt; blockquotes → <blockquote>…</blockquote>
+         (after markdown conversion so inner formatting is preserved)
       9. Restore extracted code blocks
 
     Sentinels (\\x02N\\x03) protect code from HTML-escaping and markdown
@@ -74,7 +77,7 @@ def markdown_to_telegram_html(text: str) -> str:
         return key
 
     def _fence_repl(m: re.Match) -> str:
-        lang = m.group(1).strip()
+        lang = _html_mod.escape(m.group(1).strip())
         code = _html_mod.escape(m.group(2))
         # Use <pre language="X"> instead of <pre><code class="language-X">
         # to avoid spaces inside tags — the second-pass whitespace split in
@@ -92,22 +95,9 @@ def markdown_to_telegram_html(text: str) -> str:
         sentinel_map[key] = span
         return key
 
-    def _blockquote_sentinel_repl(m: re.Match) -> str:
-        lines = m.group(0).splitlines()
-        stripped = "\n".join(
-            line.removeprefix("> ").removeprefix(">") for line in lines
-        )
-        escaped = _html_mod.escape(stripped)
-        block = f"<blockquote>{escaped}</blockquote>"
-        key = _sentinel()
-        sentinel_map[key] = block
-        return key
-
-    # Phase 1 — protect code and blockquotes from further processing.
+    # Phase 1 — protect code from further processing.
     text = _FENCE_RE.sub(_fence_repl, text)
     text = _INLINE_CODE_RE.sub(_inline_repl, text)
-    # Blockquotes must be extracted before HTML-escaping since '>' is a special char.
-    text = _BLOCKQUOTE_RE.sub(_blockquote_sentinel_repl, text)
 
     # Phase 2 — HTML-escape all remaining plain text.
     text = _html_mod.escape(text)
@@ -118,6 +108,18 @@ def markdown_to_telegram_html(text: str) -> str:
     text = _STRIKETHROUGH_RE.sub(lambda m: f"<s>{m.group(1)}</s>", text)
     text = _ITALIC_RE.sub(lambda m: f"<i>{m.group(1)}</i>", text)
     text = _HEADER_RE.sub(lambda m: f"<b>{m.group(1)}</b>", text)
+
+    # Phase 3b — convert blockquotes. The '>' was HTML-escaped to '&gt;' in
+    # Phase 2, but the inner content has been through markdown conversion so
+    # bold/italic/etc. formatting is preserved inside blockquotes.
+    def _blockquote_escaped_repl(m: re.Match) -> str:
+        lines = m.group(0).splitlines()
+        stripped = "\n".join(
+            line.removeprefix("&gt; ").removeprefix("&gt;") for line in lines
+        )
+        return f"<blockquote>{stripped}</blockquote>"
+
+    text = _BLOCKQUOTE_ESCAPED_RE.sub(_blockquote_escaped_repl, text)
 
     # Phase 4 — restore protected blocks.
     for key, block in sentinel_map.items():

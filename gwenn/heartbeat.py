@@ -99,6 +99,11 @@ class Heartbeat:
         self._beats_since_full_audit = 0
         self._full_audit_every_n_beats = 10
 
+        # Track already-processed subagent results to avoid duplicates.
+        # Bounded to prevent unbounded growth over long runtimes.
+        self._processed_subagent_ids: set[str] = set()
+        self._max_processed_ids = 2000
+
     # -------------------------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------------------------
@@ -169,7 +174,7 @@ class Heartbeat:
                 if self._consecutive_failures >= _MAX_CONSECUTIVE:
                     # Exponential backoff: 60s → 120s → 240s → … capped at 15 min
                     backoff = min(
-                        _CIRCUIT_BASE_SECONDS * (2 ** self._circuit_open_count),
+                        _CIRCUIT_BASE_SECONDS * (2**self._circuit_open_count),
                         _CIRCUIT_MAX_SECONDS,
                     )
                     self._circuit_open_count += 1
@@ -269,21 +274,25 @@ class Heartbeat:
         try:
             wm_load = self._agent.working_memory.load_factor
             sensory.ground_environmental(
-                "heartbeat_beat", self._beat_count,
+                "heartbeat_beat",
+                self._beat_count,
                 f"Beat #{self._beat_count} of autonomous cognition",
             )
             sensory.ground_environmental(
-                "working_memory_load", wm_load,
+                "working_memory_load",
+                wm_load,
                 f"Working memory is {'heavy' if wm_load > 0.7 else 'moderate' if wm_load > 0.4 else 'light'} ({wm_load:.0%} full)",
             )
             if idle_duration < 120:
                 sensory.ground_environmental(
-                    "user_presence", True,
+                    "user_presence",
+                    True,
                     "A user is present and engaged",
                 )
             else:
                 sensory.ground_environmental(
-                    "user_presence", False,
+                    "user_presence",
+                    False,
                     f"No user activity for {idle_duration:.0f}s — alone with my thoughts",
                 )
         except Exception as e:
@@ -468,7 +477,8 @@ class Heartbeat:
                 stimulus_type=StimulusType.HEARTBEAT_IDLE,
                 intensity=0.2,
             )
-            self._agent.process_appraisal(event)
+            async with self._agent._respond_lock:
+                self._agent.process_appraisal(event)
             return
 
         # Let Gwenn evolve capabilities during autonomous cognition.
@@ -505,8 +515,17 @@ class Heartbeat:
             # Heuristically resolve metacognitive concerns that the worry thought addressed.
             if thought:
                 thought_lower = thought.lower()
-                concern_keywords = ["honesty", "calibrat", "trust", "error", "mistake",
-                                    "uncertain", "confiden", "growth", "aware"]
+                concern_keywords = [
+                    "honesty",
+                    "calibrat",
+                    "trust",
+                    "error",
+                    "mistake",
+                    "uncertain",
+                    "confiden",
+                    "growth",
+                    "aware",
+                ]
                 for keyword in concern_keywords:
                     if keyword in thought_lower:
                         try:
@@ -519,7 +538,8 @@ class Heartbeat:
                 intensity=0.2,
             )
 
-        self._agent.process_appraisal(event)
+        async with self._agent._respond_lock:
+            self._agent.process_appraisal(event)
 
         # Satisfy the intrinsic need that this thinking mode addresses and
         # advance (not immediately complete) any active goal for that need.
@@ -575,14 +595,61 @@ class Heartbeat:
         try:
             pending = self._agent.interagent.get_pending_messages()
             for msg in pending:
-                self._agent.process_appraisal(
-                    AppraisalEvent(
-                        stimulus_type=StimulusType.SOCIAL_CONNECTION,
-                        intensity=min(1.0, msg.importance),
+                async with self._agent._respond_lock:
+                    self._agent.process_appraisal(
+                        AppraisalEvent(
+                            stimulus_type=StimulusType.SOCIAL_CONNECTION,
+                            intensity=min(1.0, msg.importance),
+                        )
                     )
-                )
         except Exception as e:
             logger.debug("heartbeat.interagent_inbox_failed", error=str(e))
+
+        # Collect completed subagent results and integrate them.
+        try:
+            orchestrator = getattr(self._agent, "orchestrator", None)
+            if orchestrator is not None:
+                completed = orchestrator.collect_completed()
+                for result in completed:
+                    if result.task_id in self._processed_subagent_ids:
+                        continue
+                    self._processed_subagent_ids.add(result.task_id)
+                    # Prune oldest entries if set exceeds bound
+                    if len(self._processed_subagent_ids) > self._max_processed_ids:
+                        excess = len(self._processed_subagent_ids) - self._max_processed_ids
+                        to_remove = list(self._processed_subagent_ids)[:excess]
+                        self._processed_subagent_ids -= set(to_remove)
+                    if result.status == "completed" and result.result_text:
+                        from gwenn.memory.episodic import Episode as _Ep
+
+                        ep = _Ep(
+                            content=f"[Subagent result] {result.result_text[:500]}",
+                            category="subagent_result",
+                            importance=0.4,
+                            tags=["subagent", result.task_id],
+                        )
+                        self._agent.episodic_memory.encode(ep)
+                        self._agent._persist_episode(ep)
+
+                        # Broadcast noteworthy results to channel owners
+                        if self._config.proactive_messages and len(result.result_text) > 200:
+                            try:
+                                summary = result.result_text[:300]
+                                await self._agent.broadcast_to_channels(
+                                    f"[Subagent completed] {summary}"
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "heartbeat.subagent_broadcast_failed",
+                                    exc_info=True,
+                                )
+                        logger.info(
+                            "heartbeat.subagent_result_integrated",
+                            task_id=result.task_id,
+                            status=result.status,
+                        )
+        except Exception as e:
+            logger.debug("heartbeat.subagent_collect_failed", error=str(e))
 
     def _schedule(self, state: dict[str, Any]) -> None:
         """

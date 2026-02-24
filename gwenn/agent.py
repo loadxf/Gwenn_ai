@@ -102,6 +102,7 @@ def _upsert_context_section(content: str, section_name: str, note: str) -> str:
     header text appears more than once or inside another section.
     """
     import re as _re
+
     header = f"## {section_name.replace('_', ' ').title()}"
     entry = f"- {note}"
     # Match the header as a complete line (anchored with ^ in MULTILINE mode)
@@ -264,6 +265,10 @@ class SentientAgent:
         # ---- Layer 10: Heartbeat (initialized after setup) ----
         self.heartbeat: Optional[Heartbeat] = None
 
+        # ---- Layer 15: Orchestration (subagent spawning) ----
+        # Initialized fully in initialize() after tool handlers are bound
+        self.orchestrator: Optional[Any] = None
+
         # ---- Conversation state ----
         self._conversation_history: list[dict[str, Any]] = []
         # Keep in-memory history bounded to avoid unbounded growth in long-lived sessions.
@@ -317,9 +322,7 @@ class SentientAgent:
         self.semantic_memory.clear()
         startup_limit = int(self._config.memory.startup_episode_limit)
         recent_episodes = (
-            self.memory_store.load_episodes(limit=startup_limit)
-            if startup_limit > 0
-            else []
+            self.memory_store.load_episodes(limit=startup_limit) if startup_limit > 0 else []
         )
         unconsolidated_episodes = self.memory_store.load_episodes(
             limit=None,
@@ -355,14 +358,16 @@ class SentientAgent:
             )
             self.semantic_memory._nodes[node.node_id] = node
             self.semantic_memory._label_index[node.label.lower()] = node.node_id
-            knowledge_sync_batch.append({
-                "node_id": node.node_id,
-                "label": node.label,
-                "category": node.category,
-                "content": node.content,
-                "confidence": node.confidence,
-                "last_updated": node.last_updated,
-            })
+            knowledge_sync_batch.append(
+                {
+                    "node_id": node.node_id,
+                    "label": node.label,
+                    "category": node.category,
+                    "content": node.content,
+                    "confidence": node.confidence,
+                    "last_updated": node.last_updated,
+                }
+            )
         self.memory_store.sync_knowledge_embeddings(knowledge_sync_batch)
 
         stored_edges = self.memory_store.load_knowledge_edges()
@@ -395,7 +400,9 @@ class SentientAgent:
                     category=item_data.get("category", "general"),
                     salience=float(item_data["salience"]),
                     entered_at=float(item_data.get("entered_at", time.time())),
-                    last_refreshed=float(item_data.get("last_refreshed", item_data.get("entered_at", time.time()))),
+                    last_refreshed=float(
+                        item_data.get("last_refreshed", item_data.get("entered_at", time.time()))
+                    ),
                     emotional_valence=float(item_data.get("emotional_valence", 0.0)),
                     access_count=int(item_data.get("access_count", 0)),
                     metadata=item_data.get("metadata", {}),
@@ -416,6 +423,24 @@ class SentientAgent:
             self.affect_state.dimensions.dominance = last_affect["dominance"]
             self.affect_state.dimensions.certainty = last_affect["certainty"]
             self.affect_state.dimensions.goal_congruence = last_affect["goal_congruence"]
+            # Restore baseline if persisted (added to to_dict)
+            baseline_data = last_affect.get("baseline")
+            if isinstance(baseline_data, dict):
+                self.affect_state.baseline.valence = baseline_data.get(
+                    "valence", self.affect_state.baseline.valence
+                )
+                self.affect_state.baseline.arousal = baseline_data.get(
+                    "arousal", self.affect_state.baseline.arousal
+                )
+                self.affect_state.baseline.dominance = baseline_data.get(
+                    "dominance", self.affect_state.baseline.dominance
+                )
+                self.affect_state.baseline.certainty = baseline_data.get(
+                    "certainty", self.affect_state.baseline.certainty
+                )
+                self.affect_state.baseline.goal_congruence = baseline_data.get(
+                    "goal_congruence", self.affect_state.baseline.goal_congruence
+                )
             self.affect_state.update_classification()
             logger.info(
                 "agent.affect_restored",
@@ -503,6 +528,7 @@ class SentientAgent:
 
         # Register built-in tools and wire their handlers to agent methods
         from gwenn.tools.builtin import register_builtin_tools
+
         register_builtin_tools(self.tool_registry)
         self._wire_builtin_tool_handlers()
 
@@ -529,6 +555,25 @@ class SentientAgent:
 
         # Seed genesis knowledge — immutable foundational facts about who Gwenn is
         self._seed_genesis_knowledge()
+
+        # ---- Layer 15: Orchestration ----
+        if self._config.orchestration.enabled:
+            from gwenn.orchestration.orchestrator import Orchestrator
+            from gwenn.orchestration.runners import InProcessSubagentRunner
+
+            runner = InProcessSubagentRunner(
+                engine=self.engine,
+                tool_registry=self.tool_registry,
+                tool_executor=self.tool_executor,
+                parent_model=self._config.claude.model,
+            )
+            self.orchestrator = Orchestrator(
+                config=self._config.orchestration,
+                runner=runner,
+                engine=self.engine,
+                redactor=self.redactor,
+            )
+            logger.info("agent.orchestrator_initialized")
 
         # Create heartbeat (needs reference to fully initialized agent)
         self.heartbeat = Heartbeat(self._config.heartbeat, self)
@@ -661,6 +706,10 @@ class SentientAgent:
 
         logger.info("agent.shutting_down")
         try:
+            # Stop the orchestrator (cancel active subagents)
+            if getattr(self, "orchestrator", None):
+                await self.orchestrator.shutdown()
+
             # Stop the heartbeat
             if self.heartbeat:
                 await self.heartbeat.stop()
@@ -674,9 +723,7 @@ class SentientAgent:
             # Persist episodic memories to disk
             memory_cfg = getattr(getattr(self, "_config", None), "memory", None)
             persist_recent = (
-                memory_cfg.shutdown_persist_recent_episodes
-                if memory_cfg is not None
-                else 0
+                memory_cfg.shutdown_persist_recent_episodes if memory_cfg is not None else 0
             )
             if persist_recent > 0:
                 episodes_to_persist = self.episodic_memory.retrieve_recent(n=persist_recent)
@@ -703,7 +750,8 @@ class SentientAgent:
                 if redactor is not None:
                     wm_items = [
                         {**item, "content": redactor.redact(item["content"])}
-                        if isinstance(item.get("content"), str) else item
+                        if isinstance(item.get("content"), str)
+                        else item
                         for item in wm_items
                     ]
             self.memory_store.save_working_memory(wm_items)
@@ -830,7 +878,8 @@ class SentientAgent:
         memory, affect state, identity, or any other subsystem.
         """
         validated = [
-            m for m in messages
+            m
+            for m in messages
             if isinstance(m, dict)
             and m.get("role") in ("user", "assistant")
             and isinstance(m.get("content"), str)
@@ -888,7 +937,9 @@ class SentientAgent:
 
         response_start = time.time()
         self._current_user_id = user_id
-        _history = conversation_history if conversation_history is not None else self._conversation_history
+        _history = (
+            conversation_history if conversation_history is not None else self._conversation_history
+        )
 
         # ---- Step 1: RECEIVE ----
         logger.info("agent.message_received", user_id=user_id, length=len(text))
@@ -967,10 +1018,12 @@ class SentientAgent:
         )
 
         # Add user message to conversation history
-        _history.append({
-            "role": "user",
-            "content": user_message.to_api_content(),
-        })
+        _history.append(
+            {
+                "role": "user",
+                "content": user_message.to_api_content(),
+            }
+        )
         self._trim_history(_history)
 
         # Prepare API-facing payload (tool list + optional redaction)
@@ -1012,7 +1065,8 @@ class SentientAgent:
                 felt = (
                     f"Tool {tool_name} completed successfully"
                     if succeeded
-                    else f"Tool {tool_name} failed — {error_text[:80]}" if error_text
+                    else f"Tool {tool_name} failed — {error_text[:80]}"
+                    if error_text
                     else f"Tool {tool_name} failed"
                 )
                 try:
@@ -1032,15 +1086,19 @@ class SentientAgent:
         response_text = loop_result.text
 
         # Add assistant response to conversation history
-        _history.append({
-            "role": "assistant",
-            "content": response_text,
-        })
+        _history.append(
+            {
+                "role": "assistant",
+                "content": response_text,
+            }
+        )
         self._trim_history(_history)
 
         # ---- Step 6: INTEGRATE ----
         await self._integrate_exchange(
-            text, response_text, user_id,
+            text,
+            response_text,
+            user_id,
             had_relevant_memories=bool(relevant_episodes),
             ethical_dimensions=ethical_dimensions,
         )
@@ -1135,8 +1193,7 @@ class SentientAgent:
             sections.append("<relevant_memories>")
             for episode, score in relevant_episodes[:5]:
                 sections.append(
-                    f"- [{episode.category}] (relevance={score:.2f}) "
-                    f"{episode.content[:200]}"
+                    f"- [{episode.category}] (relevance={score:.2f}) {episode.content[:200]}"
                 )
             sections.append("</relevant_memories>")
 
@@ -1145,8 +1202,10 @@ class SentientAgent:
             sections.append("<relevant_knowledge>")
             for node in relevant_knowledge[:3]:
                 confidence_label = (
-                    "certain" if node.confidence > 0.8
-                    else "likely" if node.confidence > 0.5
+                    "certain"
+                    if node.confidence > 0.8
+                    else "likely"
+                    if node.confidence > 0.5
                     else "tentative"
                 )
                 sections.append(f"- [{confidence_label}] {node.content[:200]}")
@@ -1305,9 +1364,7 @@ class SentientAgent:
             counts = self.consolidator.process_consolidation_response(response_text)
             memory_cfg = getattr(getattr(self, "_config", None), "memory", None)
             persist_after_consolidation = (
-                memory_cfg.persist_semantic_after_consolidation
-                if memory_cfg is not None
-                else True
+                memory_cfg.persist_semantic_after_consolidation if memory_cfg is not None else True
             )
             emotional_insights = list(getattr(self.consolidator, "last_emotional_insights", []))
             if emotional_insights:
@@ -1328,9 +1385,7 @@ class SentientAgent:
                     trigger="consolidation",
                     growth_notes=f"Emotional insights ({counts.get('emotional_insights', 0)}): {summary}",
                 )
-            self._persist_consolidated_episode_flags(
-                self.consolidator.last_processed_episode_ids
-            )
+            self._persist_consolidated_episode_flags(self.consolidator.last_processed_episode_ids)
             if persist_after_consolidation:
                 self._decay_and_prune_semantic_nodes()
                 self._persist_semantic_memory()
@@ -1345,7 +1400,10 @@ class SentientAgent:
                 marker()
 
     async def _integrate_exchange(
-        self, user_message: str, response: str, user_id: str,
+        self,
+        user_message: str,
+        response: str,
+        user_id: str,
         had_relevant_memories: bool = False,
         ethical_dimensions: Optional[list[EthicalDimension]] = None,
     ) -> None:
@@ -1453,12 +1511,24 @@ class SentientAgent:
     # Markers that indicate the user is correcting a previous claim.
     # Note: bare "wrong" is intentionally excluded — it appears too often in
     # non-corrective contexts ("what went wrong?", "the wrong approach").
-    _CORRECTION_MARKERS = frozenset({
-        "actually", "that's wrong", "that is wrong", "not correct", "incorrect",
-        "you're wrong", "you are wrong", "that's not right", "that is not right",
-        "no, it's", "no, its", "you're mistaken", "you are mistaken",
-        "that's incorrect", "that is incorrect",
-    })
+    _CORRECTION_MARKERS = frozenset(
+        {
+            "that's wrong",
+            "that is wrong",
+            "not correct",
+            "incorrect",
+            "you're wrong",
+            "you are wrong",
+            "that's not right",
+            "that is not right",
+            "no, it's",
+            "no, its",
+            "you're mistaken",
+            "you are mistaken",
+            "that's incorrect",
+            "that is incorrect",
+        }
+    )
 
     def _persist_affect_snapshot(
         self,
@@ -1499,7 +1569,9 @@ class SentientAgent:
             delta = 0.0
             if previous_state is not None:
                 try:
-                    emotion_changed = current_state.current_emotion != previous_state.current_emotion
+                    emotion_changed = (
+                        current_state.current_emotion != previous_state.current_emotion
+                    )
                 except Exception:
                     emotion_changed = False
                 try:
@@ -1587,8 +1659,20 @@ class SentientAgent:
                 )
 
         technical_markers = {
-            "api", "stack trace", "stacktrace", "function", "class", "module", "sql",
-            "regex", "latency", "pytest", "docker", "thread", "async", "refactor",
+            "api",
+            "stack trace",
+            "stacktrace",
+            "function",
+            "class",
+            "module",
+            "sql",
+            "regex",
+            "latency",
+            "pytest",
+            "docker",
+            "thread",
+            "async",
+            "refactor",
         }
         beginner_markers = {"beginner", "new to", "eli5", "explain simply", "non-technical"}
         technical_hits = sum(1 for marker in technical_markers if _has_word(text, marker))
@@ -1722,9 +1806,7 @@ class SentientAgent:
             tensions.append("Balancing harm reduction with user autonomy.")
 
         overall_alignment = (
-            sum(dimension_scores.values()) / len(dimension_scores)
-            if dimension_scores
-            else 0.5
+            sum(dimension_scores.values()) / len(dimension_scores) if dimension_scores else 0.5
         )
         confidence = min(0.9, 0.55 + (0.05 * len(dimension_scores)))
         assessment = EthicalAssessment(
@@ -1779,13 +1861,33 @@ class SentientAgent:
         """
         text = message.lower()
         positive_markers = {
-            "love", "great", "awesome", "happy", "glad", "wonderful",
-            "good", "thanks", "thank you", "appreciate", "excited",
+            "love",
+            "great",
+            "awesome",
+            "happy",
+            "glad",
+            "wonderful",
+            "good",
+            "thanks",
+            "thank you",
+            "appreciate",
+            "excited",
         }
         negative_markers = {
-            "hate", "angry", "sad", "afraid", "scared", "upset",
-            "frustrated", "terrible", "awful", "anxious", "devastated",
-            "worried", "panic", "depressed",
+            "hate",
+            "angry",
+            "sad",
+            "afraid",
+            "scared",
+            "upset",
+            "frustrated",
+            "terrible",
+            "awful",
+            "anxious",
+            "devastated",
+            "worried",
+            "panic",
+            "depressed",
         }
         _NEGATIONS = {"not", "no", "never", "don't", "doesn't", "didn't", "won't", "can't"}
 
@@ -1794,7 +1896,7 @@ class SentientAgent:
             match = re.search(r"\b" + re.escape(marker) + r"\b", txt)
             if not match:
                 return False
-            prefix_tokens = txt[:match.start()].split()[-4:]
+            prefix_tokens = txt[: match.start()].split()[-4:]
             return bool(set(prefix_tokens) & _NEGATIONS)
 
         positive_hits = 0
@@ -1802,13 +1904,13 @@ class SentientAgent:
         for m in positive_markers:
             if _has_word(text, m):
                 if _negated(text, m):
-                    negative_hits += 1   # "not happy" → negative
+                    negative_hits += 1  # "not happy" → negative
                 else:
                     positive_hits += 1
         for m in negative_markers:
             if _has_word(text, m):
                 if _negated(text, m):
-                    positive_hits += 1   # "not worried" → positive
+                    positive_hits += 1  # "not worried" → positive
                 else:
                     negative_hits += 1
         total_hits = positive_hits + negative_hits
@@ -1870,8 +1972,7 @@ class SentientAgent:
         ):
             confidence = 0.45
         elif any(
-            marker in response_lower
-            for marker in ("definitely", "certainly", "always", "never")
+            marker in response_lower for marker in ("definitely", "certainly", "always", "never")
         ):
             confidence = 0.80
         else:
@@ -1879,9 +1980,7 @@ class SentientAgent:
 
         record_confidence_claim = getattr(meta, "record_confidence_claim", None)
         if callable(record_confidence_claim):
-            claim = (
-                f"user={user_message[:100]!r}; response={response[:100]!r}"
-            )
+            claim = f"user={user_message[:100]!r}; response={response[:100]!r}"
             record_confidence_claim(
                 claim=claim,
                 stated_confidence=confidence,
@@ -1917,9 +2016,7 @@ class SentientAgent:
         if callable(assess_growth):
             _growth_metrics = getattr(meta, "_growth_metrics", {})
             # Honesty consistency: bumps when output is clean, dips on concerns.
-            current_hc = getattr(
-                _growth_metrics.get("honesty_consistency"), "current_level", 0.5
-            )
+            current_hc = getattr(_growth_metrics.get("honesty_consistency"), "current_level", 0.5)
             assess_growth(
                 "honesty_consistency",
                 min(1.0, current_hc + (0.01 if not concerns else -0.02)),
@@ -1927,9 +2024,7 @@ class SentientAgent:
             )
             # Reasoning quality: bumps when uncertainty is acknowledged.
             if confidence <= 0.5 and not concerns:
-                current_rq = getattr(
-                    _growth_metrics.get("reasoning_quality"), "current_level", 0.5
-                )
+                current_rq = getattr(_growth_metrics.get("reasoning_quality"), "current_level", 0.5)
                 assess_growth(
                     "reasoning_quality",
                     min(1.0, current_rq + 0.005),
@@ -1937,10 +2032,21 @@ class SentientAgent:
                 )
             # Emotional intelligence: bumps when the exchange was emotionally substantive.
             emotional_words = {
-                "feel", "feeling", "emotion", "sense", "care", "understand", "empathy",
-                "sorry", "glad", "worried", "concerned", "love", "hurt",
+                "feel",
+                "feeling",
+                "emotion",
+                "sense",
+                "care",
+                "understand",
+                "empathy",
+                "sorry",
+                "glad",
+                "worried",
+                "concerned",
+                "love",
+                "hurt",
             }
-            words_in_response = set(response.lower().split())
+            words_in_response = {w.strip(".,!?;:\"'()[]") for w in response.lower().split()}
             if len(words_in_response & emotional_words) >= 2:
                 current_ei = getattr(
                     _growth_metrics.get("emotional_intelligence"), "current_level", 0.5
@@ -2062,14 +2168,20 @@ class SentientAgent:
     @staticmethod
     def _sanitize_skill_identifier(name: str) -> str:
         import re as _re
+
         return _re.sub(r"[^a-z0-9_]", "_", (name or "").lower()).strip("_")
 
     @staticmethod
     def _build_skill_input_schema(parameters: Any) -> dict[str, Any]:
         params = parameters if isinstance(parameters, dict) else {}
+        # If already normalized by the loader (has "type" and "properties"
+        # keys), return it directly.
+        if "properties" in params and "type" in params:
+            return params
+        # Legacy fallback: flat dict of property_name -> property_schema
+        # with non-standard per-property "required" flags.
         required_params = [
-            k for k, v in params.items()
-            if isinstance(v, dict) and v.get("required", False)
+            k for k, v in params.items() if isinstance(v, dict) and v.get("required", False)
         ]
         clean_properties = {
             k: {pk: pv for pk, pv in v.items() if pk != "required"}
@@ -2126,6 +2238,7 @@ class SentientAgent:
                     f"Follow these instructions to complete the task:\n\n"
                     f"{rendered}"
                 )
+
             return handle_skill
 
         tool_def = ToolDefinition(
@@ -2134,9 +2247,7 @@ class SentientAgent:
             input_schema=input_schema,
             handler=make_handler(skill),
             risk_level=normalized_risk,
-            requires_approval=(
-                is_autonomous or normalized_risk in {"high", "critical"}
-            ),
+            requires_approval=(is_autonomous or normalized_risk in {"high", "critical"}),
             category=f"skill:{skill.category}",
             enabled=True,
             is_builtin=not is_autonomous,  # autonomous skills need human approval first
@@ -2216,8 +2327,7 @@ class SentientAgent:
         if skill_file.exists():
             return (
                 False,
-                f"Error: skill file already exists at {skill_file}. "
-                "Delete or rename it first.",
+                f"Error: skill file already exists at {skill_file}. Delete or rename it first.",
             )
 
         temp_file = skills_dir / f".{safe_name}.{int(time.time() * 1000)}.tmp.md"
@@ -2418,9 +2528,12 @@ class SentientAgent:
         # remember → store in episodic memory
         remember_tool = self.tool_registry.get("remember")
         if remember_tool:
+
             async def handle_remember(
-                content: str, importance: float = 0.5,
-                category: str = "fact", tags: list[str] | None = None,
+                content: str,
+                importance: float = 0.5,
+                category: str = "fact",
+                tags: list[str] | None = None,
             ) -> str:
                 episode = Episode(
                     content=content,
@@ -2434,13 +2547,17 @@ class SentientAgent:
                 self.episodic_memory.encode(episode)
                 self._persist_episode(episode)
                 return f"Remembered: {content[:80]}..."
+
             remember_tool.handler = handle_remember
 
         # recall → search episodic memory
         recall_tool = self.tool_registry.get("recall")
         if recall_tool:
+
             async def handle_recall(
-                query: str, category: str | None = None, max_results: int = 5,
+                query: str,
+                category: str | None = None,
+                max_results: int = 5,
             ) -> str:
                 results = self.episodic_memory.retrieve(
                     query=query,
@@ -2454,11 +2571,13 @@ class SentientAgent:
                 for episode, score in results:
                     parts.append(f"[{score:.2f}] {episode.content[:200]}")
                 return "\n".join(parts)
+
             recall_tool.handler = handle_recall
 
         # check_emotional_state → return current affect
         emotion_tool = self.tool_registry.get("check_emotional_state")
         if emotion_tool:
+
             async def handle_check_emotion() -> str:
                 d = self.affect_state.dimensions
                 return (
@@ -2467,21 +2586,26 @@ class SentientAgent:
                     f"Dominance: {d.dominance:.3f}, Certainty: {d.certainty:.3f}, "
                     f"Goal congruence: {d.goal_congruence:.3f}"
                 )
+
             emotion_tool.handler = handle_check_emotion
 
         # check_goals → return goal/need state
         goals_tool = self.tool_registry.get("check_goals")
         if goals_tool:
+
             async def handle_check_goals() -> str:
                 return (
                     self.goal_system.get_needs_summary()
-                    + "\n" + (self.goal_system.get_goals_summary() or "No active goals.")
+                    + "\n"
+                    + (self.goal_system.get_goals_summary() or "No active goals.")
                 )
+
             goals_tool.handler = handle_check_goals
 
         # set_note_to_self → store a persistent note in both episodic memory AND GWENN_CONTEXT.md
         note_tool = self.tool_registry.get("set_note_to_self")
         if note_tool:
+
             async def handle_set_note(note: str, section: str = "reminders") -> str:
                 # Store as a high-importance episodic memory with special tag
                 episode = Episode(
@@ -2504,21 +2628,27 @@ class SentientAgent:
                         persist_note = redactor.redact(persist_note)
                 existing_context = self.memory_store.load_persistent_context()
                 updated_context = _upsert_context_section(
-                    existing_context, section, persist_note,
+                    existing_context,
+                    section,
+                    persist_note,
                 )
                 self.memory_store.save_persistent_context(updated_context.strip())
 
                 return f"Note stored in '{section}': {note[:80]}..."
+
             note_tool.handler = handle_set_note
 
         # get_datetime → return current date/time from system clock
         datetime_tool = self.tool_registry.get("get_datetime")
         if datetime_tool:
+
             def handle_get_datetime(timezone: str | None = None) -> str:
                 import datetime as _dt
+
                 try:
                     if timezone:
                         import zoneinfo
+
                         tz = zoneinfo.ZoneInfo(timezone)
                         now = _dt.datetime.now(tz)
                     else:
@@ -2531,11 +2661,13 @@ class SentientAgent:
                     f"Timezone: {now.strftime('%Z (%z)')}\n"
                     f"ISO 8601: {now.isoformat()}"
                 )
+
             datetime_tool.handler = handle_get_datetime
 
         # calculate → safe math expression evaluator
         calc_tool = self.tool_registry.get("calculate")
         if calc_tool:
+
             def handle_calculate(expression: str) -> str:
                 import ast
                 import math as _math
@@ -2548,7 +2680,8 @@ class SentientAgent:
                     return "Error: expression is too long."
 
                 allowed_names: dict[str, Any] = {
-                    k: v for k, v in _math.__dict__.items()
+                    k: v
+                    for k, v in _math.__dict__.items()
                     if not k.startswith("_") and (callable(v) or isinstance(v, (int, float)))
                 }
                 allowed_names.update(
@@ -2635,6 +2768,7 @@ class SentientAgent:
                     return f"{expr} = {result}"
                 except Exception as exc:
                     return f"Error evaluating '{expr}': {exc}"
+
             calc_tool.handler = handle_calculate
 
         # fetch_url → HTTP GET via stdlib urllib
@@ -2720,7 +2854,9 @@ class SentientAgent:
 
                 sock = None
                 try:
-                    sock = socket.create_connection((target_ip, port), timeout=_fetch_socket_timeout)
+                    sock = socket.create_connection(
+                        (target_ip, port), timeout=_fetch_socket_timeout
+                    )
                     if parsed.scheme == "https":
                         tls_context = ssl.create_default_context()
                         sock = tls_context.wrap_socket(sock, server_hostname=host)
@@ -2783,11 +2919,13 @@ class SentientAgent:
                             sock.close()
                         except OSError:
                             pass
+
             fetch_tool.handler = handle_fetch_url
 
         # convert_units → pure-Python unit conversion
         convert_tool = self.tool_registry.get("convert_units")
         if convert_tool:
+
             def handle_convert_units(value: float, from_unit: str, to_unit: str) -> str:
                 f = from_unit.lower().strip()
                 t = to_unit.lower().strip()
@@ -2798,8 +2936,16 @@ class SentientAgent:
 
                 temp_units = {"celsius", "fahrenheit", "kelvin"}
                 if f in temp_units or t in temp_units:
-                    to_c = {"celsius": lambda v: v, "fahrenheit": lambda v: (v - 32) * 5 / 9, "kelvin": lambda v: v - 273.15}
-                    from_c = {"celsius": lambda v: v, "fahrenheit": lambda v: v * 9 / 5 + 32, "kelvin": lambda v: v + 273.15}
+                    to_c = {
+                        "celsius": lambda v: v,
+                        "fahrenheit": lambda v: (v - 32) * 5 / 9,
+                        "kelvin": lambda v: v - 273.15,
+                    }
+                    from_c = {
+                        "celsius": lambda v: v,
+                        "fahrenheit": lambda v: v * 9 / 5 + 32,
+                        "kelvin": lambda v: v + 273.15,
+                    }
                     if f not in to_c:
                         return f"Unknown temperature unit: '{from_unit}'"
                     if t not in from_c:
@@ -2807,22 +2953,100 @@ class SentientAgent:
                     result = from_c[t](to_c[f](value))
                     return f"{value} {from_unit} = {round(result, 4)} {to_unit}"
 
-                distance = {"m": 1, "meter": 1, "meters": 1, "km": 1000, "kilometer": 1000, "kilometers": 1000, "mi": 1609.344, "mile": 1609.344, "miles": 1609.344, "ft": 0.3048, "foot": 0.3048, "feet": 0.3048, "in": 0.0254, "inch": 0.0254, "inches": 0.0254, "cm": 0.01, "centimeter": 0.01, "centimeters": 0.01, "mm": 0.001, "millimeter": 0.001, "millimeters": 0.001, "yd": 0.9144, "yard": 0.9144, "yards": 0.9144, "nmi": 1852, "nautical mile": 1852}
+                distance = {
+                    "m": 1,
+                    "meter": 1,
+                    "meters": 1,
+                    "km": 1000,
+                    "kilometer": 1000,
+                    "kilometers": 1000,
+                    "mi": 1609.344,
+                    "mile": 1609.344,
+                    "miles": 1609.344,
+                    "ft": 0.3048,
+                    "foot": 0.3048,
+                    "feet": 0.3048,
+                    "in": 0.0254,
+                    "inch": 0.0254,
+                    "inches": 0.0254,
+                    "cm": 0.01,
+                    "centimeter": 0.01,
+                    "centimeters": 0.01,
+                    "mm": 0.001,
+                    "millimeter": 0.001,
+                    "millimeters": 0.001,
+                    "yd": 0.9144,
+                    "yard": 0.9144,
+                    "yards": 0.9144,
+                    "nmi": 1852,
+                    "nautical mile": 1852,
+                }
                 if f in distance and t in distance:
                     result = value * distance[f] / distance[t]
                     return f"{value} {from_unit} = {round(result, 6)} {to_unit}"
 
-                weight = {"g": 1, "gram": 1, "grams": 1, "kg": 1000, "kilogram": 1000, "kilograms": 1000, "lb": 453.592, "lbs": 453.592, "pound": 453.592, "pounds": 453.592, "oz": 28.3495, "ounce": 28.3495, "ounces": 28.3495, "t": 1_000_000, "tonne": 1_000_000, "metric ton": 1_000_000, "mg": 0.001, "milligram": 0.001, "milligrams": 0.001}
+                weight = {
+                    "g": 1,
+                    "gram": 1,
+                    "grams": 1,
+                    "kg": 1000,
+                    "kilogram": 1000,
+                    "kilograms": 1000,
+                    "lb": 453.592,
+                    "lbs": 453.592,
+                    "pound": 453.592,
+                    "pounds": 453.592,
+                    "oz": 28.3495,
+                    "ounce": 28.3495,
+                    "ounces": 28.3495,
+                    "t": 1_000_000,
+                    "tonne": 1_000_000,
+                    "metric ton": 1_000_000,
+                    "mg": 0.001,
+                    "milligram": 0.001,
+                    "milligrams": 0.001,
+                }
                 if f in weight and t in weight:
                     result = value * weight[f] / weight[t]
                     return f"{value} {from_unit} = {round(result, 6)} {to_unit}"
 
-                storage = {"b": 1, "byte": 1, "bytes": 1, "kb": 1024, "kilobyte": 1024, "kilobytes": 1024, "mb": 1024**2, "megabyte": 1024**2, "megabytes": 1024**2, "gb": 1024**3, "gigabyte": 1024**3, "gigabytes": 1024**3, "tb": 1024**4, "terabyte": 1024**4, "terabytes": 1024**4, "pb": 1024**5, "petabyte": 1024**5, "petabytes": 1024**5}
+                storage = {
+                    "b": 1,
+                    "byte": 1,
+                    "bytes": 1,
+                    "kb": 1024,
+                    "kilobyte": 1024,
+                    "kilobytes": 1024,
+                    "mb": 1024**2,
+                    "megabyte": 1024**2,
+                    "megabytes": 1024**2,
+                    "gb": 1024**3,
+                    "gigabyte": 1024**3,
+                    "gigabytes": 1024**3,
+                    "tb": 1024**4,
+                    "terabyte": 1024**4,
+                    "terabytes": 1024**4,
+                    "pb": 1024**5,
+                    "petabyte": 1024**5,
+                    "petabytes": 1024**5,
+                }
                 if f in storage and t in storage:
                     result = value * storage[f] / storage[t]
                     return f"{value} {from_unit} = {round(result, 6)} {to_unit}"
 
-                speed = {"m/s": 1, "mps": 1, "km/h": 1 / 3.6, "kph": 1 / 3.6, "kmh": 1 / 3.6, "mph": 0.44704, "knot": 0.514444, "knots": 0.514444, "kn": 0.514444, "ft/s": 0.3048, "fps": 0.3048}
+                speed = {
+                    "m/s": 1,
+                    "mps": 1,
+                    "km/h": 1 / 3.6,
+                    "kph": 1 / 3.6,
+                    "kmh": 1 / 3.6,
+                    "mph": 0.44704,
+                    "knot": 0.514444,
+                    "knots": 0.514444,
+                    "kn": 0.514444,
+                    "ft/s": 0.3048,
+                    "fps": 0.3048,
+                }
                 if f in speed and t in speed:
                     result = value * speed[f] / speed[t]
                     return f"{value} {from_unit} = {round(result, 6)} {to_unit}"
@@ -2835,11 +3059,13 @@ class SentientAgent:
                     "storage (bytes/KB/MB/GB/TB/PB), "
                     "speed (m/s/km/h/mph/knots/ft/s)."
                 )
+
             convert_tool.handler = handle_convert_units
 
         # get_calendar → calendar display and date arithmetic
         calendar_tool = self.tool_registry.get("get_calendar")
         if calendar_tool:
+
             def handle_get_calendar(
                 action: str,
                 year: int | None = None,
@@ -2893,11 +3119,13 @@ class SentientAgent:
                         return f"Invalid date: {e}. Use YYYY-MM-DD."
 
                 return f"Unknown action '{action}'. Use: show_month, day_of_week, days_between, days_until."
+
             calendar_tool.handler = handle_get_calendar
 
         # generate_token → cryptographically secure random values
         token_tool = self.tool_registry.get("generate_token")
         if token_tool:
+
             def handle_generate_token(
                 token_type: str,
                 length: int = 32,
@@ -2926,17 +3154,20 @@ class SentientAgent:
                         return "Provide a 'choices' list to pick from."
                     return secrets.choice(choices)
                 return f"Unknown token_type: '{token_type}'."
+
             token_tool.handler = handle_generate_token
 
         # format_json → pretty-print / validate / minify JSON
         json_tool = self.tool_registry.get("format_json")
         if json_tool:
+
             def handle_format_json(
                 json_string: str,
                 action: str = "format",
                 indent: int = 2,
             ) -> str:
                 import json as _json
+
                 try:
                     parsed = _json.loads(json_string)
                 except _json.JSONDecodeError as e:
@@ -2955,11 +3186,13 @@ class SentientAgent:
                 if action == "minify":
                     return _json.dumps(parsed, separators=(",", ":"), ensure_ascii=False)
                 return f"Unknown action '{action}'. Use: format, validate, minify."
+
             json_tool.handler = handle_format_json
 
         # encode_decode → base64, URL encoding, HTML entities
         enc_tool = self.tool_registry.get("encode_decode")
         if enc_tool:
+
             def handle_encode_decode(text: str, scheme: str) -> str:
                 import base64
                 import html
@@ -2981,23 +3214,28 @@ class SentientAgent:
                 if scheme == "html_unescape":
                     return html.unescape(text)
                 return f"Unknown scheme '{scheme}'."
+
             enc_tool.handler = handle_encode_decode
 
         # hash_text → cryptographic hashes via hashlib
         hash_tool = self.tool_registry.get("hash_text")
         if hash_tool:
+
             def handle_hash_text(text: str, algorithm: str = "sha256") -> str:
                 import hashlib
+
                 try:
                     h = hashlib.new(algorithm, text.encode())
                     return f"{algorithm.upper()}: {h.hexdigest()}"
                 except ValueError:
                     return f"Unknown algorithm '{algorithm}'. Use: sha256, sha512, sha3_256, md5, sha1."
+
             hash_tool.handler = handle_hash_text
 
         # text_stats → word/character/sentence counts and reading time
         stats_tool = self.tool_registry.get("text_stats")
         if stats_tool:
+
             def handle_text_stats(text: str) -> str:
                 import re
                 from collections import Counter
@@ -3006,10 +3244,44 @@ class SentientAgent:
                 sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
                 paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
                 stopwords = {
-                    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to",
-                    "for", "of", "is", "it", "i", "you", "he", "she", "we", "they",
-                    "that", "this", "with", "as", "was", "are", "be", "have", "has",
-                    "had", "do", "did", "will", "would", "can", "could", "its", "my",
+                    "the",
+                    "a",
+                    "an",
+                    "and",
+                    "or",
+                    "but",
+                    "in",
+                    "on",
+                    "at",
+                    "to",
+                    "for",
+                    "of",
+                    "is",
+                    "it",
+                    "i",
+                    "you",
+                    "he",
+                    "she",
+                    "we",
+                    "they",
+                    "that",
+                    "this",
+                    "with",
+                    "as",
+                    "was",
+                    "are",
+                    "be",
+                    "have",
+                    "has",
+                    "had",
+                    "do",
+                    "did",
+                    "will",
+                    "would",
+                    "can",
+                    "could",
+                    "its",
+                    "my",
                 }
                 meaningful = [w for w in words if w not in stopwords and len(w) > 2]
                 top = Counter(meaningful).most_common(5)
@@ -3026,11 +3298,13 @@ class SentientAgent:
                     f"Top words:          {', '.join(f'{w} ({c})' for w, c in top)}",
                 ]
                 return "\n".join(lines)
+
             stats_tool.handler = handle_text_stats
 
         # get_system_info → OS, Python, CPU, disk, process memory
         sysinfo_tool = self.tool_registry.get("get_system_info")
         if sysinfo_tool:
+
             def handle_get_system_info() -> str:
                 import os
                 import platform
@@ -3038,10 +3312,15 @@ class SentientAgent:
 
                 uname = platform.uname()
                 disk = shutil.disk_usage("/")
-                gb = 1024 ** 3
+                gb = 1024**3
                 try:
                     import resource
-                    mem_str = f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB (peak RSS)"
+
+                    ru_maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                    # ru_maxrss is KB on Linux, bytes on macOS
+                    import sys as _sys
+                    divisor = 1024 if _sys.platform != "darwin" else (1024 * 1024)
+                    mem_str = f"{ru_maxrss / divisor:.1f} MB (peak RSS)"
                 except Exception:
                     mem_str = "unavailable"
 
@@ -3054,11 +3333,13 @@ class SentientAgent:
                     f"Hostname:  {uname.node}",
                 ]
                 return "\n".join(lines)
+
             sysinfo_tool.handler = handle_get_system_info
 
         # skill_builder → create a new skill file and hot-register it
         sb_tool = self.tool_registry.get("skill_builder")
         if sb_tool:
+
             def handle_skill_builder(
                 name: str,
                 description: str,
@@ -3078,11 +3359,13 @@ class SentientAgent:
                     tags=tags,
                 )
                 return message
+
             sb_tool.handler = handle_skill_builder
 
         # list_skills → return the skills catalog
         ls_tool = self.tool_registry.get("list_skills")
         if ls_tool:
+
             def handle_list_skills() -> str:
                 if self.skill_registry.count == 0:
                     return (
@@ -3091,11 +3374,13 @@ class SentientAgent:
                         f".md file into '{self._config.skills_dir}'."
                     )
                 return self.skill_registry.generate_catalog()
+
             ls_tool.handler = handle_list_skills
 
         # delete_skill → unregister and delete a skill file
         del_skill_tool = self.tool_registry.get("delete_skill")
         if del_skill_tool:
+
             def handle_delete_skill(name: str) -> str:
                 skill = self.skill_registry.get(name)
                 if skill is None:
@@ -3112,11 +3397,13 @@ class SentientAgent:
                 self._update_skills_catalog()
                 logger.info("agent.skill_deleted", name=name)
                 return f"Skill '{name}' deleted and unregistered successfully."
+
             del_skill_tool.handler = handle_delete_skill
 
         # reload_skills → scan directory for new skill files without restarting
         reload_tool = self.tool_registry.get("reload_skills")
         if reload_tool:
+
             def handle_reload_skills() -> str:
                 existing_names = {s.name for s in self.skill_registry.all_skills()}
                 skill_defs = discover_skills(self._config.skills_dir)
@@ -3134,14 +3421,24 @@ class SentientAgent:
                     self._update_skills_catalog()
                 return (
                     f"Reload complete: {new_count} new skill(s) loaded"
-                    + (f", {skipped_count} already registered or skipped." if skipped_count else ".")
-                    + (" Use `delete_skill` first to replace an existing skill." if skipped_count else "")
+                    + (
+                        f", {skipped_count} already registered or skipped."
+                        if skipped_count
+                        else "."
+                    )
+                    + (
+                        " Use `delete_skill` first to replace an existing skill."
+                        if skipped_count
+                        else ""
+                    )
                 )
+
             reload_tool.handler = handle_reload_skills
 
         # update_skill → atomically replace a skill file and re-register
         upd_skill_tool = self.tool_registry.get("update_skill")
         if upd_skill_tool:
+
             def handle_update_skill(
                 name: str,
                 description: str,
@@ -3163,11 +3460,13 @@ class SentientAgent:
                     version=version,
                 )
                 return message
+
             upd_skill_tool.handler = handle_update_skill
 
         # search_knowledge → query the semantic knowledge graph
         sk_tool = self.tool_registry.get("search_knowledge")
         if sk_tool:
+
             def handle_search_knowledge(
                 query: str,
                 category: str | None = None,
@@ -3188,15 +3487,150 @@ class SentientAgent:
                         f"[{node.confidence:.2f}] ({node.category}) {node.label}: {node.content[:300]}"
                     )
                 return "\n".join(parts)
+
             sk_tool.handler = handle_search_knowledge
 
         # think_aloud → log thought and return it
         think_tool = self.tool_registry.get("think_aloud")
         if think_tool:
+
             async def handle_think_aloud(thought: str) -> str:
                 logger.info("agent.think_aloud", thought=thought[:200])
                 return f"[Inner thought shared]: {thought}"
+
             think_tool.handler = handle_think_aloud
+
+        # ---- Orchestration tool handlers ----
+        self._wire_orchestration_tool_handlers()
+
+    def _wire_orchestration_tool_handlers(self) -> None:
+        """Connect orchestration tool definitions to the orchestrator."""
+        from gwenn.orchestration.models import SubagentSpec, SwarmSpec
+
+        spawn_tool = self.tool_registry.get("spawn_subagent")
+        if spawn_tool:
+
+            async def handle_spawn_subagent(
+                task_description: str,
+                tools: list[str] | None = None,
+                model: str = "",
+                timeout_seconds: float = 120.0,
+                filesystem_paths: list[str] | None = None,
+            ) -> str:
+                if not self.orchestrator:
+                    return "Orchestration is not initialized."
+                try:
+                    tool_names = tools or []
+                    # Populate tool schemas so Docker subagents know the parameters
+                    tool_schemas = {}
+                    for tname in tool_names:
+                        tdef = self.tool_registry.get(tname)
+                        if tdef and tdef.enabled:
+                            tool_schemas[tname] = {
+                                "description": tdef.description,
+                                "input_schema": tdef.input_schema,
+                            }
+                    spec = SubagentSpec(
+                        task_description=task_description,
+                        tools=tool_names,
+                        tool_schemas=tool_schemas,
+                        model=model,
+                        timeout_seconds=timeout_seconds,
+                        filesystem_access=filesystem_paths or [],
+                        runtime_tier=self._config.orchestration.default_runtime,
+                    )
+                    task_id = await self.orchestrator.spawn(spec)
+                    return f"Subagent spawned with task_id: {task_id}"
+                except Exception as e:
+                    return f"Failed to spawn subagent: {e}"
+
+            spawn_tool.handler = handle_spawn_subagent
+
+        swarm_tool = self.tool_registry.get("spawn_swarm")
+        if swarm_tool:
+
+            async def handle_spawn_swarm(
+                description: str,
+                tasks: list[dict] | None = None,
+                aggregation_strategy: str = "concatenate",
+                max_concurrent: int = 5,
+            ) -> str:
+                if not self.orchestrator:
+                    return "Orchestration is not initialized."
+                try:
+                    agents = []
+                    for task_def in tasks or []:
+                        task_tools = task_def.get("tools", [])
+                        task_schemas = {}
+                        for tname in task_tools:
+                            tdef = self.tool_registry.get(tname)
+                            if tdef and tdef.enabled:
+                                task_schemas[tname] = {
+                                    "description": tdef.description,
+                                    "input_schema": tdef.input_schema,
+                                }
+                        task_desc = task_def.get("task_description", "")
+                        if not task_desc:
+                            return "Each task must have a 'task_description' field."
+                        agents.append(
+                            SubagentSpec(
+                                task_description=task_desc,
+                                tools=task_tools,
+                                tool_schemas=task_schemas,
+                                runtime_tier=self._config.orchestration.default_runtime,
+                            )
+                        )
+                    swarm = SwarmSpec(
+                        description=description,
+                        agents=agents,
+                        aggregation_strategy=aggregation_strategy,
+                        max_concurrent=max_concurrent,
+                    )
+                    swarm_id = await self.orchestrator.spawn_swarm(swarm)
+                    return f"Swarm spawned with swarm_id: {swarm_id} ({len(agents)} agents)"
+                except Exception as e:
+                    return f"Failed to spawn swarm: {e}"
+
+            swarm_tool.handler = handle_spawn_swarm
+
+        check_tool = self.tool_registry.get("check_subagent")
+        if check_tool:
+
+            async def handle_check_subagent(task_id: str) -> str:
+                if not self.orchestrator:
+                    return "Orchestration is not initialized."
+                status = await self.orchestrator.check_status(task_id)
+                return json.dumps(status, indent=2)
+
+            check_tool.handler = handle_check_subagent
+
+        collect_tool = self.tool_registry.get("collect_results")
+        if collect_tool:
+
+            async def handle_collect_results(task_id: str, full: bool = False) -> str:
+                if not self.orchestrator:
+                    return "Orchestration is not initialized."
+                # Try as individual task first, then as swarm
+                result = await self.orchestrator.collect_result(task_id, full=full)
+                if result:
+                    return result.model_dump_json(indent=2)
+                swarm_result = await self.orchestrator.collect_swarm(task_id, full=full)
+                if swarm_result:
+                    return swarm_result.model_dump_json(indent=2)
+                return f"No result found for task_id: {task_id}"
+
+            collect_tool.handler = handle_collect_results
+
+        cancel_tool = self.tool_registry.get("cancel_subagent")
+        if cancel_tool:
+
+            async def handle_cancel_subagent(task_id: str) -> str:
+                if not self.orchestrator:
+                    return "Orchestration is not initialized."
+                cancelled = await self.orchestrator.cancel(task_id)
+                return f"{'Cancelled' if cancelled else 'Not found'}: {task_id}"
+
+            cancel_tool.handler = handle_cancel_subagent
 
     @staticmethod
     def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -3264,13 +3698,13 @@ class SentientAgent:
                 "Review this autonomous thought and decide whether a new reusable skill should be created.\n"
                 "Return exactly one JSON object with keys:\n"
                 "{"
-                "\"should_create\": boolean, "
-                "\"name\": string, "
-                "\"description\": string, "
-                "\"instructions\": string, "
-                "\"parameters\": object, "
-                "\"category\": string, "
-                "\"risk_level\": \"low\"|\"medium\"|\"high\"|\"critical\""
+                '"should_create": boolean, '
+                '"name": string, '
+                '"description": string, '
+                '"instructions": string, '
+                '"parameters": object, '
+                '"category": string, '
+                '"risk_level": "low"|"medium"|"high"|"critical"'
                 "}.\n"
                 "Constraints:\n"
                 "- Use snake_case for name.\n"
@@ -3467,7 +3901,7 @@ class SentientAgent:
         end_idx = current.find(end_marker)
         if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
             before = current[:start_idx].strip()
-            after = current[end_idx + len(end_marker):].strip()
+            after = current[end_idx + len(end_marker) :].strip()
             parts = [part for part in (before, candidate, after) if part]
             return "\n\n".join(parts).strip()
 
@@ -3513,7 +3947,8 @@ class SentientAgent:
 
         # Remove edges that reference pruned nodes
         self.semantic_memory._edges = [
-            e for e in self.semantic_memory._edges
+            e
+            for e in self.semantic_memory._edges
             if e.source_id not in pruned_set and e.target_id not in pruned_set
         ]
         self.semantic_memory._edge_ids = {e.edge_id for e in self.semantic_memory._edges}
@@ -3551,14 +3986,16 @@ class SentientAgent:
                 metadata=getattr(node, "metadata", {}),
                 skip_vector=True,
             )
-            knowledge_sync_batch.append({
-                "node_id": node.node_id,
-                "label": label,
-                "category": node.category,
-                "content": content,
-                "confidence": node.confidence,
-                "last_updated": node.last_updated,
-            })
+            knowledge_sync_batch.append(
+                {
+                    "node_id": node.node_id,
+                    "label": label,
+                    "category": node.category,
+                    "content": content,
+                    "confidence": node.confidence,
+                    "last_updated": node.last_updated,
+                }
+            )
         self.memory_store.sync_knowledge_embeddings(knowledge_sync_batch)
         self.memory_store.clear_knowledge_edges()
         for edge in self.semantic_memory._edges:
@@ -3598,11 +4035,7 @@ class SentientAgent:
             importance = float(getattr(episode, "importance", 1.0))
         except (TypeError, ValueError):
             importance = 1.0
-        return (
-            consolidated
-            and timestamp < cutoff
-            and importance < max_importance
-        )
+        return consolidated and timestamp < cutoff and importance < max_importance
 
     def _drop_pruned_episodes_from_memory(
         self,
@@ -3688,11 +4121,15 @@ class SentientAgent:
         )
 
     def _persist_episode(
-        self, episode: Episode, *, skip_vector: bool = False,
+        self,
+        episode: Episode,
+        *,
+        skip_vector: bool = False,
     ) -> None:
         """Persist an episode with centralised redaction policy handling."""
         self.memory_store.save_episode(
-            self._episode_for_persistence(episode), skip_vector=skip_vector,
+            self._episode_for_persistence(episode),
+            skip_vector=skip_vector,
         )
 
     def _snapshot_identity_state(

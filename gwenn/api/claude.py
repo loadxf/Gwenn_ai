@@ -73,6 +73,7 @@ class CognitiveEngine:
             self._retry_max_delay = float(config.retry_max_delay)
             self._retry_exponential_base = float(config.retry_exponential_base)
             self._retry_jitter_range = float(config.retry_jitter_range)
+            self._thinking_budget = int(config.thinking_budget)
 
             # Telemetry
             self._total_input_tokens = 0
@@ -313,9 +314,13 @@ class CognitiveEngine:
 
         # Add extended thinking if requested
         if enable_thinking:
-            # Adaptive thinking mode no longer accepts budget_tokens in current
-            # Anthropic API validation for this model/auth path.
-            kwargs["thinking"] = {"type": "adaptive"}
+            if self._thinking_budget > 0:
+                kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": self._thinking_budget,
+                }
+            else:
+                kwargs["thinking"] = {"type": "adaptive"}
 
         # Proactive OAuth refresh — re-read token before it expires
         self._maybe_refresh_oauth()

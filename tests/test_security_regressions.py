@@ -48,7 +48,8 @@ def test_consolidation_prompt_caps_episode_count() -> None:
     prompt = engine.get_consolidation_prompt()
     assert prompt is not None
     assert len(engine._pending_episode_ids) == 2
-    assert set(engine._pending_episode_ids) == {"ep-2", "ep-3"}
+    # Oldest-first selection to prevent starvation of older episodes
+    assert set(engine._pending_episode_ids) == {"ep-1", "ep-2"}
 
 
 def test_goal_priorities_refresh_from_current_need_state() -> None:

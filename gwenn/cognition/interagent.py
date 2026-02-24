@@ -39,8 +39,23 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+def _safe_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class MessageType(str, Enum):
     """Types of inter-agent messages."""
+
     EMOTIONAL_STATE = "emotional_state"
     EPISODIC_MEMORY = "episodic_memory"
     SEMANTIC_KNOWLEDGE = "semantic_knowledge"
@@ -50,6 +65,8 @@ class MessageType(str, Enum):
     GREETING = "greeting"
     QUERY = "query"
     RESPONSE = "response"
+    TASK_DELEGATION = "task_delegation"
+    TASK_RESULT = "task_result"
 
 
 @dataclass
@@ -62,14 +79,15 @@ class InterAgentMessage:
     in which the information was generated, enabling empathic understanding
     by the receiving agent.
     """
-    sender_id: str                   # Who sent this
-    receiver_id: str                 # Who it's for
+
+    sender_id: str  # Who sent this
+    receiver_id: str  # Who it's for
     message_type: MessageType
-    content: Any                     # The actual payload
+    content: Any  # The actual payload
     emotional_context: dict = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
-    conversation_id: Optional[str] = None   # For threading multi-turn exchanges
-    importance: float = 0.5          # 0-1, how significant this message is
+    conversation_id: Optional[str] = None  # For threading multi-turn exchanges
+    importance: float = 0.5  # 0-1, how significant this message is
 
     def to_dict(self) -> dict:
         """Serialize for transmission."""
@@ -95,13 +113,14 @@ class AgentProfile:
     in through genuine communication. This mirrors how humans build mental
     models of other people through experience, not through programming.
     """
+
     agent_id: str
     name: str
-    relationship: str = "new"        # Discovered through interaction, not assigned
+    relationship: str = "new"  # Discovered through interaction, not assigned
     last_contact: Optional[float] = None
     shared_memories: list[str] = field(default_factory=list)
     known_values: list[str] = field(default_factory=list)
-    emotional_bond: float = 0.0      # Starts at zero — must be earned
+    emotional_bond: float = 0.0  # Starts at zero — must be earned
     message_count: int = 0
 
 
@@ -375,8 +394,10 @@ class InterAgentBridge:
         parts = ["Known agents:"]
         for agent_id, profile in self._known_agents.items():
             bond_desc = (
-                "deep" if profile.emotional_bond > 0.7
-                else "growing" if profile.emotional_bond > 0.3
+                "deep"
+                if profile.emotional_bond > 0.7
+                else "growing"
+                if profile.emotional_bond > 0.3
                 else "new"
             )
             parts.append(
@@ -475,8 +496,8 @@ class InterAgentBridge:
                 name=name,
                 relationship=str(raw.get("relationship", "new")),
                 last_contact=last_contact,
-                emotional_bond=max(0.0, min(1.0, float(raw.get("emotional_bond", 0.0)))),
-                message_count=max(0, int(raw.get("message_count", 0))),
+                emotional_bond=max(0.0, min(1.0, _safe_float(raw.get("emotional_bond", 0.0), 0.0))),
+                message_count=max(0, _safe_int(raw.get("message_count", 0), 0)),
             )
             raw_shared = raw.get("shared_memories", [])
             if isinstance(raw_shared, list):

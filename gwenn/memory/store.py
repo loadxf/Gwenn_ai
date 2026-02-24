@@ -235,8 +235,8 @@ class MemoryStore:
             try:
                 self._vector_client = future.result(timeout=10)
             except concurrent.futures.TimeoutError:
-                # shutdown(wait=False) so we don't block on the stuck thread
-                pool.shutdown(wait=False)
+                future.cancel()
+                pool.shutdown(wait=False, cancel_futures=True)
                 logger.warning(
                     "memory_store.vector_lock_timeout",
                     msg="ChromaDB lock held by another process; "
@@ -1141,7 +1141,7 @@ class MemoryStore:
         payload = {
             "version": 1,
             "saved_at": time.time(),
-            "state": state,
+            "state": state if isinstance(state, dict) else {},
         }
         self._atomic_write_json(filepath, payload)
         logger.info("memory_store.ethics_saved", path=str(filepath))
@@ -1172,7 +1172,7 @@ class MemoryStore:
         payload = {
             "version": 1,
             "saved_at": time.time(),
-            "state": state,
+            "state": state if isinstance(state, dict) else {},
         }
         self._atomic_write_json(filepath, payload)
         logger.info("memory_store.inner_life_saved", path=str(filepath))
@@ -1214,12 +1214,28 @@ class MemoryStore:
         """
         conn = self._require_connection()
         cutoff = time.time() - (older_than_days * 86400.0)
+
+        # Collect episode IDs before deletion for ChromaDB cleanup
+        rows = conn.execute(
+            "SELECT episode_id FROM episodes WHERE timestamp < ? AND consolidated = 1 AND importance < ?",
+            (cutoff, max_importance),
+        ).fetchall()
+        pruned_ids = [r[0] for r in rows]
+
         cursor = conn.execute(
             "DELETE FROM episodes WHERE timestamp < ? AND consolidated = 1 AND importance < ?",
             (cutoff, max_importance),
         )
         deleted = cursor.rowcount
         conn.commit()
+
+        # Clean up corresponding ChromaDB vectors
+        if pruned_ids and self._episodes_collection:
+            try:
+                self._episodes_collection.delete(ids=pruned_ids)
+            except Exception as e:
+                logger.warning("memory_store.vector_prune_failed", error=str(e))
+
         if deleted > 0:
             logger.info(
                 "memory_store.episodes_pruned",

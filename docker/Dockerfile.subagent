@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install uv and sync dependencies (source not yet available)
+COPY pyproject.toml uv.lock ./
+RUN pip install --no-cache-dir uv && uv sync --no-dev --frozen --no-install-project
+
+# Copy application code and install the project
+COPY gwenn/ ./gwenn/
+RUN uv sync --no-dev --frozen
+
+# Run as non-root user
+RUN useradd -m subagent
+USER subagent
+
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["uv", "run", "python", "-m", "gwenn.orchestration.subagent_entry"]

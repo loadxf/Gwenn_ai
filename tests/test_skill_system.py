@@ -238,7 +238,7 @@ def test_update_existing_skill_succeeds(tmp_path):
     assert skill is not None
     assert skill.description == "Updated desc"
     assert skill.version == "1.1"
-    assert "y" in skill.parameters
+    assert "y" in skill.parameters.get("properties", skill.parameters)
 
     tool = agent.tool_registry.get("updatable")
     assert tool is not None
@@ -745,8 +745,8 @@ def test_update_skill_preserves_params_when_none(tmp_path):
     )
     assert ok is True
     skill = agent.skill_registry.get("param_test")
-    assert "x" in skill.parameters
-    assert skill.parameters["x"]["required"] is True
+    assert "x" in skill.parameters.get("properties", skill.parameters)
+    assert "x" in skill.parameters.get("required", [])
 
 
 def test_update_skill_replaces_params_when_explicit_empty(tmp_path):
@@ -767,7 +767,7 @@ def test_update_skill_replaces_params_when_explicit_empty(tmp_path):
     )
     assert ok is True
     skill = agent.skill_registry.get("param_test2")
-    assert skill.parameters == {}
+    assert skill.parameters.get("properties", skill.parameters) == {}
 
 
 # ---------------------------------------------------------------------------

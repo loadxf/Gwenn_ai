@@ -113,6 +113,7 @@ class AgenticLoop:
             and loop metadata
         """
         self._total_runs += 1
+        self._safety.reset_iteration_count()
         start_time = time.monotonic()
         iteration = 0
         all_tool_calls: list[dict[str, Any]] = []
@@ -180,7 +181,7 @@ class AgenticLoop:
             # --- Extract thinking (if extended thinking was enabled) ---
             thought = self._engine.extract_thinking(response)
             if thought:
-                thinking_text = thought
+                thinking_text = (thinking_text + "\n" + thought) if thinking_text else thought
 
             # --- Check stop reason ---
             if response.stop_reason == "end_turn":

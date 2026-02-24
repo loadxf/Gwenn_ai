@@ -85,16 +85,35 @@ class SessionManager:
 
     def trim_history(self, user_id: str) -> None:
         """
-        Cap the conversation history at max_history_length *pairs* (user +
-        assistant).  We preserve whole turn pairs to avoid sending a partial
-        context to the model.
+        Cap the conversation history at max_history_length *turns*.
+
+        A turn is defined as a sequence of messages starting with a "user"
+        role message.  Tool-use exchanges (assistant tool_use + user
+        tool_result) are part of the same turn and are not double-counted.
         """
         if user_id not in self._sessions:
             return
         history = self._sessions[user_id].conversation_history
-        max_entries = self._max_history * 2  # each turn = 2 entries
-        if len(history) > max_entries:
-            del history[: len(history) - max_entries]
+        if not history:
+            return
+
+        # Find turn boundaries (indices of "user" role messages)
+        turn_starts: list[int] = []
+        for i, msg in enumerate(history):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                # A tool_result content is not a new turn
+                content = msg.get("content")
+                if isinstance(content, list) and all(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content
+                ):
+                    continue
+                turn_starts.append(i)
+
+        if len(turn_starts) > self._max_history:
+            # Keep only the last max_history turns
+            cut_index = turn_starts[-self._max_history]
+            del history[:cut_index]
 
     def expire_stale_sessions(self) -> int:
         """

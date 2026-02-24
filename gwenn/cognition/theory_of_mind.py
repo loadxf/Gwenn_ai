@@ -468,9 +468,15 @@ class TheoryOfMind:
                 model.emotion_confidence = max(0.0, min(1.0, float(raw.get("emotion_confidence", 0.3))))
             except (TypeError, ValueError):
                 pass
-            for attr in ("verbosity_preference", "technical_level", "formality_level", "rapport_level"):
+            _RESTORE_DEFAULTS = {
+                "verbosity_preference": 0.5,
+                "technical_level": 0.5,
+                "formality_level": 0.5,
+                "rapport_level": 0.3,
+            }
+            for attr in _RESTORE_DEFAULTS:
                 try:
-                    setattr(model, attr, max(0.0, min(1.0, float(raw.get(attr, 0.5)))))
+                    setattr(model, attr, max(0.0, min(1.0, float(raw.get(attr, _RESTORE_DEFAULTS[attr])))))
                 except (TypeError, ValueError):
                     pass
             try:

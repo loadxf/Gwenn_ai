@@ -41,6 +41,45 @@ logger = structlog.get_logger(__name__)
 _FRONTMATTER_RE = re.compile(r"^\s*---\s*\n(\{.*?\})\s*\n---\s*\n?(.*)", re.DOTALL)
 
 
+def _normalize_parameter_schema(parameters: Any) -> dict[str, Any]:
+    """
+    Convert non-standard per-property ``"required": true`` flags into a
+    standard JSON Schema structure with a top-level ``"required"`` array,
+    and strip the non-standard key from each property definition.
+
+    Skill frontmatter uses a shorthand where each property has its own
+    ``"required": true`` flag.  Standard JSON Schema (and the tool input
+    validator) expects a top-level ``"required"`` array listing the names
+    of required properties.
+
+    Returns a dict that can be used directly as an ``input_schema``::
+
+        {
+            "type": "object",
+            "properties": { ... cleaned properties ... },
+            "required": ["param1", ...]       # only if any required
+        }
+    """
+    if not isinstance(parameters, dict):
+        return {"type": "object", "properties": {}}
+    # Already in standard JSON Schema form — pass through as-is.
+    if "properties" in parameters and "type" in parameters:
+        return parameters
+    required: list[str] = []
+    cleaned: dict[str, Any] = {}
+    for name, prop in parameters.items():
+        if not isinstance(prop, dict):
+            cleaned[name] = prop
+            continue
+        if prop.get("required"):
+            required.append(name)
+        cleaned[name] = {k: v for k, v in prop.items() if k != "required"}
+    schema: dict[str, Any] = {"type": "object", "properties": cleaned}
+    if required:
+        schema["required"] = required
+    return schema
+
+
 def parse_skill_file(path: Path) -> SkillDefinition | None:
     """
     Parse a skill .md file into a SkillDefinition.
@@ -85,6 +124,8 @@ def parse_skill_file(path: Path) -> SkillDefinition | None:
         logger.warning("skill_loader.empty_body", path=str(path))
         return None
 
+    parameters = _normalize_parameter_schema(meta.get("parameters", {}))
+
     return SkillDefinition(
         name=str(name),
         description=str(description),
@@ -92,7 +133,7 @@ def parse_skill_file(path: Path) -> SkillDefinition | None:
         category=str(meta.get("category", "skill")),
         version=str(meta.get("version", "1.0")),
         risk_level=str(meta.get("risk_level", "low")),
-        parameters=meta.get("parameters", {}),
+        parameters=parameters,
         tags=list(meta.get("tags", [])),
         source_file=path,
     )

@@ -217,8 +217,9 @@ def test_semantic_provenance_handles_empty_claim_terms() -> None:
             return None
 
     provenance = sm.verify_provenance(node.node_id, EpisodicStub())
-    assert provenance["supported"] is True
-    assert provenance["best_overlap"] == pytest.approx(1.0)
+    # Empty claim terms can't be verified — defaults to unsupported
+    assert provenance["supported"] is False
+    assert provenance["best_overlap"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

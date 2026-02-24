@@ -79,19 +79,14 @@ def _load_oauth_credentials() -> tuple[Optional[str], float]:
 
 
 def _load_claude_code_credentials() -> Optional[str]:
-    """Read the Claude Code OAuth access token from ~/.claude/.credentials.json."""
-    creds_path = Path.home() / ".claude" / ".credentials.json"
-    if not creds_path.exists():
-        return None
-    try:
-        data = json.loads(creds_path.read_text(encoding="utf-8"))
-        oauth = data.get("claudeAiOauth", {})
-        token = oauth.get("accessToken")
-        expires_at_ms = oauth.get("expiresAt", 0)
-        if token and time.time() * 1000 < expires_at_ms:
-            return token
-    except Exception as e:
-        logger.debug("config.oauth_credentials_unreadable", path=str(creds_path), error=str(e))
+    """Read the Claude Code OAuth access token from ~/.claude/.credentials.json.
+
+    Delegates to ``_load_oauth_credentials`` to avoid duplicated file-reading
+    logic and expiry checks.
+    """
+    token, expires_at = _load_oauth_credentials()
+    if token and time.time() < expires_at:
+        return token
     return None
 
 
@@ -172,20 +167,25 @@ class MemoryConfig(BaseSettings):
 
     # Consolidation settings
     consolidation_interval: float = Field(
-        600.0, alias="GWENN_CONSOLIDATION_INTERVAL",
+        600.0,
+        alias="GWENN_CONSOLIDATION_INTERVAL",
     )  # seconds between consolidation passes
     consolidation_max_episodes: int = Field(200, alias="GWENN_CONSOLIDATION_MAX_EPISODES")
     consolidation_recency_decay: float = Field(
-        0.995, alias="GWENN_CONSOLIDATION_RECENCY_DECAY",
+        0.995,
+        alias="GWENN_CONSOLIDATION_RECENCY_DECAY",
     )  # per-minute decay for recency scoring
     consolidation_importance_weight: float = Field(
-        0.4, alias="GWENN_CONSOLIDATION_IMPORTANCE_WEIGHT",
+        0.4,
+        alias="GWENN_CONSOLIDATION_IMPORTANCE_WEIGHT",
     )
     consolidation_recency_weight: float = Field(
-        0.3, alias="GWENN_CONSOLIDATION_RECENCY_WEIGHT",
+        0.3,
+        alias="GWENN_CONSOLIDATION_RECENCY_WEIGHT",
     )
     consolidation_relevance_weight: float = Field(
-        0.3, alias="GWENN_CONSOLIDATION_RELEVANCE_WEIGHT",
+        0.3,
+        alias="GWENN_CONSOLIDATION_RELEVANCE_WEIGHT",
     )
 
     # Factory defaults used for detecting whether the user explicitly set a path.
@@ -239,10 +239,12 @@ class AffectConfig(BaseSettings):
 
     # Emotional momentum — how quickly feelings shift
     momentum_decay: float = Field(
-        0.85, alias="GWENN_AFFECT_MOMENTUM_DECAY",
+        0.85,
+        alias="GWENN_AFFECT_MOMENTUM_DECAY",
     )  # emotions carry ~85% forward each heartbeat
     baseline_pull: float = Field(
-        0.05, alias="GWENN_AFFECT_BASELINE_PULL",
+        0.05,
+        alias="GWENN_AFFECT_BASELINE_PULL",
     )  # gentle drift back toward baseline each cycle
 
     model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
@@ -475,7 +477,8 @@ class PrivacyConfig(BaseSettings):
     redact_before_api: bool = Field(False, alias="GWENN_REDACT_BEFORE_API")
     redact_before_persist: bool = Field(False, alias="GWENN_REDACT_BEFORE_PERSIST")
     disabled_categories: StrList = Field(
-        default_factory=list, alias="GWENN_REDACTION_DISABLED_CATEGORIES",
+        default_factory=list,
+        alias="GWENN_REDACTION_DISABLED_CATEGORIES",
     )
 
     model_config = {"env_file": ".env", "extra": "ignore"}
@@ -629,9 +632,7 @@ class GwennConfig:
         # Original 10-layer configs
         self.claude = ClaudeConfig()
         self.memory = MemoryConfig()
-        self.skills_dir: Path = Path(
-            os.environ.get("GWENN_SKILLS_DIR", "./gwenn_skills")
-        )
+        self.skills_dir: Path = Path(os.environ.get("GWENN_SKILLS_DIR", "./gwenn_skills"))
         self.heartbeat = HeartbeatConfig()
         self.affect = AffectConfig()
         self.context = ContextConfig()

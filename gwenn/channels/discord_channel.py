@@ -108,6 +108,11 @@ class DiscordChannel(BaseChannel):
 
     async def stop(self) -> None:
         """Disconnect from Discord."""
+        if self._audio_transcriber is not None:
+            try:
+                await self._audio_transcriber.close()
+            except Exception:
+                logger.debug("discord_channel.audio_transcriber_close_error", exc_info=True)
         if self._client is not None:
             try:
                 await self._client.close()
@@ -225,7 +230,7 @@ class DiscordChannel(BaseChannel):
     _SUPPORTED_AUDIO_MIMES: set[str] = {
         "audio/ogg", "audio/mpeg", "audio/mp4", "audio/wav", "audio/webm",
     }
-    _AUDIO_EXTENSIONS: set[str] = {".ogg", ".mp3", ".m4a", ".wav", ".webm"}
+    _AUDIO_EXTENSIONS: set[str] = {".ogg", ".mp3", ".m4a", ".wav"}
     _MAX_IMAGE_BYTES: int = 20 * 1024 * 1024  # 20 MB
     _MAX_VIDEO_BYTES: int = 20 * 1024 * 1024  # 20 MB
 
