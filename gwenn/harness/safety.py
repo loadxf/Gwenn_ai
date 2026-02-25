@@ -22,6 +22,7 @@ even under adversarial conditions.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import re
 import time
 from collections import deque
@@ -33,6 +34,16 @@ import structlog
 from gwenn.config import SafetyConfig
 
 logger = structlog.get_logger(__name__)
+
+# Per-asyncio-Task iteration state.  Each concurrent respond() runs in its own
+# Task (created by PTB's concurrent_updates), so ContextVar gives automatic
+# isolation with zero locking.
+_iteration_count_var: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "_safety_iteration_count", default=0
+)
+_iteration_limit_override_var: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "_safety_iteration_limit_override", default=None
+)
 
 
 @dataclass
@@ -110,14 +121,15 @@ class SafetyGuard:
             max_output_tokens=config.max_output_tokens,
             max_api_calls=config.max_api_calls,
         )
-        self._iteration_count = 0
+        # Initialize per-task iteration state for this context.
+        _iteration_count_var.set(0)
+        _iteration_limit_override_var.set(None)
         self._last_reset = time.time()
         self._blocked_actions: list[dict[str, Any]] = []
         self._tool_registry = tool_registry  # Optional reference for risk tier checks
         self._emergency_stop_reason: Optional[str] = None
         self._model_calls_last_second: deque[float] = deque()
         self._model_calls_last_minute: deque[float] = deque()
-        self._iteration_limit_override: int | None = None
 
         # Dangerous patterns in tool inputs (checked as substrings, lowercased)
         self._dangerous_patterns = [
@@ -174,12 +186,13 @@ class SafetyGuard:
         if emergency_block:
             return emergency_block
 
-        # Check iteration limit
-        self._iteration_count += 1
+        # Check iteration limit (ContextVar — per-asyncio-Task)
+        count = _iteration_count_var.get() + 1
+        _iteration_count_var.set(count)
         effective_limit = (
-            self._iteration_limit_override or self._config.max_tool_iterations
+            _iteration_limit_override_var.get() or self._config.max_tool_iterations
         )
-        if self._iteration_count > effective_limit:
+        if count > effective_limit:
             return SafetyCheckResult(
                 allowed=False,
                 reason=f"Maximum iteration limit reached ({effective_limit})",
@@ -423,16 +436,16 @@ class SafetyGuard:
 
     def reset_iteration_count(self) -> None:
         """Reset the iteration counter (called at the start of each agentic run)."""
-        self._iteration_count = 0
+        _iteration_count_var.set(0)
         self._last_reset = time.time()
 
     def set_iteration_limit(self, limit: int) -> None:
         """Temporarily override the max iteration limit for the current run."""
-        self._iteration_limit_override = limit
+        _iteration_limit_override_var.set(limit)
 
     def reset_iteration_limit(self) -> None:
         """Clear the temporary iteration limit override."""
-        self._iteration_limit_override = None
+        _iteration_limit_override_var.set(None)
 
     def update_budget(self, input_tokens: int, output_tokens: int) -> None:
         """Update budget tracking with token usage from an API call."""
@@ -449,7 +462,6 @@ class SafetyGuard:
         """
         logger.critical("safety_guard.EMERGENCY_STOP", reason=reason)
         self._emergency_stop_reason = reason
-        self._iteration_count = self._config.max_tool_iterations + 1
         self._blocked_actions.append({
             "tool": "EMERGENCY_STOP",
             "reason": reason,
@@ -459,7 +471,7 @@ class SafetyGuard:
     @property
     def stats(self) -> dict[str, Any]:
         return {
-            "iterations_this_run": self._iteration_count,
+            "iterations_this_run": _iteration_count_var.get(),
             "max_iterations": self._config.max_tool_iterations,
             "budget": {
                 "total_tokens": self._budget.total_tokens,

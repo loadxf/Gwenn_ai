@@ -32,6 +32,7 @@ import os
 import secrets
 import subprocess
 import sys
+from contextvars import ContextVar
 from typing import Any, TYPE_CHECKING
 
 import structlog
@@ -52,6 +53,12 @@ from gwenn.channels.formatting import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# Tracks the active Telegram chat context (chat_id, thread_id) per asyncio task
+# so that request_approval() can route approval buttons to the originating topic.
+_ACTIVE_TG_CONTEXT: ContextVar[tuple[int, int | None] | None] = ContextVar(
+    "_ACTIVE_TG_CONTEXT", default=None
+)
 
 # Typing indicator expires after 5s on Telegram clients; refresh before that.
 _TYPING_REFRESH_INTERVAL: float = 4.0
@@ -337,8 +344,13 @@ class TelegramChannel(BaseChannel):
                 MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, self._on_video)
             )
         # Acknowledge unsupported media types so users aren't left in silence.
+        # Exclude service messages (topic created/closed, member joined/left, etc.)
+        # to avoid false "received media" replies on forum topic creation.
         self._app.add_handler(
-            MessageHandler(~filters.TEXT & ~filters.COMMAND, self._on_unsupported_media)
+            MessageHandler(
+                ~filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL,
+                self._on_unsupported_media,
+            )
         )
         # Route unhandled exceptions through structlog with differentiated handling (#2).
         self._app.add_error_handler(self._on_error)
@@ -468,17 +480,16 @@ class TelegramChannel(BaseChannel):
 
         # Route the selection back through the agent as a new message.
         selection_text = f"[Selected: {value}]"
-        lock = self._get_user_lock(raw_id)
+        session_scope_key = self._session_scope_key_for_callback(query, raw_id)
+        lock = self._get_scope_lock(session_scope_key)
         try:
             async with lock:
                 thread_id = getattr(query.message, "message_thread_id", None)
+                _ACTIVE_TG_CONTEXT.set((query.message.chat_id, thread_id))
                 typing_task = asyncio.create_task(
                     self._keep_typing(query.message.chat_id, thread_id)
                 )
                 try:
-                    session_scope_key = self._session_scope_key_for_callback(
-                        query, raw_id
-                    )
                     response = await self.handle_message(
                         raw_id,
                         selection_text,
@@ -516,7 +527,7 @@ class TelegramChannel(BaseChannel):
                     query.message, chunks, button_rows=button_rows
                 )
         finally:
-            self._release_user_lock(raw_id)
+            self._release_scope_lock(session_scope_key)
 
     def _session_scope_key_for_callback(self, query, raw_id: str) -> str:
         """Derive a session scope key from a callback query, mirroring _session_scope_key_for_update."""
@@ -570,24 +581,47 @@ class TelegramChannel(BaseChannel):
 
         try:
             sent_count = 0
-            owner_ids = self._get_owner_ids()
-            for uid in owner_ids:
-                chat_id = self._validate_platform_id(uid)
-                if chat_id is None:
-                    continue
+            # Prefer sending to the originating topic (if available) so the
+            # approval buttons appear in-context rather than in a 1:1 DM.
+            active_ctx = _ACTIVE_TG_CONTEXT.get()
+            if active_ctx:
+                ctx_chat_id, msg_thread_id = active_ctx
+                kwargs: dict[str, Any] = {
+                    "chat_id": ctx_chat_id,
+                    "text": text,
+                    "reply_markup": keyboard,
+                }
+                if msg_thread_id is not None:
+                    kwargs["message_thread_id"] = msg_thread_id
                 try:
-                    await self._app.bot.send_message(
-                        chat_id=chat_id,
-                        text=text,
-                        reply_markup=keyboard,
-                    )
+                    await self._app.bot.send_message(**kwargs)
                     sent_count += 1
                 except Exception:
                     logger.warning(
                         "telegram_channel.approval_send_failed",
-                        owner=uid,
+                        chat_id=ctx_chat_id,
                         exc_info=True,
                     )
+            else:
+                # Fallback: send to owner DMs (e.g. heartbeat/daemon triggers).
+                owner_ids = self._get_owner_ids()
+                for uid in owner_ids:
+                    chat_id = self._validate_platform_id(uid)
+                    if chat_id is None:
+                        continue
+                    try:
+                        await self._app.bot.send_message(
+                            chat_id=chat_id,
+                            text=text,
+                            reply_markup=keyboard,
+                        )
+                        sent_count += 1
+                    except Exception:
+                        logger.warning(
+                            "telegram_channel.approval_send_failed",
+                            owner=uid,
+                            exc_info=True,
+                        )
 
             if sent_count == 0:
                 logger.warning(
@@ -605,23 +639,38 @@ class TelegramChannel(BaseChannel):
                 tool=tool_name,
                 approval_id=approval_id,
             )
-            for uid in self._get_owner_ids():
-                chat_id = self._validate_platform_id(uid)
-                if chat_id is not None:
-                    try:
-                        await self._app.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"Approval for {tool_name} timed out after {timeout:.0f}s — denied.",
-                        )
-                    except Exception:
-                        pass
+            # Send timeout notification to the same context.
+            active_ctx = _ACTIVE_TG_CONTEXT.get()
+            if active_ctx:
+                ctx_chat_id, msg_thread_id = active_ctx
+                kwargs = {
+                    "chat_id": ctx_chat_id,
+                    "text": f"Approval for {tool_name} timed out after {timeout:.0f}s — denied.",
+                }
+                if msg_thread_id is not None:
+                    kwargs["message_thread_id"] = msg_thread_id
+                try:
+                    await self._app.bot.send_message(**kwargs)
+                except Exception:
+                    pass
+            else:
+                for uid in self._get_owner_ids():
+                    chat_id = self._validate_platform_id(uid)
+                    if chat_id is not None:
+                        try:
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"Approval for {tool_name} timed out after {timeout:.0f}s — denied.",
+                            )
+                        except Exception:
+                            pass
             return False
 
         finally:
             self._pending_approvals.pop(approval_id, None)
 
     def _session_scope_mode(self) -> str:
-        return self._normalize_scope_mode(self._config.session_scope_mode, default="per_chat")
+        return self._normalize_scope_mode(self._config.session_scope_mode, default="per_thread")
 
     def _session_scope_key_for_update(self, update, raw_user_id: str) -> str:
         chat_id = self._normalize_optional_id(
@@ -894,8 +943,10 @@ class TelegramChannel(BaseChannel):
         """Core message processing shared by text and media handlers."""
         if isinstance(message, str):
             message = UserMessage(text=message)
-        # Per-user lock prevents concurrent requests from the same user.
-        lock = self._get_user_lock(raw_id)
+        # Compute scope key BEFORE acquiring lock so different topics get
+        # different locks, enabling true concurrent processing.
+        session_scope_key = self._session_scope_key_for_update(update, raw_id)
+        lock = self._get_scope_lock(session_scope_key)
         try:
             async with lock:
                 self._cancel_flags.pop(raw_id, None)
@@ -906,11 +957,13 @@ class TelegramChannel(BaseChannel):
                 thread_id = getattr(
                     getattr(update, "message", None), "message_thread_id", None
                 )
+                # Store active chat context so request_approval() can route
+                # approval buttons to this topic instead of owner DMs.
+                _ACTIVE_TG_CONTEXT.set((update.effective_chat.id, thread_id))
                 typing_task = asyncio.create_task(
                     self._keep_typing(update.effective_chat.id, thread_id)
                 )
                 try:
-                    session_scope_key = self._session_scope_key_for_update(update, raw_id)
                     response = await self.handle_message(
                         raw_id,
                         message,
@@ -947,7 +1000,7 @@ class TelegramChannel(BaseChannel):
                 # Clear the "received" reaction now that we've replied.
                 await self._clear_reaction(update.message)
         finally:
-            self._release_user_lock(raw_id)
+            self._release_scope_lock(session_scope_key)
 
     # ------------------------------------------------------------------
     # Image download helpers

@@ -237,6 +237,17 @@ class ToolRegistry:
             if tool.risk_level == "critical":
                 continue
             tools.append(tool.to_api_format())
+
+        requested = set(names)
+        returned = {t["name"] for t in tools}
+        dropped = requested - returned
+        if dropped:
+            logger.warning(
+                "tool_registry.tools_filtered",
+                dropped=sorted(dropped),
+                max_risk=max_risk,
+            )
+
         return tools
 
     def get_definitions_by_name(self, names: list[str]) -> list["ToolDefinition"]:

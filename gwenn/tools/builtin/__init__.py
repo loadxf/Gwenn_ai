@@ -43,12 +43,12 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="spawn_subagent",
             description=(
-                "Spawn a focused subagent to handle a specific subtask in parallel. "
+                "Spawn a focused subagent to handle a specific subtask. "
                 "The subagent is an ephemeral worker — no memory, no identity, no emotion — "
-                "that runs independently and returns a result. Use this when you encounter "
-                "a decomposable task where parts can be researched or processed in parallel. "
-                "Each subagent gets its own tool set and safety budget. You must collect "
-                "the result with collect_results when done."
+                "that runs independently and returns a result. "
+                "IMPORTANT: After spawning, call collect_results(task_id) immediately — "
+                "it will block until the subagent completes. Do NOT poll with check_subagent "
+                "in a loop; that wastes iterations."
             ),
             input_schema={
                 "type": "object",
@@ -108,9 +108,9 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
                         "description": (
                             "Maximum agentic loop iterations for the subagent. "
                             "Higher values allow more complex multi-step tasks. "
-                            "Default 10, max 50."
+                            "Default 30, max 200."
                         ),
-                        "default": 10,
+                        "default": 30,
                     },
                 },
                 "required": ["task_description"],
@@ -175,9 +175,9 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
                                     "type": "integer",
                                     "description": (
                                         "Max agentic loop iterations for this task. "
-                                        "Default 10, max 50."
+                                        "Default 30, max 200."
                                     ),
-                                    "default": 10,
+                                    "default": 30,
                                 },
                             },
                             "required": ["task_description"],
@@ -208,9 +208,10 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="check_subagent",
             description=(
-                "Check the status of a running subagent or swarm. Returns whether "
-                "it is still running, completed, failed, or timed out, along with "
-                "elapsed time and a result preview if completed."
+                "Check the status of a running subagent or swarm without waiting. "
+                "Returns current status and elapsed time. "
+                "NOTE: Prefer collect_results over polling with check_subagent — "
+                "collect_results waits for completion automatically."
             ),
             input_schema={
                 "type": "object",
@@ -1220,7 +1221,7 @@ def _register_all_builtins(registry: ToolRegistry) -> None:
                 "Use this when you want the user to pick from a small set of discrete options "
                 "(e.g. confirming an action, selecting a category, choosing a next step).\n\n"
                 "Guidelines:\n"
-                "- Keep labels short (under 40 characters).\n"
+                "- Keep labels very short (1-2 words, max 20 characters).\n"
                 "- Use 2–6 choices for best results.\n"
                 "- The 'value' field is what gets sent back when the user clicks; "
                 "if omitted it defaults to the label."
@@ -1242,7 +1243,7 @@ def _register_all_builtins(registry: ToolRegistry) -> None:
                             "properties": {
                                 "label": {
                                     "type": "string",
-                                    "description": "Button text shown to the user.",
+                                    "description": "Button text (1-2 SHORT words only, e.g. 'Yes', 'Option A', 'Skip').",
                                 },
                                 "value": {
                                     "type": "string",

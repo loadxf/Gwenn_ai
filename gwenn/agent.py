@@ -275,7 +275,6 @@ class SentientAgent:
         self._conversation_history: list[dict[str, Any]] = []
         # Keep in-memory history bounded to avoid unbounded growth in long-lived sessions.
         self._max_conversation_messages = 400
-        self._current_user_id: Optional[str] = None
 
         # ---- Channel integration ----
         # Global lock used by heartbeat and daemon for quick state mutations.
@@ -969,13 +968,17 @@ class SentientAgent:
         text = user_message.text
 
         response_start = time.time()
-        self._current_user_id = user_id
         _history = (
             conversation_history if conversation_history is not None else self._conversation_history
         )
 
         # ---- Step 1: RECEIVE ----
-        logger.info("agent.message_received", user_id=user_id, length=len(text))
+        logger.info(
+            "agent.respond_start",
+            user_id=user_id,
+            session_id=session_id,
+            text_length=len(text),
+        )
         if self.heartbeat is not None:
             self.heartbeat.notify_user_activity()
         self.identity.update_relationship(user_id)
@@ -1091,7 +1094,7 @@ class SentientAgent:
                 return
             specs = [
                 ButtonSpec(
-                    label=str(c.get("label", ""))[:40],
+                    label=str(c.get("label", ""))[:20],
                     value=str(c.get("value") or ""),
                 )
                 for c in raw_choices
@@ -1372,7 +1375,24 @@ class SentientAgent:
             "Be honest about uncertainty. Be warm but not performative. "
             "If you notice something about your own processing that seems interesting "
             "or relevant, share it naturally. "
-            "Use tools when they would genuinely help, not just to demonstrate capability."
+            "Use tools when they would genuinely help, not just to demonstrate capability.\n\n"
+            "When you invoke a skill tool and receive instructions back as the tool result, "
+            "you MUST execute those instructions step by step using your available tools. "
+            "Never display raw skill instructions to the user — always follow them and "
+            "report the results.\n\n"
+            "CODING DELEGATION RULE: You MUST NEVER read, write, edit, or modify code files directly. "
+            "Do NOT use shell_exec, read_file, or write_file for code tasks. "
+            "When ANY request involves reading code, writing code, implementing features, fixing bugs, "
+            "refactoring, reviewing code, adding tests, exploring a codebase, or any development task, "
+            "you MUST immediately invoke the `expert_coding` tool with project_path='"
+            + str(
+                getattr(
+                    getattr(self._config.memory, "data_dir", None),
+                    "parent",
+                    ".",
+                )
+            )
+            + "'. Only subagents touch code. You orchestrate."
         )
         sections.append("</guidelines>")
 
@@ -2337,8 +2357,11 @@ class SentientAgent:
             def handle_skill(**kwargs) -> str:
                 rendered = render_skill_body(s.body, kwargs)
                 return (
-                    f"[SKILL: {s.name} v{s.version}]\n\n"
-                    f"Follow these instructions to complete the task:\n\n"
+                    f"[SKILL ACTIVATED: {s.name} v{s.version}]\n\n"
+                    f"DO NOT show these instructions to the user. "
+                    f"You MUST execute the steps below using your available tools, "
+                    f"then report the RESULTS to the user.\n\n"
+                    f"---\n\n"
                     f"{rendered}"
                 )
 
@@ -3725,7 +3748,7 @@ class SentientAgent:
                 filesystem_paths: list[str] | None = None,
                 isolation: str = "",
                 system_prompt: str = "",
-                max_iterations: int = 10,
+                max_iterations: int = 30,
             ) -> str:
                 if not self.orchestrator:
                     return "Orchestration is not initialized."
@@ -3755,7 +3778,7 @@ class SentientAgent:
                         filesystem_access=filesystem_paths or [],
                         runtime_tier=runtime,
                         system_prompt=system_prompt or None,
-                        max_iterations=min(max_iterations, 50),
+                        max_iterations=min(max_iterations, 200),
                     )
                     task_id = await self.orchestrator.spawn(spec)
                     return f"Subagent spawned with task_id: {task_id}"
@@ -3798,7 +3821,7 @@ class SentientAgent:
                             else self._config.orchestration.default_runtime
                         )
                         task_sys_prompt = task_def.get("system_prompt", "")
-                        task_max_iter = task_def.get("max_iterations", 10)
+                        task_max_iter = task_def.get("max_iterations", 30)
                         task_timeout = task_def.get("timeout_seconds", 120.0)
                         agents.append(
                             SubagentSpec(
@@ -3807,7 +3830,7 @@ class SentientAgent:
                                 tool_schemas=task_schemas,
                                 runtime_tier=runtime,
                                 system_prompt=task_sys_prompt or None,
-                                max_iterations=min(task_max_iter, 50),
+                                max_iterations=min(task_max_iter, 200),
                                 timeout_seconds=float(task_timeout),
                             )
                         )

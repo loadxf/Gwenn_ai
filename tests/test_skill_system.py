@@ -874,7 +874,7 @@ async def test_skill_execution_through_executor(tmp_path):
     )
     assert result.success is True
     assert "Process banana now." in result.result
-    assert "[SKILL: exec_test" in result.result
+    assert "[SKILL ACTIVATED: exec_test" in result.result
     assert _INJECTION_PREAMBLE in result.result
 
 

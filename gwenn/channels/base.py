@@ -50,6 +50,10 @@ class BaseChannel(ABC):
         self._user_locks: dict[str, asyncio.Lock] = {}
         self._user_lock_last_used: dict[str, float] = {}
         self._user_lock_cache_size: int = max(1, int(user_lock_cache_size))
+        # Per-scope locks — keyed by session scope key (e.g. "thread:123") for
+        # concurrent processing across different topics/threads.
+        self._scope_locks: dict[str, asyncio.Lock] = {}
+        self._scope_lock_last_used: dict[str, float] = {}
         # Per-user rate limiting — minimum seconds between accepted messages.
         self._rate_limit_interval: float = max(0.0, float(rate_limit_interval))
         self._user_last_message: dict[str, float] = {}
@@ -226,6 +230,43 @@ class BaseChannel(ABC):
         """Refresh LRU timestamp and run eviction after releasing a user lock."""
         self._user_lock_last_used[raw_user_id] = time.monotonic()
         self._evict_user_locks()
+
+    # ------------------------------------------------------------------
+    # Per-scope lock helpers (keyed by session scope key)
+    # ------------------------------------------------------------------
+
+    def _get_scope_lock(self, scope_key: str) -> asyncio.Lock:
+        """Return (or create) a per-scope asyncio lock and refresh its LRU timestamp."""
+        lock = self._scope_locks.get(scope_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._scope_locks[scope_key] = lock
+        self._scope_lock_last_used[scope_key] = time.monotonic()
+        self._evict_scope_locks()
+        return lock
+
+    def _evict_scope_locks(self) -> None:
+        """Evict the least-recently-used unlocked scope entries when the cache is full."""
+        if len(self._scope_locks) <= self._user_lock_cache_size:
+            return
+        excess = len(self._scope_locks) - self._user_lock_cache_size
+        for key, _ in sorted(self._scope_lock_last_used.items(), key=lambda item: item[1]):
+            lock = self._scope_locks.get(key)
+            if lock is None:
+                self._scope_lock_last_used.pop(key, None)
+                continue
+            if lock.locked():
+                continue
+            self._scope_locks.pop(key, None)
+            self._scope_lock_last_used.pop(key, None)
+            excess -= 1
+            if excess <= 0:
+                break
+
+    def _release_scope_lock(self, scope_key: str) -> None:
+        """Refresh LRU timestamp and run eviction after releasing a scope lock."""
+        self._scope_lock_last_used[scope_key] = time.monotonic()
+        self._evict_scope_locks()
 
     def _get_session_respond_lock(self, session_id: str) -> asyncio.Lock:
         """

@@ -504,7 +504,7 @@ class TelegramConfig(BaseSettings):
     max_history_length: int = Field(50, alias="TELEGRAM_MAX_HISTORY_LENGTH")
     session_ttl_seconds: float = Field(3600.0, alias="TELEGRAM_SESSION_TTL")
     # Conversation session scope: per_user | per_chat | per_thread (Telegram threads are forum topics).
-    session_scope_mode: str = Field("per_chat", alias="TELEGRAM_SESSION_SCOPE")
+    session_scope_mode: str = Field("per_thread", alias="TELEGRAM_SESSION_SCOPE")
     # Bound in-memory per-user lock cache to avoid unbounded growth.
     user_lock_cache_size: int = Field(512, alias="TELEGRAM_USER_LOCK_CACHE_SIZE")
     # Maximum concurrent updates PTB will process in parallel (0 = sequential).
@@ -534,7 +534,7 @@ class TelegramConfig(BaseSettings):
 
         self.max_history_length = max(1, int(self.max_history_length))
         self.session_ttl_seconds = max(1.0, float(self.session_ttl_seconds))
-        self.session_scope_mode = _normalize_session_scope_mode(self.session_scope_mode, "per_chat")
+        self.session_scope_mode = _normalize_session_scope_mode(self.session_scope_mode, "per_thread")
         self.user_lock_cache_size = max(1, int(self.user_lock_cache_size))
         self.concurrent_updates = max(0, int(self.concurrent_updates))
         return self

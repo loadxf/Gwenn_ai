@@ -69,7 +69,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 ### ARCHITECT
 - **Use for:** System design, implementation planning, impact analysis, dependency mapping
 - **Tools:** `read_file`, `think_aloud`
-- **Max iterations:** 15
+- **Max iterations:** 25
 - **Timeout:** 180s
 - **Default isolation:** `in_process`
 - **System prompt prefix:**
@@ -85,7 +85,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 ### BACKEND
 - **Use for:** Server logic, APIs, business logic, data processing, service layers
 - **Tools:** `read_file`, `write_file`, `think_aloud`
-- **Max iterations:** 20
+- **Max iterations:** 40
 - **Timeout:** 300s
 - **Default isolation:** `in_process`
 - **System prompt prefix:**
@@ -100,7 +100,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 ### FRONTEND
 - **Use for:** UI components, client-side logic, styling, user interactions
 - **Tools:** `read_file`, `write_file`, `think_aloud`
-- **Max iterations:** 20
+- **Max iterations:** 40
 - **Timeout:** 300s
 - **Default isolation:** `in_process`
 - **System prompt prefix:**
@@ -115,7 +115,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 ### DATABASE
 - **Use for:** Schema changes, migrations, query optimization, data modelling
 - **Tools:** `read_file`, `write_file`, `think_aloud`
-- **Max iterations:** 15
+- **Max iterations:** 30
 - **Timeout:** 240s
 - **Default isolation:** `in_process`
 - **System prompt prefix:**
@@ -130,7 +130,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 ### DEBUGGER
 - **Use for:** Bug investigation, root cause analysis, reproduction steps
 - **Tools:** `read_file`, `think_aloud`
-- **Max iterations:** 15
+- **Max iterations:** 25
 - **Timeout:** 180s
 - **Default isolation:** `in_process`
 - **System prompt prefix:**
@@ -145,7 +145,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 ### REVIEWER
 - **Use for:** Code review, quality assessment, standards compliance
 - **Tools:** `read_file`, `think_aloud`
-- **Max iterations:** 15
+- **Max iterations:** 25
 - **Timeout:** 180s
 - **Default isolation:** `in_process`
 - **System prompt prefix:**
@@ -161,7 +161,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 ### TESTER
 - **Use for:** Writing tests, edge case coverage, test infrastructure
 - **Tools:** `read_file`, `write_file`, `think_aloud`
-- **Max iterations:** 20
+- **Max iterations:** 40
 - **Timeout:** 300s
 - **Default isolation:** `in_process`
 - **System prompt prefix:**
@@ -177,7 +177,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 ### DOCS
 - **Use for:** Documentation, docstrings, API docs, changelog entries
 - **Tools:** `read_file`, `write_file`, `think_aloud`
-- **Max iterations:** 10
+- **Max iterations:** 20
 - **Timeout:** 120s
 - **Default isolation:** `in_process`
 - **System prompt prefix:**
@@ -201,7 +201,9 @@ Use `in_process` by default for speed. Escalate to `docker` when the task involv
 
 ## C. Phased Workflow
 
-Execute phases based on the `{style}` parameter:
+Execute phases based on the `{style}` parameter.
+
+**IMPORTANT:** Execute ALL phases autonomously without pausing for user input. Do NOT present intermediate results or ask for confirmation between phases. Complete the entire workflow and report final results at the end.
 
 | Phase | minimal | thorough | rapid |
 |-------|---------|----------|-------|
@@ -217,9 +219,9 @@ Spawn an **ARCHITECT** subagent with:
 - `task_description`: "Analyze the following task and produce an implementation plan: {task}. Project is at {project_path}."
 - `system_prompt`: Architect prefix + anti-vibe-coding directives
 - `tools`: ["read_file", "think_aloud"]
-- `max_iterations`: 15
+- `max_iterations`: 25
 
-**After collecting results:** Present the architect's analysis to the user. Wait for confirmation before proceeding. If the user requests changes to the plan, re-spawn the architect with updated context.
+**After collecting results:** Immediately proceed to the next phase using the architect's output. Do NOT wait for user confirmation between phases.
 
 ### Phase 2: PLAN (thorough only)
 
@@ -228,7 +230,7 @@ Based on the architect's output, break the implementation into discrete tasks. F
 - Which specific files it will modify (no overlaps between parallel tasks)
 - Dependencies between tasks (what must complete before what)
 
-**For 3+ subagents:** Present the task breakdown to the user for confirmation before spawning.
+**For 3+ subagents:** Proceed directly to spawning. Do NOT pause for user confirmation.
 
 ### Phase 3: IMPLEMENT
 
@@ -244,7 +246,7 @@ Each implementation subagent gets:
 
 **Context passing:** Embed relevant prior subagent results in subsequent task descriptions. Example: "The architect determined that [summary]. Your task is to implement step 3: [specific task]."
 
-**Progress monitoring:** For tasks with timeout > 120s, use `check_subagent` periodically to monitor progress.
+**Result collection:** After spawning, call `collect_results(task_id)` immediately — it blocks until the subagent finishes. Do NOT poll with `check_subagent` in a loop.
 
 ### Phase 4: REVIEW (thorough only)
 

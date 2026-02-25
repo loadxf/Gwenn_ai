@@ -4461,7 +4461,7 @@ class TestSkillHandlerRender:
         registered_call = agent.tool_registry.register.call_args
         tool_def = registered_call[0][0]
         output = tool_def.handler(action="search", target="files")
-        assert "SKILL: test_render_skill" in output
+        assert "SKILL ACTIVATED: test_render_skill" in output
         assert "search" in output
         assert "files" in output
 

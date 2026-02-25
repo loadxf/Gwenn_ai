@@ -123,7 +123,8 @@ def configure_logging() -> None:
         return
     _logging_configured = True
 
-    logging.basicConfig(format="%(message)s", level=logging.WARNING)
+    _log_level = os.environ.get("GWENN_LOG_LEVEL", "WARNING").upper()
+    logging.basicConfig(format="%(message)s", level=getattr(logging, _log_level, logging.WARNING))
 
     structlog.configure(
         processors=[
