@@ -283,10 +283,11 @@ Gwenn ships with tools across several categories:
 | Category | Tools |
 |----------|-------|
 | **Memory** | `remember`, `recall`, `search_knowledge`, `check_emotional_state`, `check_goals`, `set_note_to_self` |
-| **Utility** | `get_datetime`, `calculate`, `fetch_url`, `convert_units`, `get_calendar`, `generate_token`, `format_json`, `encode_decode`, `hash_text`, `text_stats`, `get_system_info` |
+| **Utility** | `get_datetime`, `calculate`, `fetch_url`, `convert_units`, `get_calendar`, `generate_token`, `format_json`, `encode_decode`, `hash_text`, `text_stats`, `get_system_info`, `present_choices` |
 | **Communication** | `think_aloud` |
 | **Skills** | `skill_builder`, `update_skill`, `delete_skill`, `reload_skills`, `list_skills` |
-| **Orchestration** | `spawn_subagent`, `spawn_swarm`, `collect_results` |
+| **Filesystem** | `read_file`, `write_file` |
+| **Orchestration** | `spawn_subagent`, `spawn_swarm`, `check_subagent`, `collect_results`, `cancel_subagent` |
 
 All tools go through a risk tier system (LOW/MEDIUM/HIGH/CRITICAL) with
 configurable deny-by-default policy for non-builtin tools.
@@ -337,7 +338,7 @@ pytest -q
 ruff check gwenn tests
 ```
 
-Current baseline: `2941 passed`, Ruff clean.
+Current baseline: `3030 passed`, Ruff clean.
 
 ## Tech stack
 
@@ -426,7 +427,7 @@ Gwenn_ai/
 │   └── privacy/
 │       └── redaction.py            # PII scrubbing for logs and persistence
 │
-├── tests/                          # 2941 tests across 35+ test files
+├── tests/                          # 3030 tests across 35+ test files
 │   ├── conftest.py
 │   ├── eval/                       # evaluation framework (ablation, benchmarks)
 │   └── test_*.py                   # unit, integration, adversarial, and safety tests
@@ -533,7 +534,7 @@ skills run during heartbeat cycles for self-monitoring and introspection.
 - [ ] Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) in channels
 - [X] MCP transport (JSON-RPC over stdio/HTTP, tool discovery and execution)
 - [X] SKILLS.md integration, autonomous skill running/development by Gwenn
-- [ ] Inline buttons in Discord/Telegram
+- [p] Inline buttons in Discord/Telegram
 - [ ] Obsidian, Dropbox, Notion support
 
 **Phase 4: Infrastructure & Service Features**

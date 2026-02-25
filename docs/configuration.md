@@ -16,11 +16,17 @@ pydantic-settings. Copy `.env.example` to `.env` and adjust values as needed.
 
 If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`.
 
+## Logging
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GWENN_LOG_LEVEL` | `WARNING` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+
 ## Claude API
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GWENN_MODEL` | `claude-opus-4-6` | Claude model to use. Options: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
+| `GWENN_MODEL` | `claude-sonnet-4-5-20250929` | Claude model to use. Recommended: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | `GWENN_MAX_TOKENS` | `8192` | Max output tokens per response |
 | `GWENN_THINKING_BUDGET` | `16000` | Token budget for extended thinking |
 | `GWENN_REQUEST_TIMEOUT_SECONDS` | `120.0` | API request timeout |
@@ -94,7 +100,7 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GWENN_MAX_TOOL_ITERATIONS` | `25` | Max iterations in the agentic tool-use loop |
+| `GWENN_MAX_TOOL_ITERATIONS` | `150` | Max iterations in the agentic tool-use loop |
 | `GWENN_REQUIRE_APPROVAL_FOR` | `["file_write","shell_exec","web_request"]` | Tools requiring human approval |
 | `GWENN_SANDBOX_ENABLED` | `True` | Enable deny-by-default for non-builtin tools |
 | `GWENN_ALLOWED_TOOLS` | `[]` | Allowlisted tool names (under deny-by-default) |
@@ -104,6 +110,8 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 | `GWENN_MAX_API_CALLS` | `0` | API call budget (0 = unlimited) |
 | `GWENN_MAX_MODEL_CALLS_PER_SECOND` | `0` | Rate limit per second (0 = unlimited) |
 | `GWENN_MAX_MODEL_CALLS_PER_MINUTE` | `0` | Rate limit per minute (0 = unlimited) |
+| `GWENN_TOOL_DEFAULT_POLICY` | `deny` | Default policy for non-builtin tools: `deny` or `allow` |
+| `GWENN_APPROVAL_TIMEOUT` | `120.0` | Seconds to wait for human approval of a tool call |
 
 ## Privacy
 
@@ -174,14 +182,14 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 | `GWENN_ORCHESTRATION_ENABLED` | `True` | Enable subagent system |
 | `GWENN_MAX_CONCURRENT_SUBAGENTS` | `5` | Max parallel subagents |
 | `GWENN_SUBAGENT_TIMEOUT` | `120.0` | Per-subagent timeout (seconds) |
-| `GWENN_SUBAGENT_MAX_ITERATIONS` | `10` | Max agentic loop iterations per subagent |
+| `GWENN_SUBAGENT_MAX_ITERATIONS` | `50` | Max agentic loop iterations per subagent |
 | `GWENN_SUBAGENT_MAX_DEPTH` | `3` | Max nesting depth |
 | `GWENN_SUBAGENT_MODEL` | *(empty)* | Model for subagents (empty = use parent) |
 | `GWENN_MAX_SUBAGENT_API_CALLS` | `100` | Session-wide API call cap for subagents |
 | `GWENN_MAX_ACTIVE_SWARMS` | `3` | Max concurrent swarms |
 | `GWENN_MAX_CONCURRENT_API_CALLS` | `3` | Max simultaneous API calls |
 | `GWENN_SUBAGENT_DEFAULT_TOOLS` | *(empty)* | Comma-separated default tools for subagents |
-| `GWENN_SUBAGENT_RUNTIME` | `docker` | Runtime: `docker` or `in_process` |
+| `GWENN_SUBAGENT_RUNTIME` | `in_process` | Runtime: `in_process` or `docker` |
 | `GWENN_SUBAGENT_DOCKER_IMAGE` | `gwenn-subagent:latest` | Docker image for subagent containers |
 | `GWENN_SUBAGENT_DOCKER_NETWORK` | `none` | Docker network mode |
 | `GWENN_SUBAGENT_DOCKER_MEMORY` | `256m` | Docker memory limit |
@@ -228,8 +236,9 @@ Each server object supports:
 | `TELEGRAM_OWNER_USER_IDS` | `[]` | Owner IDs for `/setup` and proactive messages |
 | `TELEGRAM_MAX_HISTORY_LENGTH` | `50` | Max messages in conversation history |
 | `TELEGRAM_SESSION_TTL` | `3600.0` | Session time-to-live (seconds) |
-| `TELEGRAM_SESSION_SCOPE` | `per_chat` | Session scope: `per_user`, `per_chat`, `per_thread` |
+| `TELEGRAM_SESSION_SCOPE` | `per_thread` | Session scope: `per_user`, `per_chat`, `per_thread` |
 | `TELEGRAM_CONCURRENT_UPDATES` | `64` | Max concurrent update processing (0 = sequential) |
+| `TELEGRAM_USER_LOCK_CACHE_SIZE` | `512` | Per-user lock cache size (bounds memory) |
 | `TELEGRAM_ENABLE_MEDIA` | `false` | Enable photo/document/voice handling |
 | `GWENN_AUTO_INSTALL_TELEGRAM` | `true` | Auto-install `python-telegram-bot` if missing |
 
@@ -245,6 +254,7 @@ Each server object supports:
 | `DISCORD_MAX_HISTORY_LENGTH` | `50` | Max messages in conversation history |
 | `DISCORD_SESSION_TTL` | `3600.0` | Session TTL (seconds) |
 | `DISCORD_SESSION_SCOPE` | `per_thread` | Session scope: `per_user`, `per_chat`, `per_thread` |
+| `DISCORD_USER_LOCK_CACHE_SIZE` | `512` | Per-user lock cache size (bounds memory) |
 | `DISCORD_SYNC_GUILD_ID` | *(empty)* | Guild ID for instant slash-command sync in dev |
 | `DISCORD_ENABLE_MEDIA` | `false` | Enable image attachment downloading |
 

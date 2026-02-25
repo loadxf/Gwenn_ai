@@ -82,7 +82,7 @@ GWENN_ORCHESTRATION_ENABLED=True
 # Concurrency and limits
 GWENN_MAX_CONCURRENT_SUBAGENTS=5
 GWENN_SUBAGENT_TIMEOUT=120.0
-GWENN_SUBAGENT_MAX_ITERATIONS=10
+GWENN_SUBAGENT_MAX_ITERATIONS=50
 GWENN_SUBAGENT_MAX_DEPTH=3
 GWENN_MAX_SUBAGENT_API_CALLS=100
 GWENN_MAX_ACTIVE_SWARMS=3
@@ -95,7 +95,7 @@ GWENN_MAX_CONCURRENT_API_CALLS=3
 # GWENN_SUBAGENT_DEFAULT_TOOLS=
 
 # Runtime: docker (isolated containers) or in_process
-GWENN_SUBAGENT_RUNTIME=docker
+GWENN_SUBAGENT_RUNTIME=in_process
 
 # Docker container settings
 GWENN_SUBAGENT_DOCKER_IMAGE=gwenn-subagent:latest
@@ -350,6 +350,14 @@ automatically allowed regardless of deny-by-default policy.
 | `hash_text` | SHA256, SHA512, SHA3, MD5, SHA1 |
 | `text_stats` | Word/character count, sentences, paragraphs, reading time |
 | `get_system_info` | OS, Python version, CPU, disk, memory info |
+| `present_choices` | Present multiple-choice options with Telegram inline buttons |
+
+### Filesystem tools
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read a file (for subagent filesystem access) |
+| `write_file` | Write a file (for subagent filesystem access) |
 
 ### Communication tools
 
@@ -373,7 +381,9 @@ automatically allowed regardless of deny-by-default policy.
 |------|-------------|
 | `spawn_subagent` | Create a focused worker for a subtask |
 | `spawn_swarm` | Launch multiple subagents with result aggregation |
+| `check_subagent` | Check status of a spawned subagent by `task_id` |
 | `collect_results` | Gather results from spawned tasks by `task_id` |
+| `cancel_subagent` | Cancel a running subagent by `task_id` |
 
 ---
 
@@ -578,7 +588,7 @@ GWENN_WHISPER_MODEL=whisper-large-v3-turbo
 ```bash
 TELEGRAM_MAX_HISTORY_LENGTH=50
 TELEGRAM_SESSION_TTL=3600.0          # 1 hour
-TELEGRAM_SESSION_SCOPE=per_chat      # per_user | per_chat | per_thread
+TELEGRAM_SESSION_SCOPE=per_thread    # per_user | per_chat | per_thread
 TELEGRAM_CONCURRENT_UPDATES=64
 ```
 
@@ -772,7 +782,7 @@ GWENN_MAX_OUTPUT_TOKENS=0
 GWENN_MAX_API_CALLS=0
 GWENN_MAX_MODEL_CALLS_PER_SECOND=0
 GWENN_MAX_MODEL_CALLS_PER_MINUTE=0
-GWENN_MAX_TOOL_ITERATIONS=25   # Max tool-use loop iterations
+GWENN_MAX_TOOL_ITERATIONS=150   # Max tool-use loop iterations
 ```
 
 ### Approval requirements
