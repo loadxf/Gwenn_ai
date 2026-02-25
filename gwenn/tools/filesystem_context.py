@@ -45,8 +45,13 @@ def validate_path(
             resolved = Path(os.path.realpath(requested))
         except (OSError, ValueError) as exc:
             return Path(), f"Invalid path: {exc}"
-        if require_exists and not resolved.exists():
-            return Path(), f"File not found: '{resolved}'."
+        if require_exists:
+            try:
+                exists = resolved.exists()
+            except PermissionError:
+                return Path(), f"Permission denied: '{resolved}'."
+            if not exists:
+                return Path(), f"File not found: '{resolved}'."
         return resolved, None
 
     # --- Denied (empty tuple — no paths granted) ---
@@ -76,8 +81,13 @@ def validate_path(
             "Access denied: symlink resolves outside allowed paths."
         )
 
-    if require_exists and not real.exists():
-        return Path(), f"File not found: '{real}'."
+    if require_exists:
+        try:
+            exists = real.exists()
+        except PermissionError:
+            return Path(), f"Permission denied: '{real}'."
+        if not exists:
+            return Path(), f"File not found: '{real}'."
 
     return real, None
 
