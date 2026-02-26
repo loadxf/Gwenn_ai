@@ -350,6 +350,7 @@ automatically allowed regardless of deny-by-default policy.
 | `hash_text` | SHA256, SHA512, SHA3, MD5, SHA1 |
 | `text_stats` | Word/character count, sentences, paragraphs, reading time |
 | `get_system_info` | OS, Python version, CPU, disk, memory info |
+| `run_command` | Execute a shell command and return stdout, stderr, exit code |
 | `present_choices` | Present multiple-choice options with Telegram inline buttons |
 
 ### Filesystem tools
@@ -758,7 +759,7 @@ Every tool is classified by risk:
 |------|--------|---------|
 | **LOW** | Auto-allow | `get_datetime`, `calculate`, `text_stats` |
 | **MEDIUM** | Auto-allow, logged | `fetch_url`, MCP tools, skills with network access |
-| **HIGH** | Requires human approval | `file_write`, `shell_exec` |
+| **HIGH** | Requires human approval | `file_write`, `shell_exec`, `run_command` |
 | **CRITICAL** | Denied by default | Must be explicitly unlocked per session |
 
 ### Deny-by-default policy
@@ -788,7 +789,7 @@ GWENN_MAX_TOOL_ITERATIONS=150   # Max tool-use loop iterations
 ### Approval requirements
 
 ```bash
-GWENN_REQUIRE_APPROVAL_FOR=["file_write","shell_exec","web_request"]
+GWENN_REQUIRE_APPROVAL_FOR=["file_write","shell_exec","run_command","web_request"]
 ```
 
 ---

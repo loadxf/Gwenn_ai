@@ -105,7 +105,7 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GWENN_MAX_TOOL_ITERATIONS` | `150` | Max iterations in the agentic tool-use loop |
-| `GWENN_REQUIRE_APPROVAL_FOR` | `["file_write","shell_exec","web_request"]` | Tools requiring human approval |
+| `GWENN_REQUIRE_APPROVAL_FOR` | `["file_write","shell_exec","run_command","web_request"]` | Tools requiring human approval |
 | `GWENN_SANDBOX_ENABLED` | `True` | Enable deny-by-default for non-builtin tools |
 | `GWENN_ALLOWED_TOOLS` | `[]` | Allowlisted tool names (under deny-by-default) |
 | `GWENN_DENIED_TOOLS` | `[]` | Blocklisted tool names (overrides allowlist) |
