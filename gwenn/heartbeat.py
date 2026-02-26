@@ -143,9 +143,9 @@ class Heartbeat:
 
     async def _loop(self) -> None:
         """The eternal heartbeat loop."""
-        _MAX_CONSECUTIVE = 10
-        _CIRCUIT_BASE_SECONDS = 60.0
-        _CIRCUIT_MAX_SECONDS = 900.0  # 15 min cap
+        _MAX_CONSECUTIVE = self._config.circuit_max_consecutive
+        _CIRCUIT_BASE_SECONDS = self._config.circuit_base_seconds
+        _CIRCUIT_MAX_SECONDS = self._config.circuit_max_seconds
 
         while self._running:
             if self._circuit_open_until is not None:

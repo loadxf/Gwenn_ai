@@ -239,6 +239,8 @@ class SentientAgent:
         self._mcp_client = MCPClient(self.tool_registry)
         self.tool_executor = ToolExecutor(
             registry=self.tool_registry,
+            default_timeout=config.safety.tool_default_timeout,
+            max_output_length=config.safety.tool_max_output_length,
             sandbox_enabled=config.safety.sandbox_enabled,
             sandbox_allowed_tools=config.safety.parse_allowed_tools(),
         )
@@ -274,7 +276,7 @@ class SentientAgent:
         # ---- Conversation state ----
         self._conversation_history: list[dict[str, Any]] = []
         # Keep in-memory history bounded to avoid unbounded growth in long-lived sessions.
-        self._max_conversation_messages = 400
+        self._max_conversation_messages = config.context.max_conversation_messages
 
         # ---- Channel integration ----
         # Global lock used by heartbeat and daemon for quick state mutations.

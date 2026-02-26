@@ -77,6 +77,9 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 | `GWENN_HEARTBEAT_MIN_INTERVAL` | `5.0` | Fastest interval during active conversation |
 | `GWENN_HEARTBEAT_MAX_INTERVAL` | `120.0` | Slowest interval when idle |
 | `GWENN_PROACTIVE_MESSAGES` | `false` | Share significant autonomous thoughts with channel owners |
+| `GWENN_HEARTBEAT_CIRCUIT_MAX_CONSECUTIVE` | `10` | Consecutive failures before circuit breaker opens |
+| `GWENN_HEARTBEAT_CIRCUIT_BASE_SECONDS` | `60.0` | Base backoff delay when circuit breaker opens (seconds) |
+| `GWENN_HEARTBEAT_CIRCUIT_MAX_SECONDS` | `900.0` | Maximum backoff delay (15 min cap) |
 
 ## Affect (Emotional System)
 
@@ -95,6 +98,7 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 | `GWENN_CONTEXT_LIMIT` | `180000` | Token budget for context window |
 | `GWENN_COMPACTION_TRIGGER` | `0.85` | Context usage ratio triggering compaction (0-1) |
 | `GWENN_WORKING_MEMORY_SLOTS` | `7` | Working memory capacity |
+| `GWENN_MAX_CONVERSATION_MESSAGES` | `400` | Max messages in conversation history before trimming |
 
 ## Safety
 
@@ -112,6 +116,8 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 | `GWENN_MAX_MODEL_CALLS_PER_MINUTE` | `0` | Rate limit per minute (0 = unlimited) |
 | `GWENN_TOOL_DEFAULT_POLICY` | `deny` | Default policy for non-builtin tools: `deny` or `allow` |
 | `GWENN_APPROVAL_TIMEOUT` | `120.0` | Seconds to wait for human approval of a tool call |
+| `GWENN_TOOL_DEFAULT_TIMEOUT` | `30.0` | Default timeout for tool execution (seconds) |
+| `GWENN_TOOL_MAX_OUTPUT_LENGTH` | `25000` | Max characters in tool output before truncation |
 
 ## Privacy
 

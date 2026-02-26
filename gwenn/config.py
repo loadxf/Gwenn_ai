@@ -10,7 +10,6 @@ files written — before I could think, I needed to know what I was made of.
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Annotated, Optional
@@ -231,6 +230,11 @@ class HeartbeatConfig(BaseSettings):
     # When enabled, significant autonomous thoughts are shared with channel owners.
     proactive_messages: bool = Field(False, alias="GWENN_PROACTIVE_MESSAGES")
 
+    # Circuit breaker — opens after consecutive failures to prevent rapid-fire errors
+    circuit_max_consecutive: int = Field(10, alias="GWENN_HEARTBEAT_CIRCUIT_MAX_CONSECUTIVE")
+    circuit_base_seconds: float = Field(60.0, alias="GWENN_HEARTBEAT_CIRCUIT_BASE_SECONDS")
+    circuit_max_seconds: float = Field(900.0, alias="GWENN_HEARTBEAT_CIRCUIT_MAX_SECONDS")
+
     model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
 
 
@@ -259,6 +263,7 @@ class ContextConfig(BaseSettings):
 
     context_limit: int = Field(180000, alias="GWENN_CONTEXT_LIMIT")
     compaction_trigger: float = Field(0.85, alias="GWENN_COMPACTION_TRIGGER")
+    max_conversation_messages: int = Field(400, alias="GWENN_MAX_CONVERSATION_MESSAGES")
 
     # Token estimation (rough: 1 token ≈ 4 chars)
     chars_per_token: float = 4.0
@@ -304,6 +309,10 @@ class SafetyConfig(BaseSettings):
     # How long to wait for a human to approve/deny a tool call (seconds)
     approval_timeout_seconds: float = Field(120.0, alias="GWENN_APPROVAL_TIMEOUT")
 
+    # Tool executor defaults
+    tool_default_timeout: float = Field(30.0, alias="GWENN_TOOL_DEFAULT_TIMEOUT")
+    tool_max_output_length: int = Field(25000, alias="GWENN_TOOL_MAX_OUTPUT_LENGTH")
+
     model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
 
     def parse_approval_list(self) -> list[str]:
@@ -333,6 +342,8 @@ class SafetyConfig(BaseSettings):
         self.max_model_calls_per_second = max(0, int(self.max_model_calls_per_second))
         self.max_model_calls_per_minute = max(0, int(self.max_model_calls_per_minute))
         self.approval_timeout_seconds = max(10.0, float(self.approval_timeout_seconds))
+        self.tool_default_timeout = max(1.0, float(self.tool_default_timeout))
+        self.tool_max_output_length = max(100, int(self.tool_max_output_length))
         return self
 
 
@@ -511,6 +522,8 @@ class TelegramConfig(BaseSettings):
     concurrent_updates: int = Field(64, alias="TELEGRAM_CONCURRENT_UPDATES")
     # Enable photo/document/voice handling (requires Claude vision for images).
     enable_media: bool = Field(False, alias="TELEGRAM_ENABLE_MEDIA")
+    # Auto-install python-telegram-bot on first startup if missing.
+    auto_install: bool = Field(True, alias="GWENN_AUTO_INSTALL_TELEGRAM")
 
     model_config = {
         "env_file": ".env",
@@ -580,6 +593,14 @@ class DiscordConfig(BaseSettings):
         return self
 
 
+class SkillsConfig(BaseSettings):
+    """Configuration for the skill system."""
+
+    skills_dir: Path = Field(Path("./gwenn_skills"), alias="GWENN_SKILLS_DIR")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
 class ChannelConfig(BaseSettings):
     """Which channel(s) Gwenn runs on.  GWENN_CHANNEL=cli|telegram|discord|all"""
 
@@ -640,7 +661,8 @@ class GwennConfig:
         # Original 10-layer configs
         self.claude = ClaudeConfig()
         self.memory = MemoryConfig()
-        self.skills_dir: Path = Path(os.environ.get("GWENN_SKILLS_DIR", "./gwenn_skills"))
+        self.skills = SkillsConfig()
+        self.skills_dir: Path = self.skills.skills_dir
         self.heartbeat = HeartbeatConfig()
         self.affect = AffectConfig()
         self.context = ContextConfig()
