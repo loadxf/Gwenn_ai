@@ -234,7 +234,8 @@ class CognitiveEngine:
 
     def _redact_payload_value(self, value: Any) -> Any:
         """Recursively redact all string values in message payloads."""
-        assert self._redact_fn is not None
+        if self._redact_fn is None:
+            raise RuntimeError("Redaction function not configured")
         if isinstance(value, str):
             return self._redact_fn(value)
         if isinstance(value, list):

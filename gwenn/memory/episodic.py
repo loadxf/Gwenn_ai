@@ -150,6 +150,7 @@ class EpisodicMemory:
         vector_search_fn: Optional[Callable[[str, int], list[tuple[str, float]]]] = None,
     ):
         self._episodes: list[Episode] = []
+        self._episode_index: dict[str, int] = {}
         self._recency_decay = recency_decay
         self._importance_weight = importance_weight
         self._recency_weight = recency_weight
@@ -186,6 +187,7 @@ class EpisodicMemory:
         Used during re-initialization to reload from persisted state.
         """
         self._episodes.clear()
+        self._episode_index.clear()
         logger.info("episodic_memory.cleared")
 
     def set_vector_search(
@@ -205,16 +207,17 @@ class EpisodicMemory:
 
         Returns the episode_id for reference.
         """
-        for i, existing in enumerate(self._episodes):
-            if existing.episode_id == episode.episode_id:
-                self._episodes[i] = episode
-                logger.debug(
-                    "episodic_memory.updated_existing",
-                    episode_id=episode.episode_id,
-                )
-                return episode.episode_id
+        idx = self._episode_index.get(episode.episode_id)
+        if idx is not None:
+            self._episodes[idx] = episode
+            logger.debug(
+                "episodic_memory.updated_existing",
+                episode_id=episode.episode_id,
+            )
+            return episode.episode_id
 
         self._episodes.append(episode)
+        self._episode_index[episode.episode_id] = len(self._episodes) - 1
 
         logger.info(
             "episodic_memory.encoded",
@@ -414,10 +417,8 @@ class EpisodicMemory:
 
     def get_episode(self, episode_id: str) -> Optional[Episode]:
         """Return an episode by id if present in memory."""
-        for episode in self._episodes:
-            if episode.episode_id == episode_id:
-                return episode
-        return None
+        idx = self._episode_index.get(episode_id)
+        return self._episodes[idx] if idx is not None else None
 
     @property
     def count(self) -> int:

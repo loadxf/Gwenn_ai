@@ -34,6 +34,14 @@ from gwenn.tools.registry import ToolDefinition, ToolRegistry
 logger = structlog.get_logger(__name__)
 
 
+def _safe_release(sem: asyncio.BoundedSemaphore) -> None:
+    """Release a BoundedSemaphore, ignoring ValueError from double-release."""
+    try:
+        sem.release()
+    except ValueError:
+        pass  # Already released by timeout handler
+
+
 class ToolExecutionResult:
     """
     The result of executing a tool — success or failure.
@@ -136,7 +144,7 @@ class ToolExecutor:
         self._max_output_length = max_output_length
         self._sandbox_enabled = sandbox_enabled
         self._sandbox_allowed_tools = set(sandbox_allowed_tools or [])
-        self._sync_slot = asyncio.Semaphore(max(1, int(max_concurrent_sync)))
+        self._sync_slot = asyncio.BoundedSemaphore(max(1, int(max_concurrent_sync)))
 
         # Execution statistics
         self._total_executions = 0
@@ -345,7 +353,7 @@ class ToolExecutor:
             finally:
                 try:
                     loop.call_soon_threadsafe(done.set)
-                    loop.call_soon_threadsafe(self._sync_slot.release)
+                    loop.call_soon_threadsafe(_safe_release, self._sync_slot)
                 except RuntimeError:  # pragma: no cover – shutdown race
                     # Loop may already be closed if shutdown races tool completion.
                     try:

@@ -242,6 +242,8 @@ class HeartbeatConfig(BaseSettings):
         self.interval = max(1.0, float(self.interval))
         self.min_interval = max(1.0, float(self.min_interval))
         self.max_interval = max(self.min_interval, float(self.max_interval))
+        if self.interval < self.min_interval or self.interval > self.max_interval:
+            self.interval = max(self.min_interval, min(self.max_interval, self.interval))
         self.circuit_max_consecutive = max(1, int(self.circuit_max_consecutive))
         self.circuit_base_seconds = max(1.0, float(self.circuit_base_seconds))
         self.circuit_max_seconds = max(self.circuit_base_seconds, float(self.circuit_max_seconds))

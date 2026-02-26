@@ -116,6 +116,7 @@ class SemanticMemory:
         self._nodes: dict[str, KnowledgeNode] = {}
         self._edges: list[KnowledgeEdge] = []
         self._edge_ids: set[str] = set()  # Dedup index keyed by edge_id
+        self._edge_index: dict[str, KnowledgeEdge] = {}  # edge_id -> edge for O(1) updates
         self._label_index: dict[str, str] = {}  # label -> node_id for fast lookup
         self._retrieval_mode = retrieval_mode.strip().lower()
         self._embedding_top_k = max(1, int(embedding_top_k))
@@ -147,6 +148,7 @@ class SemanticMemory:
         self._nodes.clear()
         self._edges.clear()
         self._edge_ids.clear()
+        self._edge_index.clear()
         self._label_index.clear()
         logger.info("semantic_memory.cleared")
 
@@ -246,19 +248,18 @@ class SemanticMemory:
         )
 
         if edge.edge_id in self._edge_ids:
-            # Update existing edge strength instead of duplicating
-            for existing in self._edges:
-                if existing.edge_id == edge.edge_id:
-                    existing.strength = max(existing.strength, strength)
-                    if context:
-                        existing.context = context
-                    logger.debug(
-                        "semantic_memory.relationship_reinforced",
-                        edge_id=edge.edge_id,
-                    )
-                    return existing
+            existing = self._edge_index[edge.edge_id]
+            existing.strength = max(existing.strength, strength)
+            if context:
+                existing.context = context
+            logger.debug(
+                "semantic_memory.relationship_reinforced",
+                edge_id=edge.edge_id,
+            )
+            return existing
         self._edges.append(edge)
         self._edge_ids.add(edge.edge_id)
+        self._edge_index[edge.edge_id] = edge
 
         logger.debug(
             "semantic_memory.relationship_added",

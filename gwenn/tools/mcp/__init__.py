@@ -471,13 +471,13 @@ class MCPClient:
             server_name = tool.server_name
             tool_name = tool.name
 
-            async def handler_factory(sn: str, tn: str):
+            def handler_factory(sn: str, tn: str):
                 async def handler(**kwargs):
                     return await self.execute_tool(sn, tn, kwargs)
 
                 return handler
 
-            handler = await handler_factory(server_name, tool_name)
+            handler = handler_factory(server_name, tool_name)
             # Sanitize both components so the combined name is a valid Claude tool
             # identifier (^[a-zA-Z0-9_-]{1,64}$).
             safe_server = _sanitize_mcp_name_part(server_name)

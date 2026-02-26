@@ -387,6 +387,7 @@ class SentientAgent:
             )
             self.semantic_memory._edges.append(edge)
             self.semantic_memory._edge_ids.add(edge.edge_id)
+            self.semantic_memory._edge_index[edge.edge_id] = edge
 
         logger.info(
             "agent.semantic_memory_loaded",
@@ -4208,6 +4209,7 @@ class SentientAgent:
             if e.source_id not in pruned_set and e.target_id not in pruned_set
         ]
         self.semantic_memory._edge_ids = {e.edge_id for e in self.semantic_memory._edges}
+        self.semantic_memory._edge_index = {e.edge_id: e for e in self.semantic_memory._edges}
 
         delete_nodes = getattr(getattr(self, "memory_store", None), "delete_knowledge_nodes", None)
         if callable(delete_nodes):
@@ -4318,6 +4320,9 @@ class SentientAgent:
         dropped = len(episodes) - len(kept)
         if dropped > 0:
             self.episodic_memory._episodes = kept
+            self.episodic_memory._episode_index = {
+                ep.episode_id: i for i, ep in enumerate(kept)
+            }
             logger.info("agent.episodic_pruned_in_memory", removed=dropped)
 
     def _should_redact_for_persist(self) -> bool:

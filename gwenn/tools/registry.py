@@ -56,6 +56,8 @@ RISK_TIER_POLICIES: dict[RiskTier, dict[str, bool]] = {
 
 _VALID_RISK_LEVELS = frozenset(tier.value for tier in RiskTier)
 
+_RISK_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
 
 @dataclass
 class ToolDefinition:
@@ -175,7 +177,7 @@ class ToolRegistry:
         and risk level allows different tool sets for different contexts
         (e.g., no high-risk tools during autonomous heartbeat cycles).
         """
-        risk_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        risk_order = _RISK_ORDER
         max_risk_level = risk_order.get(max_risk, 2)
 
         tools = []
@@ -222,7 +224,7 @@ class ToolRegistry:
         Tools with risk level above max_risk are excluded. CRITICAL risk tools
         are never returned.
         """
-        risk_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        risk_order = _RISK_ORDER
         max_risk_level = risk_order.get(max_risk, 2)
 
         tools = []
