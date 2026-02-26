@@ -237,6 +237,16 @@ class HeartbeatConfig(BaseSettings):
 
     model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
 
+    @model_validator(mode="after")
+    def normalize_limits(self) -> "HeartbeatConfig":
+        self.interval = max(1.0, float(self.interval))
+        self.min_interval = max(1.0, float(self.min_interval))
+        self.max_interval = max(self.min_interval, float(self.max_interval))
+        self.circuit_max_consecutive = max(1, int(self.circuit_max_consecutive))
+        self.circuit_base_seconds = max(1.0, float(self.circuit_base_seconds))
+        self.circuit_max_seconds = max(self.circuit_base_seconds, float(self.circuit_max_seconds))
+        return self
+
 
 class AffectConfig(BaseSettings):
     """Configuration for the emotional system — the boundaries that keep feelings safe."""

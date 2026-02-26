@@ -189,8 +189,9 @@ class SafetyGuard:
         # Check iteration limit (ContextVar — per-asyncio-Task)
         count = _iteration_count_var.get() + 1
         _iteration_count_var.set(count)
+        override = _iteration_limit_override_var.get()
         effective_limit = (
-            _iteration_limit_override_var.get() or self._config.max_tool_iterations
+            override if override is not None else self._config.max_tool_iterations
         )
         if count > effective_limit:
             return SafetyCheckResult(
