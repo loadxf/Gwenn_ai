@@ -928,6 +928,39 @@ def _register_all_builtins(registry: ToolRegistry) -> None:
         )
     )
 
+    registry.register(
+        ToolDefinition(
+            name="run_command",
+            description=(
+                "Execute a shell command on the host system and return its output. "
+                "Returns stdout, stderr, and exit code. Use for system administration, "
+                "running scripts, checking service status, etc. "
+                "Commands run with a timeout (default 60s)."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute.",
+                    },
+                    "working_directory": {
+                        "type": "string",
+                        "description": "Directory to run the command in. Defaults to home.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Max seconds to wait. Default 60.",
+                    },
+                },
+                "required": ["command"],
+            },
+            handler=None,
+            risk_level="high",
+            category="system",
+        )
+    )
+
     # ---- Communication Tools ----
 
     registry.register(

@@ -516,6 +516,10 @@ class TelegramChannel(BaseChannel):
                     response.text if isinstance(response, AgentResponse) else str(response)
                 )
                 if not response_text or not response_text.strip():
+                    logger.warning(
+                        "telegram_channel.empty_response",
+                        response_type=type(response).__name__,
+                    )
                     await query.message.reply_text(_EMPTY_RESPONSE_FALLBACK)
                     return
 
@@ -988,6 +992,10 @@ class TelegramChannel(BaseChannel):
                 # Guard against empty responses (#24).
                 response_text = response.text if isinstance(response, AgentResponse) else str(response)
                 if not response_text or not response_text.strip():
+                    logger.warning(
+                        "telegram_channel.empty_response",
+                        response_type=type(response).__name__,
+                    )
                     await update.message.reply_text(_EMPTY_RESPONSE_FALLBACK)
                     return
 

@@ -3484,6 +3484,58 @@ class SentientAgent:
 
             sysinfo_tool.handler = handle_get_system_info
 
+        # run_command → execute a shell command and return output
+        run_cmd_tool = self.tool_registry.get("run_command")
+        if run_cmd_tool:
+
+            async def handle_run_command(
+                command: str,
+                working_directory: str = "",
+                timeout: int = 60,
+            ) -> str:
+                import pathlib
+
+                timeout = max(1, min(timeout, 300))  # Clamp 1-300s
+                cwd = working_directory or str(pathlib.Path.home())
+
+                try:
+                    proc = await asyncio.create_subprocess_shell(
+                        command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=cwd,
+                    )
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    return f"Command timed out after {timeout}s.\nCommand: {command}"
+                except OSError as exc:
+                    return f"Failed to execute command: {exc}"
+
+                stdout = stdout_bytes.decode("utf-8", errors="replace")
+                stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+                # Truncate large outputs
+                max_chars = 50_000
+                if len(stdout) > max_chars:
+                    stdout = stdout[:max_chars] + "\n... [truncated]"
+                if len(stderr) > max_chars:
+                    stderr = stderr[:max_chars] + "\n... [truncated]"
+
+                parts = [f"Exit code: {proc.returncode}"]
+                if stdout.strip():
+                    parts.append(f"stdout:\n{stdout}")
+                if stderr.strip():
+                    parts.append(f"stderr:\n{stderr}")
+                if not stdout.strip() and not stderr.strip():
+                    parts.append("(no output)")
+                return "\n".join(parts)
+
+            run_cmd_tool.handler = handle_run_command
+
         # skill_builder → create a new skill file and hot-register it
         sb_tool = self.tool_registry.get("skill_builder")
         if sb_tool:

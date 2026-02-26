@@ -79,6 +79,39 @@ class AgenticLoop:
 
         logger.info("agentic_loop.initialized", max_iterations=max_iterations)
 
+    async def _wrap_up_empty_response(
+        self,
+        system_prompt: str,
+        loop_messages: list[dict[str, Any]],
+    ) -> str:
+        """Nudge Claude to summarize when it ended turn without text."""
+        try:
+            wrap_response = await self._engine.think(
+                system_prompt=system_prompt,
+                messages=loop_messages + [{
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM: You ended your turn without providing a "
+                        "text response to the user. Please briefly summarize "
+                        "what you accomplished and any results.]"
+                    ),
+                }],
+                tools=None,
+                enable_thinking=False,
+            )
+            text = self._engine.extract_text(wrap_response)
+            if text:
+                return text
+        except Exception as exc:
+            logger.warning(
+                "agentic_loop.empty_response_wrap_up_failed",
+                error=str(exc),
+            )
+        return (
+            "I've completed the requested operations. "
+            "Let me know if you need anything else."
+        )
+
     async def run(
         self,
         system_prompt: str,
@@ -192,6 +225,15 @@ class AgenticLoop:
                 # Claude has decided it's done — extract final response
                 final_text = self._engine.extract_text(response)
                 loop_messages.append({"role": "assistant", "content": response.content})
+                if not final_text and all_tool_calls:
+                    logger.warning(
+                        "agentic_loop.empty_end_turn",
+                        iterations=iteration,
+                        tool_calls=len(all_tool_calls),
+                    )
+                    final_text = await self._wrap_up_empty_response(
+                        system_prompt, loop_messages,
+                    )
                 self._invoke_callback("on_response", on_response, final_text)
                 logger.info(
                     "agentic_loop.complete",
@@ -207,6 +249,14 @@ class AgenticLoop:
                 # No tool calls and not end_turn — extract any text and finish
                 final_text = self._engine.extract_text(response)
                 loop_messages.append({"role": "assistant", "content": response.content})
+                if not final_text:
+                    logger.warning(
+                        "agentic_loop.empty_no_tools",
+                        iterations=iteration,
+                    )
+                    final_text = await self._wrap_up_empty_response(
+                        system_prompt, loop_messages,
+                    )
                 self._invoke_callback("on_response", on_response, final_text)
                 break
 

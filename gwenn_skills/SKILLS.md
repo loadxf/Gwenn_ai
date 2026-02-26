@@ -27,7 +27,7 @@ Explains what a piece of code does, how it works, and why it is written that way
 - **File:** `explain_code.md`
 
 ### `shell_exec`
-Executes a shell command on the host system via a subagent running in Docker isolation. Use when the user asks to run a terminal command, execute a script, check system status, restart a service, or perform any shell operation.
+Execute a shell command on the host system. Use when the user asks to run a terminal command, execute a script, check system status, restart a service, or perform any shell operation.
 
 - **Parameters:** `command`*, `working_directory`
 - **Risk level:** high

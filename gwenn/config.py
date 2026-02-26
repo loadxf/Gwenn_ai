@@ -288,7 +288,7 @@ class SafetyConfig(BaseSettings):
 
     max_tool_iterations: int = Field(150, alias="GWENN_MAX_TOOL_ITERATIONS")
     require_approval_for: list[str] = Field(
-        default_factory=lambda: ["file_write", "shell_exec", "web_request"],
+        default_factory=lambda: ["file_write", "shell_exec", "run_command", "web_request"],
         alias="GWENN_REQUIRE_APPROVAL_FOR",
     )
     sandbox_enabled: bool = Field(True, alias="GWENN_SANDBOX_ENABLED")
