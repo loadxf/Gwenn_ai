@@ -124,7 +124,7 @@ class TestToolSchemas:
         props = tool.input_schema["properties"]
         assert "max_iterations" in props
         assert props["max_iterations"]["type"] == "integer"
-        assert props["max_iterations"]["default"] == 30
+        assert props["max_iterations"]["default"] == 10
 
     def test_spawn_subagent_has_isolation(self):
         tool = self.registry.get("spawn_subagent")
@@ -150,7 +150,7 @@ class TestToolSchemas:
         task_props = tool.input_schema["properties"]["tasks"]["items"]["properties"]
         assert "max_iterations" in task_props
         assert task_props["max_iterations"]["type"] == "integer"
-        assert task_props["max_iterations"]["default"] == 30
+        assert task_props["max_iterations"]["default"] == 10
 
     def test_spawn_swarm_task_has_isolation(self):
         tool = self.registry.get("spawn_swarm")
@@ -232,15 +232,15 @@ class TestSpawnSubagentHandler:
         assert spec.max_iterations == 25
 
     @pytest.mark.asyncio
-    async def test_max_iterations_capped_at_200(self):
+    async def test_max_iterations_capped_at_50(self):
         agent = _make_mock_agent()
         SentientAgent._wire_orchestration_tool_handlers(agent)
 
         handler = agent.tool_registry.get("spawn_subagent").handler
-        await handler(task_description="test task", max_iterations=500)
+        await handler(task_description="test task", max_iterations=100)
 
         spec = agent.orchestrator.spawn.call_args[0][0]
-        assert spec.max_iterations == 200
+        assert spec.max_iterations == 50
 
     @pytest.mark.asyncio
     async def test_isolation_passthrough_docker(self):
@@ -368,7 +368,7 @@ class TestSpawnSwarmHandler:
         )
 
         swarm_spec = agent.orchestrator.spawn_swarm.call_args[0][0]
-        assert swarm_spec.agents[0].max_iterations == 200
+        assert swarm_spec.agents[0].max_iterations == 50
 
     @pytest.mark.asyncio
     async def test_per_task_isolation(self):
@@ -420,7 +420,7 @@ class TestSpawnSwarmHandler:
         swarm_spec = agent.orchestrator.spawn_swarm.call_args[0][0]
         spec = swarm_spec.agents[0]
         assert spec.system_prompt is None
-        assert spec.max_iterations == 30
+        assert spec.max_iterations == 10
         assert spec.timeout_seconds == 120.0
         assert spec.runtime_tier == "in_process"
 
@@ -604,7 +604,7 @@ class TestSkillRegistration:
             style="thorough",
         )
 
-        assert "[SKILL ACTIVATED: expert_coding v1.0]" in result
+        assert "[SKILL: expert_coding v1.0]" in result
         assert "Build a REST API" in result
         assert "/home/bob/project" in result
         assert "Anti-Vibe-Coding" in result
