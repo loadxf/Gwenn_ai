@@ -1,16 +1,18 @@
-"""Tests for WebSocketCliChannel in gwenn/channels/cli_channel.py."""
+"""Tests for CliChannel and WebSocketCliChannel in gwenn/channels/cli_channel.py."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
 from gwenn.channels.cli_channel import (
+    CliChannel,
     DaemonNotRunningError,
     WebSocketCliChannel,
 )
@@ -903,3 +905,398 @@ class TestSessionCloseFailure:
 class TestTimeout:
     def test_default_timeout(self) -> None:
         assert WebSocketCliChannel._REQUEST_TIMEOUT == 120.0
+
+
+# ===========================================================================
+# Legacy CliChannel (Unix socket) tests
+# ===========================================================================
+
+
+class _MockStreamWriter:
+    """Minimal mock for asyncio.StreamWriter."""
+
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self._closed = False
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self._closed = True
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+class _MockStreamReader:
+    """Minimal mock for asyncio.StreamReader backed by a queue."""
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
+
+    def feed(self, data: dict[str, Any]) -> None:
+        """Enqueue a JSON response line."""
+        self._queue.put_nowait(json.dumps(data).encode() + b"\n")
+
+    def feed_eof(self) -> None:
+        """Enqueue an empty read (EOF)."""
+        self._queue.put_nowait(b"")
+
+    def feed_raw(self, data: bytes) -> None:
+        self._queue.put_nowait(data)
+
+    async def readline(self) -> bytes:
+        return await self._queue.get()
+
+
+class TestLegacyCliChannelConstructor:
+    def test_initial_state(self) -> None:
+        ch = CliChannel()
+        assert ch._reader is None
+        assert ch._writer is None
+        assert ch._auth_token is None
+        assert ch._on_server_push is None
+
+    def test_with_args(self) -> None:
+        handler = lambda msg: None
+        ch = CliChannel(auth_token="tok", on_server_push=handler)
+        assert ch._auth_token == "tok"
+        assert ch._on_server_push is handler
+
+
+class TestLegacyCliChannelConnect:
+    @pytest.mark.asyncio
+    async def test_missing_socket_raises(self, tmp_path: Path) -> None:
+        ch = CliChannel()
+        sock = tmp_path / "missing.sock"
+        with pytest.raises(DaemonNotRunningError, match="not found"):
+            await ch.connect(sock)
+
+    @pytest.mark.asyncio
+    async def test_connection_refused(self, tmp_path: Path) -> None:
+        sock = tmp_path / "test.sock"
+        sock.touch()  # file exists but is not a real socket
+        ch = CliChannel()
+        with pytest.raises(DaemonNotRunningError, match="Cannot connect"):
+            await ch.connect(sock)
+
+    @pytest.mark.asyncio
+    async def test_successful_connect(self) -> None:
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        sock_path = MagicMock(spec=Path)
+        sock_path.exists.return_value = True
+
+        with patch("asyncio.open_unix_connection", return_value=(reader, writer)):
+            ch = CliChannel()
+            await ch.connect(sock_path)
+
+        assert ch._reader is reader
+        assert ch._writer is writer
+
+
+class TestLegacyCliChannelDisconnect:
+    @pytest.mark.asyncio
+    async def test_disconnect_cleans_up(self) -> None:
+        ch = CliChannel()
+        ch._reader = _MockStreamReader()
+        ch._writer = _MockStreamWriter()
+
+        await ch.disconnect()
+        assert ch._reader is None
+        assert ch._writer is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_when_not_connected(self) -> None:
+        ch = CliChannel()
+        await ch.disconnect()  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_disconnect_close_error_swallowed(self) -> None:
+        ch = CliChannel()
+        writer = MagicMock()
+        writer.close.side_effect = OSError("close failed")
+        writer.wait_closed = AsyncMock(side_effect=OSError("wait failed"))
+        ch._writer = writer
+        ch._reader = _MockStreamReader()
+
+        await ch.disconnect()
+        assert ch._writer is None
+
+
+class TestLegacyCliChannelRequest:
+    @pytest.mark.asyncio
+    async def test_not_connected_raises(self) -> None:
+        ch = CliChannel()
+        with pytest.raises(RuntimeError, match="not connected"):
+            await ch.chat("hello")
+
+    @pytest.mark.asyncio
+    async def test_chat_sends_and_receives(self) -> None:
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel()
+        ch._reader = reader
+        ch._writer = writer
+
+        async def _do_chat():
+            return await ch.chat("hello")
+
+        # Schedule the response before the request reads
+        async def _feed_response():
+            await asyncio.sleep(0.01)
+            # Read what was written to extract req_id
+            sent_line = writer.written[0].decode()
+            msg = json.loads(sent_line)
+            reader.feed({"req_id": msg["req_id"], "text": "Hi!", "emotion": "happy"})
+
+        result, _ = await asyncio.gather(_do_chat(), _feed_response())
+        assert result["text"] == "Hi!"
+
+    @pytest.mark.asyncio
+    async def test_auth_token_included(self) -> None:
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel(auth_token="secret")
+        ch._reader = reader
+        ch._writer = writer
+
+        async def _do_ping():
+            return await ch.ping()
+
+        async def _feed():
+            await asyncio.sleep(0.01)
+            msg = json.loads(writer.written[0].decode())
+            assert msg["auth_token"] == "secret"
+            reader.feed({"req_id": msg["req_id"], "status": "pong"})
+
+        result, _ = await asyncio.gather(_do_ping(), _feed())
+        assert result["status"] == "pong"
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises(self) -> None:
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel()
+        ch._reader = reader
+        ch._writer = writer
+        ch._REQUEST_TIMEOUT = 0.05  # Very short timeout
+
+        with pytest.raises(TimeoutError):
+            await ch.ping()
+
+    @pytest.mark.asyncio
+    async def test_connection_reset_on_eof(self) -> None:
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel()
+        ch._reader = reader
+        ch._writer = writer
+
+        async def _do_ping():
+            return await ch.ping()
+
+        async def _feed_eof():
+            await asyncio.sleep(0.01)
+            reader.feed_eof()
+
+        with pytest.raises(ConnectionResetError, match="closed"):
+            await asyncio.gather(_do_ping(), _feed_eof())
+
+
+class TestLegacyCliChannelReadResponse:
+    @pytest.mark.asyncio
+    async def test_bad_json_skipped(self) -> None:
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel()
+        ch._reader = reader
+        ch._writer = writer
+
+        async def _do_ping():
+            return await ch.ping()
+
+        async def _feed():
+            await asyncio.sleep(0.01)
+            msg = json.loads(writer.written[0].decode())
+            # Send bad JSON first
+            reader.feed_raw(b"not valid json\n")
+            # Then send the real response
+            reader.feed({"req_id": msg["req_id"], "status": "pong"})
+
+        result, _ = await asyncio.gather(_do_ping(), _feed())
+        assert result["status"] == "pong"
+
+    @pytest.mark.asyncio
+    async def test_server_push_dispatched(self) -> None:
+        pushes: list[dict] = []
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel(on_server_push=lambda msg: pushes.append(msg))
+        ch._reader = reader
+        ch._writer = writer
+
+        async def _do_ping():
+            return await ch.ping()
+
+        async def _feed():
+            await asyncio.sleep(0.01)
+            msg = json.loads(writer.written[0].decode())
+            # Send a push message (different req_id)
+            reader.feed({"type": "heartbeat_update", "beat_count": 5})
+            # Then send the real response
+            reader.feed({"req_id": msg["req_id"], "status": "pong"})
+
+        result, _ = await asyncio.gather(_do_ping(), _feed())
+        assert result["status"] == "pong"
+        assert len(pushes) == 1
+        assert pushes[0]["type"] == "heartbeat_update"
+
+    @pytest.mark.asyncio
+    async def test_server_push_without_handler(self) -> None:
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel()  # No push handler
+        ch._reader = reader
+        ch._writer = writer
+
+        async def _do_ping():
+            return await ch.ping()
+
+        async def _feed():
+            await asyncio.sleep(0.01)
+            msg = json.loads(writer.written[0].decode())
+            # Send a push message (ignored)
+            reader.feed({"type": "heartbeat_update"})
+            # Then send the real response
+            reader.feed({"req_id": msg["req_id"], "status": "pong"})
+
+        result, _ = await asyncio.gather(_do_ping(), _feed())
+        assert result["status"] == "pong"
+
+    @pytest.mark.asyncio
+    async def test_push_handler_error_swallowed(self) -> None:
+        def bad_handler(msg: dict) -> None:
+            raise ValueError("handler crash")
+
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel(on_server_push=bad_handler)
+        ch._reader = reader
+        ch._writer = writer
+
+        async def _do_ping():
+            return await ch.ping()
+
+        async def _feed():
+            await asyncio.sleep(0.01)
+            msg = json.loads(writer.written[0].decode())
+            reader.feed({"type": "bad_push"})
+            reader.feed({"req_id": msg["req_id"], "status": "pong"})
+
+        result, _ = await asyncio.gather(_do_ping(), _feed())
+        assert result["status"] == "pong"
+
+
+class TestLegacyCliChannelMethods:
+    """Test all high-level request methods."""
+
+    @pytest.fixture
+    def _channel(self):
+        """Return a connected channel with reader/writer mocks."""
+        reader = _MockStreamReader()
+        writer = _MockStreamWriter()
+        ch = CliChannel()
+        ch._reader = reader
+        ch._writer = writer
+        return ch, reader, writer
+
+    async def _request_helper(self, ch, reader, writer, coro, response_data):
+        """Helper to run a request and feed the response."""
+        async def _do():
+            return await coro
+
+        async def _feed():
+            await asyncio.sleep(0.01)
+            msg = json.loads(writer.written[0].decode())
+            response_data["req_id"] = msg["req_id"]
+            reader.feed(response_data)
+
+        result, _ = await asyncio.gather(_do(), _feed())
+        return result
+
+    @pytest.mark.asyncio
+    async def test_get_status(self, _channel) -> None:
+        ch, reader, writer = _channel
+        result = await self._request_helper(
+            ch, reader, writer, ch.get_status(),
+            {"status": {"name": "Gwenn"}},
+        )
+        assert result["status"]["name"] == "Gwenn"
+
+    @pytest.mark.asyncio
+    async def test_get_heartbeat_status(self, _channel) -> None:
+        ch, reader, writer = _channel
+        result = await self._request_helper(
+            ch, reader, writer, ch.get_heartbeat_status(),
+            {"status": {"running": True}},
+        )
+        assert result["status"]["running"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_sessions(self, _channel) -> None:
+        ch, reader, writer = _channel
+        result = await self._request_helper(
+            ch, reader, writer, ch.list_sessions(),
+            {"sessions": [{"id": "s1"}, {"id": "s2"}]},
+        )
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_empty(self, _channel) -> None:
+        ch, reader, writer = _channel
+        result = await self._request_helper(
+            ch, reader, writer, ch.list_sessions(),
+            {},  # No "sessions" key
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_load_session(self, _channel) -> None:
+        ch, reader, writer = _channel
+        result = await self._request_helper(
+            ch, reader, writer, ch.load_session("s1"),
+            {"message_count": 10},
+        )
+        assert result == 10
+
+    @pytest.mark.asyncio
+    async def test_reset_session(self, _channel) -> None:
+        ch, reader, writer = _channel
+        result = await self._request_helper(
+            ch, reader, writer, ch.reset_session(),
+            {"cleared_messages": 5},
+        )
+        assert result == 5
+
+    @pytest.mark.asyncio
+    async def test_get_runtime_info(self, _channel) -> None:
+        ch, reader, writer = _channel
+        result = await self._request_helper(
+            ch, reader, writer, ch.get_runtime_info(),
+            {"model": "test"},
+        )
+        assert result["model"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_stop_daemon(self, _channel) -> None:
+        ch, reader, writer = _channel
+        result = await self._request_helper(
+            ch, reader, writer, ch.stop_daemon(),
+            {"status": "stopping"},
+        )
+        assert result["status"] == "stopping"
