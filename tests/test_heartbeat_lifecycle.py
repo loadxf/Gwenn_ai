@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gwenn.config import GwennConfig, HeartbeatConfig
+from gwenn.config import GwennConfig, HeartbeatConfig, SelfHealingConfig
 from gwenn.heartbeat import Heartbeat
 
 
@@ -45,6 +45,7 @@ def _make_full_config(**overrides) -> GwennConfig:
     cfg.channel = SimpleNamespace(
         get_channel_list=lambda: [],
     )
+    cfg.self_healing = SelfHealingConfig(GWENN_SELF_HEALING_ENABLED=False)
     # Apply overrides
     for k, v in overrides.items():
         setattr(cfg, k, v)

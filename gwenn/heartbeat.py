@@ -146,6 +146,10 @@ class Heartbeat:
                     interval_beats=self._config.checkpoint_interval_beats,
                 )
 
+        # Self-healing engine (Phase 8) — created lazily when event_bus is available.
+        self._healing_engine: Any = None
+        self._pending_recovery_actions: list[Any] = []
+
         # Core-mode owned subsystems (populated in run())
         self._event_bus: EventBus | None = None
         self._gateway: GatewayServer | None = None
@@ -202,6 +206,14 @@ class Heartbeat:
         # 0. START NERVOUS SYSTEM
         self._event_bus = create_event_bus()
         await self._event_bus.start()
+
+        # Initialize self-healing engine (Phase 8)
+        if self._full_config is not None and self._full_config.self_healing.enabled:
+            from gwenn.healing import SelfHealingEngine
+            self._healing_engine = SelfHealingEngine(
+                event_bus=self._event_bus,
+                config=self._full_config.self_healing,
+            )
 
         try:
             # 1. OPEN CIRCULATORY SYSTEM
@@ -651,6 +663,10 @@ class Heartbeat:
         # Update affect, memory, and goals based on the thought
         await self._integrate(thinking_mode, thought_result)
 
+        # ---- PHASE 4b: HEAL ----
+        # Apply self-healing recovery actions if issues were detected
+        await self._heal(state_snapshot)
+
         # ---- PHASE 5: SCHEDULE ----
         # Adapt the interval for the next beat
         self._schedule(state_snapshot)
@@ -753,7 +769,7 @@ class Heartbeat:
             except Exception:
                 pass  # Event emission must never break the heartbeat
 
-        return {
+        state_snapshot = {
             "timestamp": now,
             "beat_number": self._beat_count,
             "idle_duration": idle_duration,
@@ -773,6 +789,22 @@ class Heartbeat:
                 "overwhelm": intero.overwhelm,
             },
         }
+
+        # Self-healing diagnosis (Phase 8)
+        if self._healing_engine is not None:
+            try:
+                channel_statuses = self._get_channel_statuses()
+                subagent_statuses = self._get_subagent_statuses()
+                health_issues = self._healing_engine.diagnose(
+                    interoceptive=intero,
+                    channel_statuses=channel_statuses,
+                    subagent_statuses=subagent_statuses,
+                )
+                state_snapshot["health_issues"] = health_issues
+            except Exception:
+                logger.debug("heartbeat.health_diagnosis_failed", exc_info=True)
+
+        return state_snapshot
 
     def _orient(self, state: dict[str, Any]) -> ThinkingMode:
         """
@@ -1166,6 +1198,41 @@ class Heartbeat:
             except Exception:
                 logger.warning("heartbeat.checkpoint_failed", exc_info=True)
 
+    async def _heal(self, state: dict[str, Any]) -> None:
+        """Apply self-healing recovery actions for issues detected in _sense()."""
+        if self._healing_engine is None:
+            return
+        health_issues = state.get("health_issues")
+        if not health_issues:
+            # Emit healthy check event periodically (every 10 beats)
+            if self._event_bus is not None and self._beat_count % 10 == 0:
+                from gwenn.events import HealthCheckEvent
+                self._event_bus.emit(HealthCheckEvent(
+                    issues_found=0, actions_taken=0, all_healthy=True,
+                ))
+            return
+
+        try:
+            actions = await self._healing_engine.heal(
+                health_issues, self, self._agent
+            )
+            self._pending_recovery_actions = actions
+            if self._event_bus is not None:
+                from gwenn.events import HealthCheckEvent
+                self._event_bus.emit(HealthCheckEvent(
+                    issues_found=len(health_issues),
+                    actions_taken=len(actions),
+                    all_healthy=False,
+                ))
+            if actions:
+                logger.info(
+                    "heartbeat.healing_actions_taken",
+                    count=len(actions),
+                    types=[a.action_type for a in actions],
+                )
+        except Exception:
+            logger.warning("heartbeat.healing_failed", exc_info=True)
+
     def _schedule(self, state: dict[str, Any]) -> None:
         """
         SCHEDULE: Adapt the heartbeat interval based on current state.
@@ -1196,6 +1263,11 @@ class Heartbeat:
         # Compute new interval
         new_interval = base * activity_factor * arousal_factor
         self._interval = max(min_interval, min(max_interval, new_interval))
+
+        # If recovery actions were taken, accelerate next beat to verify sooner
+        if self._pending_recovery_actions:
+            self._interval = min_interval
+            self._pending_recovery_actions = []
 
     # -------------------------------------------------------------------------
     # Observability
@@ -1261,6 +1333,83 @@ class Heartbeat:
             )
         except Exception as e:
             logger.debug("heartbeat.full_audit_failed", error=str(e))
+
+    # -------------------------------------------------------------------------
+    # Self-healing helpers
+    # -------------------------------------------------------------------------
+
+    def _get_channel_statuses(self) -> dict[str, Any]:
+        """Gather status of each active channel for health diagnosis."""
+        statuses: dict[str, Any] = {}
+        if self._agent is None:
+            return statuses
+        channels = getattr(self._agent, "_platform_channels", [])
+        for ch in channels:
+            name = getattr(ch, "channel_name", "unknown")
+            statuses[name] = {"crashed": False, "error": ""}
+
+        # Check if channel task has failed (crashed channels)
+        if self._channel_task is not None and self._channel_task.done():
+            exc = self._channel_task.exception() if not self._channel_task.cancelled() else None
+            if exc is not None:
+                # Mark all channels as potentially crashed
+                for name in statuses:
+                    statuses[name]["crashed"] = True
+                    statuses[name]["error"] = str(exc)[:200]
+
+        # Check for stale sessions
+        if self._session_manager is not None:
+            try:
+                sessions = getattr(self._session_manager, "_sessions", {})
+                ttl = getattr(self._session_manager, "_ttl", 3600.0)
+                now_mono = time.monotonic()
+                stale = sum(
+                    1 for s in sessions.values()
+                    if now_mono - getattr(s, "last_activity", now_mono) > ttl * 2
+                )
+                if stale > 0:
+                    # Attribute stale sessions to first channel or "sessions"
+                    first_name = next(iter(statuses), "sessions")
+                    statuses.setdefault(first_name, {"crashed": False, "error": ""})
+                    statuses[first_name]["stale_sessions"] = stale
+            except Exception:
+                pass
+
+        return statuses
+
+    def _get_subagent_statuses(self) -> dict[str, Any]:
+        """Gather status of active subagents for health diagnosis."""
+        statuses: dict[str, Any] = {}
+        if self._agent is None:
+            return statuses
+        orchestrator = getattr(self._agent, "orchestrator", None)
+        if orchestrator is None:
+            return statuses
+
+        progress = getattr(orchestrator, "_progress", {})
+        active_tasks = getattr(orchestrator, "_active_tasks", {})
+        config = getattr(orchestrator, "_config", None)
+        default_timeout = getattr(config, "subagent_timeout", 120.0) if config else 120.0
+        multiplier = 2.0
+        if self._full_config is not None:
+            multiplier = self._full_config.self_healing.stuck_subagent_timeout_multiplier
+
+        for task_id, prog in progress.items():
+            if task_id not in active_tasks:
+                continue  # Already completed
+            elapsed = getattr(prog, "elapsed_seconds", 0.0)
+            if elapsed == 0.0:
+                started = getattr(prog, "started_at", None)
+                if started is not None:
+                    elapsed = time.time() - started
+            timeout = default_timeout
+            statuses[task_id] = {
+                "elapsed_seconds": elapsed,
+                "timeout_seconds": timeout,
+                "is_stuck": elapsed > timeout * multiplier,
+            }
+
+        return statuses
 
     # -------------------------------------------------------------------------
 
