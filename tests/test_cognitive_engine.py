@@ -112,7 +112,8 @@ async def test_think_connection_error_exhaustion_does_not_raise_attribute_error(
 
 
 @pytest.mark.asyncio
-async def test_think_adaptive_mode_omits_budget_tokens(monkeypatch):
+async def test_think_uses_adaptive_by_default(monkeypatch):
+    """Thinking defaults to adaptive mode."""
     engine = object.__new__(CognitiveEngine)
     engine._model = "test-model"
     engine._max_tokens = 256
@@ -136,7 +137,9 @@ async def test_think_adaptive_mode_omits_budget_tokens(monkeypatch):
     engine._auth_method = "api_key"
     engine._oauth_expires_at = 0.0
     engine._oauth_refresh_buffer = 300.0
-    engine._thinking_budget = 0  # 0 means use adaptive mode
+    engine._thinking_budget = 0
+    engine._thinking_mode = "adaptive"
+    engine._thinking_effort = "high"
 
     response = SimpleNamespace(
         usage=SimpleNamespace(input_tokens=10, output_tokens=5),
@@ -157,7 +160,7 @@ async def test_think_adaptive_mode_omits_budget_tokens(monkeypatch):
     assert create.await_count == 1
     kwargs = create.await_args.kwargs
     assert kwargs["thinking"] == {"type": "adaptive"}
-    assert "budget_tokens" not in kwargs["thinking"]
+    assert kwargs["output_config"] == {"effort": "high"}
 
 
 def test_oauth_client_uses_sdk_base_url_with_oauth_beta_header(monkeypatch):
@@ -178,6 +181,7 @@ def test_oauth_client_uses_sdk_base_url_with_oauth_beta_header(monkeypatch):
         retry_exponential_base=2.0,
         retry_jitter_range=0.25,
         thinking_budget=0,
+        thinking_effort="high",
     )
 
     engine = CognitiveEngine(cfg)
@@ -207,6 +211,7 @@ def test_api_key_preferred_when_both_credentials_present(monkeypatch):
         retry_exponential_base=2.0,
         retry_jitter_range=0.25,
         thinking_budget=0,
+        thinking_effort="high",
     )
 
     engine = CognitiveEngine(cfg)
@@ -235,6 +240,7 @@ def test_oauth_client_dns_failure_does_not_abort_startup(monkeypatch):
         retry_exponential_base=2.0,
         retry_jitter_range=0.25,
         thinking_budget=0,
+        thinking_effort="high",
     )
 
     engine = CognitiveEngine(cfg)
@@ -270,6 +276,8 @@ def _bare_engine(**overrides):
     engine._auth_method = "oauth"
     engine._oauth_expires_at = 0.0
     engine._oauth_refresh_buffer = 300.0
+    engine._thinking_mode = "adaptive"
+    engine._thinking_effort = "high"
     for k, v in overrides.items():
         setattr(engine, k, v)
     return engine
@@ -458,6 +466,7 @@ def test_init_wraps_unexpected_exception_in_init_error(monkeypatch):
         retry_exponential_base=2.0,
         retry_jitter_range=0.25,
         thinking_budget="not-an-int",  # int("not-an-int") raises ValueError
+        thinking_effort="high",
     )
 
     with pytest.raises(CognitiveEngineInitError, match="Failed to initialize"):
@@ -489,6 +498,7 @@ def test_init_reraises_cognitive_engine_init_error(monkeypatch):
         retry_exponential_base=2.0,
         retry_jitter_range=0.25,
         thinking_budget=0,
+        thinking_effort="high",
     )
 
     with pytest.raises(CognitiveEngineInitError, match="custom init error"):
@@ -848,8 +858,8 @@ async def test_think_with_tools_no_tool_choice():
 
 
 @pytest.mark.asyncio
-async def test_think_with_thinking_budget_enabled():
-    """When enable_thinking=True, thinking config uses adaptive type."""
+async def test_think_with_thinking_uses_adaptive():
+    """When enable_thinking=True, thinking defaults to adaptive type."""
     engine = _bare_engine(_auth_method="api_key", _thinking_budget=16000)
 
     response = _ok_response()
@@ -865,6 +875,82 @@ async def test_think_with_thinking_budget_enabled():
     assert result is response
     kwargs = create.await_args.kwargs
     assert kwargs["thinking"] == {"type": "adaptive"}
+    assert kwargs["output_config"] == {"effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_think_falls_back_to_enabled_on_adaptive_rejection():
+    """When adaptive thinking is rejected (400), falls back to enabled with budget."""
+    engine = _bare_engine(_auth_method="oauth", _thinking_budget=16000)
+
+    response = _ok_response()
+    call_count = 0
+    captured_kwargs: list[dict] = []
+
+    async def _create(**kw):
+        nonlocal call_count
+        call_count += 1
+        captured_kwargs.append(dict(kw))
+        if call_count == 1 and kw.get("thinking", {}).get("type") == "adaptive":
+            fake_response = httpx.Response(
+                status_code=400,
+                request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+            )
+            raise anthropic.BadRequestError(
+                message="adaptive thinking is not supported on this model",
+                response=fake_response,
+                body={"type": "error", "error": {"type": "invalid_request_error",
+                      "message": "adaptive thinking is not supported on this model"}},
+            )
+        return response
+
+    engine._async_client = SimpleNamespace(messages=SimpleNamespace(create=_create))
+
+    result = await engine.think(
+        system_prompt="sys",
+        messages=[{"role": "user", "content": "hi"}],
+        enable_thinking=True,
+    )
+
+    assert result is response
+    assert engine._thinking_mode == "enabled"
+    # First call tried adaptive with output_config
+    assert captured_kwargs[0]["thinking"] == {"type": "adaptive"}
+    assert captured_kwargs[0]["output_config"] == {"effort": "high"}
+    # Retry after fallback uses enabled without output_config
+    assert captured_kwargs[1]["thinking"]["type"] == "enabled"
+    assert "output_config" not in captured_kwargs[1]
+
+    # Second call should use enabled directly without hitting the error
+    result2 = await engine.think(
+        system_prompt="sys",
+        messages=[{"role": "user", "content": "hi"}],
+        enable_thinking=True,
+    )
+    assert result2 is response
+    # Third call also uses enabled, no output_config
+    assert captured_kwargs[2]["thinking"]["type"] == "enabled"
+    assert "output_config" not in captured_kwargs[2]
+
+
+@pytest.mark.asyncio
+async def test_think_adaptive_passes_custom_effort_level():
+    """output_config.effort reflects the configured thinking_effort."""
+    engine = _bare_engine(_thinking_effort="medium")
+
+    response = _ok_response()
+    create = AsyncMock(return_value=response)
+    engine._async_client = SimpleNamespace(messages=SimpleNamespace(create=create))
+
+    await engine.think(
+        system_prompt="sys",
+        messages=[{"role": "user", "content": "hi"}],
+        enable_thinking=True,
+    )
+
+    kwargs = create.await_args.kwargs
+    assert kwargs["thinking"] == {"type": "adaptive"}
+    assert kwargs["output_config"] == {"effort": "medium"}
 
 
 @pytest.mark.asyncio

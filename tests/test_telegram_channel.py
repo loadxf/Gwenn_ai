@@ -311,7 +311,7 @@ class TestOnSetup:
         """Setup now parses from raw message text, not context.args (#16)."""
         ch, agent, _ = make_channel()
         update = make_update(user_id="12345")
-        update.message.text = "/setup Bob | coding partner | debugging | concise | no destructive changes"
+        update.message.text = "/setup gwenn | coding partner | debugging | concise | no destructive changes"
         ctx = make_context()
 
         await ch._on_setup(update, ctx)
@@ -320,7 +320,7 @@ class TestOnSetup:
         kwargs = agent.apply_startup_onboarding.call_args.kwargs
         args = agent.apply_startup_onboarding.call_args.args
         assert kwargs["user_id"] == "telegram_12345"
-        assert args[0]["name"] == "Bob"
+        assert args[0]["name"] == "gwenn"
         assert args[0]["role"] == "coding partner"
 
     @pytest.mark.asyncio
@@ -721,19 +721,19 @@ class TestOnUnsupportedMedia:
 class TestParseSetupPayload:
     def test_basic_parsing(self):
         result = TelegramChannel._parse_setup_payload(
-            "Bob | dev | debugging | concise | safe"
+            "gwenn | dev | debugging | concise | safe"
         )
-        assert result["name"] == "Bob"
+        assert result["name"] == "gwenn"
         assert result["role"] == "dev"
-        assert result["needs"] == "debugging"
+        assert result["interests"] == "debugging"
         assert result["communication_style"] == "concise"
         assert result["boundaries"] == "safe"
 
     def test_missing_trailing_fields(self):
-        result = TelegramChannel._parse_setup_payload("Bob | dev")
-        assert result["name"] == "Bob"
+        result = TelegramChannel._parse_setup_payload("gwenn | dev")
+        assert result["name"] == "gwenn"
         assert result["role"] == "dev"
-        assert result["needs"] == ""
+        assert result["interests"] == ""
         assert result["communication_style"] == ""
         assert result["boundaries"] == ""
 

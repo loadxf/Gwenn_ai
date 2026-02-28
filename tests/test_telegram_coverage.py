@@ -682,7 +682,7 @@ class TestOnSetupCoverage:
         """Line 493: non-allowed user returns early."""
         ch, _, _ = make_channel(allowed_user_ids=["999"])
         update = make_update(user_id="55")
-        update.message.text = "/setup Bob"
+        update.message.text = "/setup gwenn"
         ctx = make_context()
         await ch._on_setup(update, ctx)
         update.message.reply_text.assert_not_called()
@@ -692,7 +692,7 @@ class TestOnSetupCoverage:
         """Lines 494-496: non-owner is denied setup."""
         ch, _, _ = make_channel(owner_user_ids=["999"])
         update = make_update(user_id="55")
-        update.message.text = "/setup Bob"
+        update.message.text = "/setup gwenn"
         ctx = make_context()
         await ch._on_setup(update, ctx)
         text = update.message.reply_text.call_args[0][0]

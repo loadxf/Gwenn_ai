@@ -916,9 +916,9 @@ def test_apply_startup_onboarding_persists_context_and_identity_profile():
     agent.affect_state = SimpleNamespace(dimensions=dims)
 
     profile = {
-        "name": "Bob",
+        "name": "gwenn",
         "role": "coding partner",
-        "needs": "debugging and architecture guidance",
+        "interests": "debugging and architecture guidance",
         "communication_style": "concise and direct",
         "boundaries": "do not use destructive git commands",
     }
@@ -926,11 +926,11 @@ def test_apply_startup_onboarding_persists_context_and_identity_profile():
     SentientAgent.apply_startup_onboarding(agent, profile, user_id="default_user")
 
     assert agent.identity.onboarding_completed is True
-    assert agent.identity.onboarding_profile["name"] == "Bob"
+    assert agent.identity.onboarding_profile["name"] == "gwenn"
     assert agent.identity.last_user_id == "default_user"
-    assert agent.identity.last_relationship_kwargs["display_name"] == "Bob"
+    assert agent.identity.last_relationship_kwargs["display_name"] == "gwenn"
     assert "Primary User Onboarding" in agent.memory_store.context
-    assert "Desired Gwenn role: coding partner" in agent.memory_store.context
+    assert "Desired relationship: coding partner" in agent.memory_store.context
     assert agent.memory_store.saved_episode is not None
     assert agent.memory_store.saved_episode.category == "onboarding"
 

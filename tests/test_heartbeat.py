@@ -665,7 +665,7 @@ async def test_beat_decays_theory_of_mind_every_10_beats():
 
     agent = _make_agent_for_full_beat()
     agent.theory_of_mind = SimpleNamespace(
-        _user_models={"alice": _UserModel(), "bob": _UserModel()},
+        _user_models={"alice": _UserModel(), "gwenn": _UserModel()},
     )
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 

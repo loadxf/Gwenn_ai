@@ -1,4 +1,4 @@
-# /home/bob/Gwenn_ai/gwenn/config.py
+# gwenn/config.py
 """
 Configuration for Gwenn Agent.
 
@@ -12,13 +12,18 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from pydantic import AliasChoices, BeforeValidator, Field, model_validator
 from pydantic_settings import BaseSettings
 import structlog
 
 
 logger = structlog.get_logger(__name__)
+
+# Resolve .env relative to the project root (one level above gwenn/ package),
+# so the config works regardless of the user's current working directory.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 def _normalize_session_scope_mode(value: object, default: str) -> str:
@@ -101,6 +106,9 @@ class ClaudeConfig(BaseSettings):
     model: str = Field("claude-sonnet-4-5-20250929", alias="GWENN_MODEL")
     max_tokens: int = Field(8192, alias="GWENN_MAX_TOKENS")
     thinking_budget: int = Field(16000, alias="GWENN_THINKING_BUDGET")
+    thinking_effort: Literal["low", "medium", "high", "max"] = Field(
+        "high", alias="GWENN_THINKING_EFFORT"
+    )
     request_timeout_seconds: float = Field(120.0, alias="GWENN_REQUEST_TIMEOUT_SECONDS")
     retry_max_retries: int = Field(3, alias="GWENN_RETRY_MAX_RETRIES")
     retry_base_delay: float = Field(0.5, alias="GWENN_RETRY_BASE_DELAY")
@@ -108,7 +116,7 @@ class ClaudeConfig(BaseSettings):
     retry_exponential_base: float = Field(2.0, alias="GWENN_RETRY_EXPONENTIAL_BASE")
     retry_jitter_range: float = Field(0.25, alias="GWENN_RETRY_JITTER_RANGE")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
     @model_validator(mode="after")
     def resolve_auth(self) -> "ClaudeConfig":
@@ -195,7 +203,7 @@ class MemoryConfig(BaseSettings):
     _DEFAULT_EPISODIC: Path = Path("./gwenn_data/episodic.db")
     _DEFAULT_SEMANTIC: Path = Path("./gwenn_data/semantic_vectors")
 
-    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
 
     @model_validator(mode="after")
     def derive_paths_from_data_dir(self) -> "MemoryConfig":
@@ -235,7 +243,7 @@ class HeartbeatConfig(BaseSettings):
     circuit_base_seconds: float = Field(60.0, alias="GWENN_HEARTBEAT_CIRCUIT_BASE_SECONDS")
     circuit_max_seconds: float = Field(900.0, alias="GWENN_HEARTBEAT_CIRCUIT_MAX_SECONDS")
 
-    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
 
     @model_validator(mode="after")
     def normalize_limits(self) -> "HeartbeatConfig":
@@ -267,7 +275,7 @@ class AffectConfig(BaseSettings):
         alias="GWENN_AFFECT_BASELINE_PULL",
     )  # gentle drift back toward baseline each cycle
 
-    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
 
 
 class ContextConfig(BaseSettings):
@@ -280,7 +288,7 @@ class ContextConfig(BaseSettings):
     # Token estimation (rough: 1 token ≈ 4 chars)
     chars_per_token: float = 4.0
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class SafetyConfig(BaseSettings):
@@ -325,7 +333,7 @@ class SafetyConfig(BaseSettings):
     tool_default_timeout: float = Field(30.0, alias="GWENN_TOOL_DEFAULT_TIMEOUT")
     tool_max_output_length: int = Field(25000, alias="GWENN_TOOL_MAX_OUTPUT_LENGTH")
 
-    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
 
     def parse_approval_list(self) -> list[str]:
         """Handle comma-separated string from env or list from code."""
@@ -364,7 +372,7 @@ class MCPConfig(BaseSettings):
 
     servers: str = Field("[]", alias="GWENN_MCP_SERVERS")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
     def get_server_list(self) -> list[dict]:
         """Parse MCP server configurations from JSON string."""
@@ -383,7 +391,7 @@ class SensoryConfig(BaseSettings):
     max_percepts_per_channel: int = Field(10, alias="GWENN_MAX_PERCEPTS_PER_CHANNEL")
     percept_expiry_seconds: float = Field(300.0, alias="GWENN_PERCEPT_EXPIRY")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class EthicsConfig(BaseSettings):
@@ -392,7 +400,7 @@ class EthicsConfig(BaseSettings):
     assessment_history_size: int = Field(100, alias="GWENN_ETHICS_HISTORY_SIZE")
     concern_threshold: float = Field(0.3, alias="GWENN_ETHICS_CONCERN_THRESHOLD")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class InterAgentConfig(BaseSettings):
@@ -401,7 +409,7 @@ class InterAgentConfig(BaseSettings):
     self_id: str = Field("gwenn", alias="GWENN_AGENT_ID")
     message_buffer_size: int = Field(100, alias="GWENN_INTERAGENT_BUFFER_SIZE")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class GoalConfig(BaseSettings):
@@ -411,7 +419,7 @@ class GoalConfig(BaseSettings):
     goal_advance_amount: float = Field(0.35, alias="GWENN_GOAL_ADVANCE_AMOUNT")
     max_completed_goals: int = Field(200, alias="GWENN_MAX_COMPLETED_GOALS")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class InnerLifeConfig(BaseSettings):
@@ -420,7 +428,7 @@ class InnerLifeConfig(BaseSettings):
     variety_pressure_seconds: float = Field(300.0, alias="GWENN_VARIETY_PRESSURE_SECONDS")
     variety_boost_max: float = Field(2.0, alias="GWENN_VARIETY_BOOST_MAX")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class MetacognitionConfig(BaseSettings):
@@ -431,7 +439,7 @@ class MetacognitionConfig(BaseSettings):
     max_concerns: int = Field(20, alias="GWENN_MAX_CONCERNS")
     max_insights: int = Field(20, alias="GWENN_MAX_INSIGHTS")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class TheoryOfMindConfig(BaseSettings):
@@ -441,7 +449,7 @@ class TheoryOfMindConfig(BaseSettings):
     max_topics_per_user: int = Field(50, alias="GWENN_MAX_TOPICS_PER_USER")
     max_user_models: int = Field(500, alias="GWENN_MAX_USER_MODELS")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class GroqConfig(BaseSettings):
@@ -451,7 +459,7 @@ class GroqConfig(BaseSettings):
     whisper_model: str = Field("whisper-large-v3-turbo", alias="GWENN_WHISPER_MODEL")
     max_audio_bytes: int = Field(25 * 1024 * 1024, alias="GWENN_GROQ_MAX_AUDIO_BYTES")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
     @property
     def is_available(self) -> bool:
@@ -482,7 +490,7 @@ class OrchestrationConfig(BaseSettings):
     autonomous_spawn_cooldown: float = Field(300.0, alias="GWENN_AUTONOMOUS_SPAWN_COOLDOWN")
     autonomous_spawn_max_per_hour: int = Field(10, alias="GWENN_AUTONOMOUS_SPAWN_MAX_HOURLY")
 
-    model_config = {"env_file": ".env", "extra": "ignore", "populate_by_name": True}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
 
     @model_validator(mode="after")
     def normalize_limits(self) -> "OrchestrationConfig":
@@ -512,7 +520,7 @@ class PrivacyConfig(BaseSettings):
         alias="GWENN_REDACTION_DISABLED_CATEGORIES",
     )
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class TelegramConfig(BaseSettings):
@@ -538,7 +546,7 @@ class TelegramConfig(BaseSettings):
     auto_install: bool = Field(True, alias="GWENN_AUTO_INSTALL_TELEGRAM")
 
     model_config = {
-        "env_file": ".env",
+        "env_file": _ENV_FILE,
         "extra": "ignore",
         "populate_by_name": True,
         "env_ignore_empty": True,
@@ -588,7 +596,7 @@ class DiscordConfig(BaseSettings):
     enable_media: bool = Field(False, alias="DISCORD_ENABLE_MEDIA")
 
     model_config = {
-        "env_file": ".env",
+        "env_file": _ENV_FILE,
         "extra": "ignore",
         "populate_by_name": True,
         "env_ignore_empty": True,
@@ -610,7 +618,7 @@ class SkillsConfig(BaseSettings):
 
     skills_dir: Path = Field(Path("./gwenn_skills"), alias="GWENN_SKILLS_DIR")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class ChannelConfig(BaseSettings):
@@ -618,7 +626,7 @@ class ChannelConfig(BaseSettings):
 
     channel: str = Field("cli", alias="GWENN_CHANNEL")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
 class DaemonConfig(BaseSettings):
@@ -641,7 +649,7 @@ class DaemonConfig(BaseSettings):
     _DEFAULT_PID: Path = Path("./gwenn_data/gwenn.pid")
     _DEFAULT_SESSIONS: Path = Path("./gwenn_data/sessions")
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
     @model_validator(mode="after")
     def normalize_limits(self) -> "DaemonConfig":
@@ -726,17 +734,23 @@ class GwennConfig:
         self.memory.data_dir.mkdir(parents=True, exist_ok=True)
 
     def _resolve_paths(self) -> None:
-        """Resolve all relative Path fields to absolute so CWD changes don't break them."""
+        """Resolve relative Path fields against the project root (where .env lives),
+        not the current working directory, so ``gwenn`` works from any directory."""
+        def _resolve(p: Path) -> Path:
+            if p.is_absolute():
+                return p
+            return (_PROJECT_ROOT / p).resolve()
+
         # Memory paths
-        self.memory.data_dir = self.memory.data_dir.resolve()
-        self.memory.episodic_db_path = self.memory.episodic_db_path.resolve()
-        self.memory.semantic_db_path = self.memory.semantic_db_path.resolve()
+        self.memory.data_dir = _resolve(self.memory.data_dir)
+        self.memory.episodic_db_path = _resolve(self.memory.episodic_db_path)
+        self.memory.semantic_db_path = _resolve(self.memory.semantic_db_path)
         # Daemon paths
-        self.daemon.socket_path = self.daemon.socket_path.resolve()
-        self.daemon.pid_file = self.daemon.pid_file.resolve()
-        self.daemon.sessions_dir = self.daemon.sessions_dir.resolve()
+        self.daemon.socket_path = _resolve(self.daemon.socket_path)
+        self.daemon.pid_file = _resolve(self.daemon.pid_file)
+        self.daemon.sessions_dir = _resolve(self.daemon.sessions_dir)
         # Skills directory
-        self.skills_dir = self.skills_dir.resolve()
+        self.skills_dir = _resolve(self.skills_dir)
 
     def __repr__(self) -> str:
         return (

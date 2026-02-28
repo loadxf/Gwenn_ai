@@ -819,9 +819,9 @@ class TelegramChannel(BaseChannel):
         if not raw_payload:
             await update.message.reply_text(
                 "Setup format:\n"
-                "/setup Name | Role | Main needs/goals | Communication style | Boundaries\n\n"
+                "/setup Name | Companion type | Interests/focus | Communication style | Keep in mind\n\n"
                 "Example:\n"
-                "/setup Bob | coding partner | ship reliable features | concise "
+                "/setup gwenn | thinking partner | building AI projects | warm and concise "
                 "| no destructive changes\n\n"
                 "Use `/setup skip` to skip first-run setup."
             )
@@ -829,7 +829,7 @@ class TelegramChannel(BaseChannel):
 
         if raw_payload.lower() == "skip":
             self._agent.identity.mark_onboarding_completed({})
-            await update.message.reply_text("First-run setup skipped.")
+            await update.message.reply_text("No worries — we'll get to know each other as we go.")
             return
 
         profile = self._parse_setup_payload(raw_payload)
@@ -841,7 +841,7 @@ class TelegramChannel(BaseChannel):
 
         user_id = self.make_user_id(raw_id)
         self._agent.apply_startup_onboarding(profile, user_id=user_id)
-        await update.message.reply_text("Setup saved. I will use this as ongoing guidance.")
+        await update.message.reply_text("Thank you for sharing that with me. I'll carry this forward.")
 
     async def _on_status(self, update, context) -> None:
         raw_id = str(update.effective_user.id)
@@ -914,7 +914,7 @@ class TelegramChannel(BaseChannel):
                 return
             await update.message.reply_text(
                 "Before we begin, run first-time setup with:\n"
-                "/setup Name | Role | Main needs/goals | Communication style | Boundaries\n"
+                "/setup Name | Companion type | Interests/focus | Communication style | Keep in mind\n"
                 "Or use `/setup skip`."
             )
             return
@@ -1415,11 +1415,11 @@ class TelegramChannel(BaseChannel):
         """
         Parse '/setup' payload into the onboarding profile fields.
 
-        Expected form: "name | role | needs | communication_style | boundaries"
+        Expected form: "name | role | interests | communication_style | boundaries"
         Missing trailing fields are allowed.
         """
         parts = [part.strip() for part in raw_payload.split("|")]
-        keys = ["name", "role", "needs", "communication_style", "boundaries"]
+        keys = ["name", "role", "interests", "communication_style", "boundaries"]
         profile = {key: "" for key in keys}
         for idx, value in enumerate(parts[: len(keys)]):
             profile[keys[idx]] = value

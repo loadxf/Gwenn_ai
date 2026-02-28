@@ -422,6 +422,16 @@ class GwennSession:
         self._refresh_startup_live(startup_live, startup_state)
         try:
             await self._agent.initialize()
+            # Stop Live display before interactive onboarding prompts so
+            # input() can render ANSI escape codes correctly.
+            if (
+                startup_live is not None
+                and self._agent.identity.should_run_startup_onboarding()
+                and sys.stdin.isatty()
+            ):
+                startup_live.stop()
+                startup_live = None
+                startup_state = None
             await self._run_first_startup_onboarding_if_needed(channel_mode)
         except Exception:
             self._set_startup_step(startup_state or {}, "memory", "error")
@@ -523,7 +533,7 @@ class GwennSession:
         except Exception:
             return False
 
-        socket_path = config.daemon.socket_path.resolve()
+        socket_path = config.daemon.socket_path
         if not socket_path.exists():
             return False
 
@@ -662,41 +672,47 @@ class GwennSession:
         console.print()
         console.print(
             Panel(
-                "First-time setup so I can tailor how I help you.\n"
-                "You can keep answers short. Press Enter to skip any question.",
+                "Hi — I'm Gwenn, and this is our first time meeting.\n"
+                "I'd love to learn a little about you. Answer as much or as little as\n"
+                "feels right, or press Enter to skip any question.",
                 title="Welcome",
                 border_style="cyan",
             )
         )
 
-        name = await self._prompt_startup_input("Your name (or what I should call you): ")
+        name = await self._prompt_startup_input("What's your name, or what should I call you? ")
         role = await self._prompt_startup_input(
-            "My primary role for you (e.g., coding partner, assistant, coach): "
+            "What kind of companion would you like me to be? "
+            "(e.g., thinking partner, coding buddy, creative collaborator): "
         )
-        needs = await self._prompt_startup_input("Top things you want me to help with right now: ")
+        interests = await self._prompt_startup_input(
+            "What are your interests? (e.g., programming, music, science, art): "
+        )
         communication_style = await self._prompt_startup_input(
-            "Preferred communication style (brief, detailed, etc.): "
+            "How do you prefer to communicate? "
+            "(e.g., casual and brief, warm and detailed, straight to the point): "
         )
         boundaries = await self._prompt_startup_input(
-            "Any boundaries or preferences I should always respect: "
+            "Anything important I should always keep in mind about you? "
+            "(e.g., preferences, boundaries, accessibility needs): "
         )
 
         profile = {
             "name": name,
             "role": role,
-            "needs": needs,
+            "interests": interests,
             "communication_style": communication_style,
             "boundaries": boundaries,
         }
 
         if not any(value.strip() for value in profile.values()):
             console.print(
-                "[dim]First-time setup skipped. I can learn your preferences over time.[/dim]"
+                "[dim]No worries — we'll get to know each other as we go.[/dim]"
             )
             return
 
         self._agent.apply_startup_onboarding(profile, user_id="default_user")
-        console.print("[green]Setup saved. I will use this as ongoing guidance.[/green]")
+        console.print("[green]Thank you for sharing that with me. I'll carry this forward.[/green]")
         console.print()
 
     async def _prompt_startup_input(self, prompt: str) -> str:
@@ -1410,7 +1426,7 @@ class GwennSession:
                 sessions,
                 channels,
                 self._shutdown_event,
-                continue_on_import_error=(mode == "all"),
+                continue_on_start_error=(mode == "all"),
             )
         except Exception as exc:
             if not _is_nonfatal_channel_start_error(exc):
@@ -1729,13 +1745,13 @@ def _run_stop_daemon() -> None:
 
         channel = CliChannel(auth_token=config.daemon.auth_token)
         try:
-            await channel.connect(config.daemon.socket_path.resolve())
+            await channel.connect(config.daemon.socket_path)
             await channel.stop_daemon()
             console.print("[green]Daemon stop requested.[/green]")
             await channel.disconnect()
         except DaemonNotRunningError:
             # Try PID file fallback
-            pid_file = config.daemon.pid_file.resolve()
+            pid_file = config.daemon.pid_file
             if pid_file.exists():
                 try:
                     pid = int(pid_file.read_text().strip())
@@ -1763,7 +1779,7 @@ def _run_show_status() -> None:
 
         channel = CliChannel(auth_token=config.daemon.auth_token)
         try:
-            await channel.connect(config.daemon.socket_path.resolve())
+            await channel.connect(config.daemon.socket_path)
             resp = await channel.get_status()
             status = resp.get("status", {})
             hb_resp = await channel.get_heartbeat_status()

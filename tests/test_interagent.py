@@ -38,7 +38,7 @@ class TestDiscoverAgent:
 
     def test_last_contact_set_on_creation(self):
         before = time.time()
-        p = _bridge().discover_agent("bob", "Bob")
+        p = _bridge().discover_agent("gwenn", "gwenn")
         assert before <= p.last_contact <= time.time()
 
 # -- compose_message() ------------------------------------------------------
@@ -208,9 +208,9 @@ class TestContextGeneration:
     def test_connections_context_returns_summary(self):
         b = _bridge()
         b.discover_agent("alice", "Alice")
-        b.discover_agent("bob", "Bob")
+        b.discover_agent("gwenn", "gwenn")
         ctx = b.get_connections_context()
-        assert "Known agents" in ctx and "Alice" in ctx and "Bob" in ctx
+        assert "Known agents" in ctx and "Alice" in ctx and "gwenn" in ctx
 
 # -- Persistence (to_dict / restore_from_dict) -------------------------------
 

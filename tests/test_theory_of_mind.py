@@ -214,15 +214,15 @@ class TestDecayStaleBeliefs:
 class TestTheoryOfMindUserManagement:
     def test_get_or_create_creates_new_user(self):
         tom = _fresh_tom()
-        user = tom.get_or_create_user("bob")
-        assert user.user_id == "bob"
+        user = tom.get_or_create_user("gwenn")
+        assert user.user_id == "gwenn"
         assert user.interaction_count == 0
 
     def test_get_or_create_returns_existing(self):
         tom = _fresh_tom()
-        u1 = tom.get_or_create_user("bob")
+        u1 = tom.get_or_create_user("gwenn")
         u1.interaction_count = 5
-        u2 = tom.get_or_create_user("bob")
+        u2 = tom.get_or_create_user("gwenn")
         assert u2 is u1
         assert u2.interaction_count == 5
 
@@ -372,8 +372,8 @@ class TestPersistence:
 
     def test_round_trip_preserves_interaction_count_and_topics(self):
         tom = _fresh_tom()
-        tom.set_current_user("bob")
-        user = tom._user_models["bob"]
+        tom.set_current_user("gwenn")
+        user = tom._user_models["gwenn"]
         user.interaction_count = 10
         user.topics_discussed = ["ai", "music", "cooking"]
 
@@ -381,7 +381,7 @@ class TestPersistence:
         tom2 = _fresh_tom()
         tom2.restore_from_dict(data)
 
-        restored = tom2._user_models["bob"]
+        restored = tom2._user_models["gwenn"]
         assert restored.interaction_count == 10
         assert restored.topics_discussed == ["ai", "music", "cooking"]
 

@@ -919,7 +919,7 @@ class TestStartupFunctions:
             mock_agent,
             sessions,
             [missing, good],
-            continue_on_import_error=True,
+            continue_on_start_error=True,
         )
 
         assert started == [good]

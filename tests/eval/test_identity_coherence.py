@@ -312,9 +312,9 @@ class TestRelationshipContextConsistency:
             "narrative_fragments": [],
             "preferences": [],
             "relationships": {
-                "bob-001": {
-                    "user_id": "bob-001",
-                    "display_name": "Bob",
+                "gwenn-001": {
+                    "user_id": "gwenn-001",
+                    "display_name": "gwenn",
                     "interaction_count": 5,
                     "first_interaction": time.time() - 3600,
                     "last_interaction": time.time(),
@@ -330,8 +330,8 @@ class TestRelationshipContextConsistency:
             "milestones": [],
         }
         identity = _make_identity(tmp_path, payload)
-        ctx1 = identity.generate_relationship_context("bob-001")
-        ctx2 = identity.generate_relationship_context("bob-001")
+        ctx1 = identity.generate_relationship_context("gwenn-001")
+        ctx2 = identity.generate_relationship_context("gwenn-001")
         assert ctx1 == ctx2
 
     def test_update_relationship_persists(self, tmp_path):

@@ -249,7 +249,7 @@ class TestMultipleSameType:
 
     def test_multiple_emails(self):
         r = _redactor()
-        text = "contact alice@example.com or bob@example.com"
+        text = "contact alice@example.com or gwenn@example.com"
         result = r.redact(text)
         assert result == "contact [REDACTED_EMAIL] or [REDACTED_EMAIL]"
 

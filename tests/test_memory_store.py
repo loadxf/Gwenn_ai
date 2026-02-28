@@ -1027,11 +1027,11 @@ class TestEdgeCases:
     def test_episode_participants_json_round_trip(self, store: MemoryStore):
         ep = _make_episode(
             episode_id="partic",
-            participants=["alice", "bob", "self"],
+            participants=["alice", "gwenn", "self"],
         )
         store.save_episode(ep)
         loaded = store.load_episodes()
-        assert loaded[0].participants == ["alice", "bob", "self"]
+        assert loaded[0].participants == ["alice", "gwenn", "self"]
 
     def test_episode_consolidated_bool_round_trip(self, store: MemoryStore):
         """consolidated is stored as INTEGER; ensure it comes back as bool."""

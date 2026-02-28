@@ -771,7 +771,7 @@ class TestStartChannelsImportError:
 
     @pytest.mark.asyncio
     async def test_import_error_not_skipped_by_default(self):
-        """Line 118-119: ImportError is raised when continue_on_import_error=False."""
+        """Line 118-119: ImportError is raised when continue_on_start_error=False."""
         from gwenn.channels.base import BaseChannel
         from gwenn.channels.startup import start_channels
 
@@ -790,7 +790,7 @@ class TestStartChannelsImportError:
         with pytest.raises(ImportError):
             await start_channels(
                 agent, sessions, [BadChannel(agent, sessions)],
-                continue_on_import_error=False,
+                continue_on_start_error=False,
             )
 
 

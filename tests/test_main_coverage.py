@@ -86,6 +86,7 @@ def _fake_config(**overrides) -> SimpleNamespace:
             model="claude-test",
             max_tokens=4096,
             thinking_budget=1024,
+            thinking_effort="high",
             request_timeout_seconds=30.0,
             retry_max_retries=3,
         ),
@@ -99,14 +100,14 @@ def _fake_config(**overrides) -> SimpleNamespace:
         safety=SimpleNamespace(sandbox_enabled=True),
         privacy=SimpleNamespace(redaction_enabled=True),
         daemon=SimpleNamespace(
-            socket_path=SimpleNamespace(resolve=lambda: SimpleNamespace(exists=lambda: False)),
+            socket_path=SimpleNamespace(exists=lambda: False),
             sessions_dir="/tmp/gwenn-sessions",
             session_max_count=20,
             session_max_messages=200,
             session_include_preview=True,
             redact_session_content=False,
             auth_token="test-token",
-            pid_file=SimpleNamespace(resolve=lambda: SimpleNamespace(exists=lambda: False)),
+            pid_file=SimpleNamespace(exists=lambda: False),
         ),
         mcp=SimpleNamespace(get_server_list=MagicMock(return_value=[])),
     )
@@ -526,16 +527,16 @@ class TestDaemonCli:
         socket_path = SimpleNamespace(exists=lambda: True)
         config = _fake_config(
             daemon=SimpleNamespace(
-                socket_path=SimpleNamespace(resolve=lambda: socket_path),
+                socket_path=socket_path,
                 auth_token="tok",
                 sessions_dir="/tmp/s",
                 session_max_count=20,
                 session_max_messages=200,
                 session_include_preview=True,
                 redact_session_content=False,
-                pid_file=SimpleNamespace(resolve=lambda: SimpleNamespace(exists=lambda: False)),
+                pid_file=SimpleNamespace(exists=lambda: False),
             ),
-            claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, request_timeout_seconds=30.0, retry_max_retries=3),
+            claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
@@ -562,16 +563,16 @@ class TestDaemonCli:
         socket_path = SimpleNamespace(exists=lambda: True)
         config = _fake_config(
             daemon=SimpleNamespace(
-                socket_path=SimpleNamespace(resolve=lambda: socket_path),
+                socket_path=socket_path,
                 auth_token="tok",
                 sessions_dir="/tmp/s",
                 session_max_count=20,
                 session_max_messages=200,
                 session_include_preview=True,
                 redact_session_content=False,
-                pid_file=SimpleNamespace(resolve=lambda: SimpleNamespace(exists=lambda: False)),
+                pid_file=SimpleNamespace(exists=lambda: False),
             ),
-            claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, request_timeout_seconds=30.0, retry_max_retries=3),
+            claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
@@ -602,16 +603,16 @@ class TestDaemonCli:
         socket_path = SimpleNamespace(exists=lambda: True)
         config = _fake_config(
             daemon=SimpleNamespace(
-                socket_path=SimpleNamespace(resolve=lambda: socket_path),
+                socket_path=socket_path,
                 auth_token="tok",
                 sessions_dir="/tmp/s",
                 session_max_count=20,
                 session_max_messages=200,
                 session_include_preview=True,
                 redact_session_content=False,
-                pid_file=SimpleNamespace(resolve=lambda: SimpleNamespace(exists=lambda: False)),
+                pid_file=SimpleNamespace(exists=lambda: False),
             ),
-            claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, request_timeout_seconds=30.0, retry_max_retries=3),
+            claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
@@ -2121,7 +2122,7 @@ class TestSubcommandHelpers:
         from gwenn.main import _run_stop_daemon
         monkeypatch.setattr("gwenn.main.console.print", MagicMock())
         config = _fake_config()
-        config.daemon.socket_path = SimpleNamespace(resolve=lambda: "/tmp/test.sock")
+        config.daemon.socket_path = "/tmp/test.sock"
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
         channel = AsyncMock()
@@ -2142,8 +2143,8 @@ class TestSubcommandHelpers:
         pid_file.write_text("99999")
 
         config = _fake_config()
-        config.daemon.socket_path = SimpleNamespace(resolve=lambda: "/tmp/test.sock")
-        config.daemon.pid_file = SimpleNamespace(resolve=lambda: pid_file)
+        config.daemon.socket_path = "/tmp/test.sock"
+        config.daemon.pid_file = pid_file
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
         from gwenn.channels.cli_channel import DaemonNotRunningError
@@ -2169,8 +2170,8 @@ class TestSubcommandHelpers:
         pid_file = tmp_path / "gwenn.pid"  # Does not exist
 
         config = _fake_config()
-        config.daemon.socket_path = SimpleNamespace(resolve=lambda: "/tmp/test.sock")
-        config.daemon.pid_file = SimpleNamespace(resolve=lambda: pid_file)
+        config.daemon.socket_path = "/tmp/test.sock"
+        config.daemon.pid_file = pid_file
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
         from gwenn.channels.cli_channel import DaemonNotRunningError
@@ -2201,8 +2202,8 @@ class TestSubcommandHelpers:
         pid_file.write_text("12345")
 
         config = _fake_config()
-        config.daemon.socket_path = SimpleNamespace(resolve=lambda: "/tmp/test.sock")
-        config.daemon.pid_file = SimpleNamespace(resolve=lambda: pid_file)
+        config.daemon.socket_path = "/tmp/test.sock"
+        config.daemon.pid_file = pid_file
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
         from gwenn.channels.cli_channel import DaemonNotRunningError
@@ -2223,7 +2224,7 @@ class TestSubcommandHelpers:
         monkeypatch.setattr("gwenn.main.console.print", print_mock)
 
         config = _fake_config()
-        config.daemon.socket_path = SimpleNamespace(resolve=lambda: "/tmp/test.sock")
+        config.daemon.socket_path = "/tmp/test.sock"
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
         channel = AsyncMock()
@@ -2249,7 +2250,7 @@ class TestSubcommandHelpers:
         monkeypatch.setattr("gwenn.main.console.print", print_mock)
 
         config = _fake_config()
-        config.daemon.socket_path = SimpleNamespace(resolve=lambda: "/tmp/test.sock")
+        config.daemon.socket_path = "/tmp/test.sock"
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
         from gwenn.channels.cli_channel import DaemonNotRunningError
@@ -2421,7 +2422,7 @@ class TestRemainingGaps:
         session = _make_session()
         agent = _fake_agent()
         agent.interagent = SimpleNamespace(status={"known_agents": {
-            "a1": {"name": "Bob", "relationship": "peer", "messages": 3}
+            "a1": {"name": "gwenn", "relationship": "peer", "messages": 3}
         }})
         session._agent = agent
         print_mock = MagicMock()

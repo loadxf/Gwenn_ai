@@ -53,7 +53,11 @@ class DockerManager:
         self._network = network
         self._memory_limit = memory_limit
         self._cpu_limit = cpu_limit
-        self._project_root = project_root or Path.cwd()
+        if project_root is not None:
+            self._project_root = project_root
+        else:
+            # Resolve relative to the package root, not the working directory.
+            self._project_root = Path(__file__).resolve().parent.parent.parent
         self._available: Optional[bool] = None
 
     async def check_available(self) -> bool:

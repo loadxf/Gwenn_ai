@@ -1004,7 +1004,7 @@ class TestSlashCommandsCoverage:
         await tree.commands["setup"](interaction, skip=True)
         agent.identity.mark_onboarding_completed.assert_called_once_with({})
         text = interaction.response.send_message.call_args[0][0]
-        assert "skipped" in text.lower()
+        assert "get to know each other" in text.lower()
 
     @pytest.mark.asyncio
     async def test_setup_with_profile(self):
@@ -1022,13 +1022,13 @@ class TestSlashCommandsCoverage:
 
         await tree.commands["setup"](
             interaction,
-            name="Bob",
+            name="gwenn",
             role="dev",
-            needs="debugging",
+            interests="debugging",
         )
         agent.apply_startup_onboarding.assert_called_once()
         text = interaction.response.send_message.call_args[0][0]
-        assert "saved" in text.lower()
+        assert "carry this forward" in text.lower()
 
     @pytest.mark.asyncio
     async def test_setup_no_fields(self):
@@ -1355,7 +1355,7 @@ class TestSlashCommandBlockedReturn:
         interaction.response = MagicMock()
         interaction.response.send_message = AsyncMock()
 
-        await tree.commands["setup"](interaction, name="Bob")
+        await tree.commands["setup"](interaction, name="gwenn")
         text = interaction.response.send_message.call_args[0][0]
         assert "not allowed" in text.lower()
 

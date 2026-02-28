@@ -467,7 +467,7 @@ class TestSlashAllowlist:
         interaction.response = MagicMock()
         interaction.response.send_message = AsyncMock()
 
-        await tree.commands["setup"](interaction, name="Bob")
+        await tree.commands["setup"](interaction, name="gwenn")
 
         interaction.response.send_message.assert_called_once()
         args, kwargs = interaction.response.send_message.call_args

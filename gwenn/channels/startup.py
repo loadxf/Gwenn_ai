@@ -97,7 +97,7 @@ async def start_channels(
     sessions: "SessionManager",
     channels: list["BaseChannel"],
     *,
-    continue_on_import_error: bool = False,
+    continue_on_start_error: bool = False,
 ) -> list["BaseChannel"]:
     """
     Start channel adapters, register them on the agent, and begin session cleanup.
@@ -105,8 +105,8 @@ async def start_channels(
     Returns the list of successfully started channels.  On partial failure the
     already-started channels are rolled back.
 
-    When ``continue_on_import_error`` is True, channels that fail with
-    ``ImportError`` are skipped so other channels can still start.
+    When ``continue_on_start_error`` is True, channels that fail during
+    startup are skipped so other channels can still start.
     """
     sessions.start_cleanup_task()
     started: list[BaseChannel] = []
@@ -114,11 +114,11 @@ async def start_channels(
         for ch in channels:
             try:
                 await ch.start()
-            except ImportError as exc:
-                if not continue_on_import_error:
+            except Exception as exc:
+                if not continue_on_start_error:
                     raise
                 logger.error(
-                    "channels.start_skipped_import_error",
+                    "channels.start_skipped",
                     channel=ch.channel_name,
                     error=str(exc),
                 )
@@ -160,14 +160,14 @@ async def run_channels_until_shutdown(
     channels: list["BaseChannel"],
     shutdown_event: asyncio.Event,
     *,
-    continue_on_import_error: bool = False,
+    continue_on_start_error: bool = False,
 ) -> None:
     """Start channels, wait for *shutdown_event*, then tear everything down."""
     started = await start_channels(
         agent,
         sessions,
         channels,
-        continue_on_import_error=continue_on_import_error,
+        continue_on_start_error=continue_on_start_error,
     )
     if not started:
         return

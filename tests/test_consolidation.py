@@ -77,7 +77,7 @@ class TestParseFacts:
         engine, em, sm = _fresh_engine_with_episodes()
         response = (
             "FACT: Alice likes Python | confidence: 0.9 | category: preference\n"
-            "FACT: Bob prefers Java | confidence: 0.7 | category: preference\n"
+            "FACT: gwenn prefers Java | confidence: 0.7 | category: preference\n"
         )
         counts = engine.process_consolidation_response(response)
         assert counts["facts"] == 2

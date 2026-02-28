@@ -53,10 +53,9 @@ class GwennDaemon:
         self._shutdown_event = asyncio.Event()
         self._connection_count = 0  # total connections ever accepted
         self._active_connections = 0  # connections currently open
-        # Resolve paths to absolute so CWD changes don't matter
-        self._socket_path = config.daemon.socket_path.resolve()
-        self._pid_file = config.daemon.pid_file.resolve()
-        self._sessions_dir = config.daemon.sessions_dir.resolve()
+        self._socket_path = config.daemon.socket_path
+        self._pid_file = config.daemon.pid_file
+        self._sessions_dir = config.daemon.sessions_dir
         self._auth_token = (config.daemon.auth_token or "").strip() or None
         self._max_connections = max(1, int(config.daemon.max_connections))
         self._connection_timeout = max(1.0, float(config.daemon.connection_timeout))
@@ -199,7 +198,7 @@ class GwennDaemon:
                 sessions,
                 channels,
                 self._shutdown_event,
-                continue_on_import_error=(
+                continue_on_start_error=(
                     "telegram" in channel_list and "discord" in channel_list
                 ),
             )

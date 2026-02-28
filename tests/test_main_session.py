@@ -323,7 +323,8 @@ def test_restore_terminal_state_applies_saved_attrs(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_channels_rolls_back_started_channels_on_partial_start(monkeypatch):
+async def test_run_channels_skips_failed_channel_in_all_mode(monkeypatch):
+    """When mode='all', a failed channel is skipped so the other can continue."""
     import gwenn.channels.discord_channel as dc_mod
     import gwenn.channels.telegram_channel as tg_mod
     import gwenn.config as config_mod
@@ -336,6 +337,8 @@ async def test_run_channels_rolls_back_started_channels_on_partial_start(monkeyp
     events: list[str] = []
 
     class _Telegram:
+        channel_name = "telegram"
+
         def __init__(self, *_args, **_kwargs):
             pass
 
@@ -346,6 +349,8 @@ async def test_run_channels_rolls_back_started_channels_on_partial_start(monkeyp
             events.append("telegram:stop")
 
     class _Discord:
+        channel_name = "discord"
+
         def __init__(self, *_args, **_kwargs):
             pass
 
@@ -366,9 +371,10 @@ async def test_run_channels_rolls_back_started_channels_on_partial_start(monkeyp
     monkeypatch.setattr(dc_mod, "DiscordChannel", _Discord)
 
     session = GwennSession(channel_override="all")
-    with pytest.raises(RuntimeError, match="discord failed"):
-        await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="all")
+    session._shutdown_event.set()  # trigger immediate shutdown
+    await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="all")
 
+    # Discord is skipped; Telegram starts and stops at shutdown.
     assert events == ["telegram:start", "discord:start", "telegram:stop"]
 
 

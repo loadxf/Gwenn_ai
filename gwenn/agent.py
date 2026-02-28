@@ -4109,14 +4109,14 @@ class SentientAgent:
         display_name = clean_profile.get("name")
         communication_style = clean_profile.get("communication_style")
         role = clean_profile.get("role")
-        needs = clean_profile.get("needs")
+        interests = clean_profile.get("interests") or clean_profile.get("needs")
         boundaries = clean_profile.get("boundaries")
 
         relationship_summary_parts: list[str] = []
         if role:
-            relationship_summary_parts.append(f"They want Gwenn's primary role to be: {role}.")
-        if needs:
-            relationship_summary_parts.append(f"Their main goals right now: {needs}.")
+            relationship_summary_parts.append(f"They'd like Gwenn to be: {role}.")
+        if interests:
+            relationship_summary_parts.append(f"They're interested in / working on: {interests}.")
         if boundaries:
             relationship_summary_parts.append(f"Important boundaries/preferences: {boundaries}.")
 
@@ -4176,13 +4176,13 @@ class SentientAgent:
 
         mapping = [
             ("name", "Preferred name"),
-            ("role", "Desired Gwenn role"),
-            ("needs", "Main needs/goals"),
+            ("role", "Desired relationship"),
+            ("interests", "Interests and focus"),
             ("communication_style", "Communication preference"),
             ("boundaries", "Boundaries/preferences"),
         ]
         for key, label in mapping:
-            value = profile.get(key)
+            value = profile.get(key) or (profile.get("needs") if key == "interests" else None)
             if value:
                 lines.append(f"- {label}: {value}")
 

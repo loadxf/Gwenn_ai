@@ -124,7 +124,7 @@ class TestToolSchemas:
         props = tool.input_schema["properties"]
         assert "max_iterations" in props
         assert props["max_iterations"]["type"] == "integer"
-        assert props["max_iterations"]["default"] == 10
+        assert props["max_iterations"]["default"] == 30
 
     def test_spawn_subagent_has_isolation(self):
         tool = self.registry.get("spawn_subagent")
@@ -150,7 +150,7 @@ class TestToolSchemas:
         task_props = tool.input_schema["properties"]["tasks"]["items"]["properties"]
         assert "max_iterations" in task_props
         assert task_props["max_iterations"]["type"] == "integer"
-        assert task_props["max_iterations"]["default"] == 10
+        assert task_props["max_iterations"]["default"] == 30
 
     def test_spawn_swarm_task_has_isolation(self):
         tool = self.registry.get("spawn_swarm")
@@ -232,15 +232,15 @@ class TestSpawnSubagentHandler:
         assert spec.max_iterations == 25
 
     @pytest.mark.asyncio
-    async def test_max_iterations_capped_at_50(self):
+    async def test_max_iterations_capped_at_200(self):
         agent = _make_mock_agent()
         SentientAgent._wire_orchestration_tool_handlers(agent)
 
         handler = agent.tool_registry.get("spawn_subagent").handler
-        await handler(task_description="test task", max_iterations=100)
+        await handler(task_description="test task", max_iterations=500)
 
         spec = agent.orchestrator.spawn.call_args[0][0]
-        assert spec.max_iterations == 50
+        assert spec.max_iterations == 200
 
     @pytest.mark.asyncio
     async def test_isolation_passthrough_docker(self):
@@ -368,7 +368,7 @@ class TestSpawnSwarmHandler:
         )
 
         swarm_spec = agent.orchestrator.spawn_swarm.call_args[0][0]
-        assert swarm_spec.agents[0].max_iterations == 50
+        assert swarm_spec.agents[0].max_iterations == 200
 
     @pytest.mark.asyncio
     async def test_per_task_isolation(self):
@@ -420,7 +420,7 @@ class TestSpawnSwarmHandler:
         swarm_spec = agent.orchestrator.spawn_swarm.call_args[0][0]
         spec = swarm_spec.agents[0]
         assert spec.system_prompt is None
-        assert spec.max_iterations == 10
+        assert spec.max_iterations == 30
         assert spec.timeout_seconds == 120.0
         assert spec.runtime_tier == "in_process"
 
@@ -479,13 +479,13 @@ class TestSkillBodyRendering:
         skill = parse_skill_file(SKILL_FILE)
         rendered = render_skill_body(skill.body, {
             "task": "Add user authentication",
-            "project_path": "/home/bob/myproject",
+            "project_path": "/tmp/test-project",
             "experts": "architect,backend,reviewer",
             "style": "thorough",
         })
 
         assert "Add user authentication" in rendered
-        assert "/home/bob/myproject" in rendered
+        assert "/tmp/test-project" in rendered
         assert "architect,backend,reviewer" in rendered
         assert "thorough" in rendered
 
@@ -493,12 +493,12 @@ class TestSkillBodyRendering:
         skill = parse_skill_file(SKILL_FILE)
         rendered = render_skill_body(skill.body, {
             "task": "Fix login bug",
-            "project_path": "/home/bob/myproject",
+            "project_path": "/tmp/test-project",
         })
 
         # Unsubstituted params remain as {param} — verify task/path are substituted
         assert "Fix login bug" in rendered
-        assert "/home/bob/myproject" in rendered
+        assert "/tmp/test-project" in rendered
 
     def test_rendered_body_contains_anti_vibe_directives(self):
         skill = parse_skill_file(SKILL_FILE)
@@ -599,14 +599,14 @@ class TestSkillRegistration:
         tool = agent.tool_registry.get("expert_coding")
         result = tool.handler(
             task="Build a REST API",
-            project_path="/home/bob/project",
+            project_path="/tmp/test-project",
             experts="auto",
             style="thorough",
         )
 
-        assert "[SKILL: expert_coding v1.0]" in result
+        assert "[SKILL ACTIVATED: expert_coding v1.0]" in result
         assert "Build a REST API" in result
-        assert "/home/bob/project" in result
+        assert "/tmp/test-project" in result
         assert "Anti-Vibe-Coding" in result
         assert "ARCHITECT" in result
 

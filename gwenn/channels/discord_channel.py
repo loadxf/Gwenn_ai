@@ -81,6 +81,13 @@ class DiscordChannel(BaseChannel):
                 "Install it with: pip install 'gwenn-agent[discord]'"
             ) from exc
 
+        # Suppress discord.py's "PyNaCl is not installed" warning —
+        # Gwenn does not use voice features.
+        try:
+            discord.VoiceClient.warn_nacl = False
+        except AttributeError:
+            pass
+
         intents = discord.Intents.default()
         intents.message_content = True
 
@@ -99,8 +106,12 @@ class DiscordChannel(BaseChannel):
         )
         ready_fut.cancel()
         if self._task in done:
-            # Task finished before ready — propagate the login error.
-            self._task.result()  # raises if the task failed
+            # Task finished before ready — clean up and propagate the error.
+            try:
+                self._task.result()  # raises if the task failed
+            except Exception:
+                await self.stop()
+                raise
         if not self._ready_event.is_set():
             await self.stop()
             raise TimeoutError("Discord client did not become ready within 30s")
@@ -606,7 +617,7 @@ class DiscordChannel(BaseChannel):
             interaction,
             name: str = "",
             role: str = "",
-            needs: str = "",
+            interests: str = "",
             communication_style: str = "",
             boundaries: str = "",
             skip: bool = False,
@@ -625,19 +636,21 @@ class DiscordChannel(BaseChannel):
 
             if skip:
                 channel._agent.identity.mark_onboarding_completed({})
-                await interaction.response.send_message("First-run setup skipped.", ephemeral=True)
+                await interaction.response.send_message(
+                    "No worries — we'll get to know each other as we go.", ephemeral=True
+                )
                 return
 
             profile = {
                 "name": name.strip(),
                 "role": role.strip(),
-                "needs": needs.strip(),
+                "interests": interests.strip(),
                 "communication_style": communication_style.strip(),
                 "boundaries": boundaries.strip(),
             }
             if not any(profile.values()):
                 await interaction.response.send_message(
-                    "Provide at least one field (name/role/needs/style/boundaries), "
+                    "Provide at least one field (name/role/interests/style/boundaries), "
                     "or use `skip=true`.",
                     ephemeral=True,
                 )
@@ -645,7 +658,7 @@ class DiscordChannel(BaseChannel):
 
             channel._agent.apply_startup_onboarding(profile, user_id=user_id)
             await interaction.response.send_message(
-                "Setup saved. I will use this as ongoing guidance.",
+                "Thank you for sharing that with me. I'll carry this forward.",
                 ephemeral=True,
             )
 

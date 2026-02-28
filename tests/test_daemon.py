@@ -714,9 +714,11 @@ class TestGwennDaemonDispatch:
         # Should stop after timeout budget, not spin forever.
         assert elapsed < 2.0
 
-    async def test_run_platform_channels_rolls_back_partial_start(
+    async def test_run_platform_channels_skips_failed_channel(
         self, daemon, monkeypatch
     ) -> None:
+        """When both channels are requested, a failed channel is skipped
+        (not rolled back) so the other channel can continue running."""
         import gwenn.channels.discord_channel as dc_mod
         import gwenn.channels.telegram_channel as tg_mod
         import gwenn.config as config_mod
@@ -729,6 +731,8 @@ class TestGwennDaemonDispatch:
                 self.session_ttl_seconds = session_ttl_seconds
 
         class _Telegram:
+            channel_name = "telegram"
+
             def __init__(self, *_args, **_kwargs):
                 pass
 
@@ -739,6 +743,8 @@ class TestGwennDaemonDispatch:
                 events.append("telegram:stop")
 
         class _Discord:
+            channel_name = "discord"
+
             def __init__(self, *_args, **_kwargs):
                 pass
 
@@ -758,9 +764,11 @@ class TestGwennDaemonDispatch:
         monkeypatch.setattr(tg_mod, "TelegramChannel", _Telegram)
         monkeypatch.setattr(dc_mod, "DiscordChannel", _Discord)
 
-        with pytest.raises(RuntimeError, match="discord failed"):
-            await daemon._run_platform_channels(["telegram", "discord"])
+        # Trigger immediate shutdown so the wait loop returns promptly.
+        daemon._shutdown_event.set()
+        await daemon._run_platform_channels(["telegram", "discord"])
 
+        # Discord is skipped; Telegram starts normally and stops at shutdown.
         assert events == ["telegram:start", "discord:start", "telegram:stop"]
 
     async def test_run_platform_channels_invalid_token_nonfatal(

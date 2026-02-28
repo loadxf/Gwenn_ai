@@ -16,10 +16,20 @@ import asyncio
 import inspect
 import socket
 import time
+import warnings
 from typing import Any, Callable, Optional
 
 import anthropic
 import structlog
+
+# Suppress SDK deprecation warning for thinking.type=enabled — we use
+# adaptive mode by default but fall back to enabled if the endpoint
+# rejects it (e.g. an older OAuth gateway).
+warnings.filterwarnings(
+    "ignore",
+    message=r".*thinking\.type=enabled.*is deprecated.*",
+    category=UserWarning,
+)
 
 from gwenn.config import ClaudeConfig, _load_oauth_credentials
 
@@ -74,6 +84,9 @@ class CognitiveEngine:
             self._retry_exponential_base = float(config.retry_exponential_base)
             self._retry_jitter_range = float(config.retry_jitter_range)
             self._thinking_budget = int(config.thinking_budget)
+            self._thinking_effort: str = config.thinking_effort
+            # Start with adaptive; auto-downgrades to enabled on first 400.
+            self._thinking_mode: str = "adaptive"
 
             # Telemetry
             self._total_input_tokens = 0
@@ -315,7 +328,16 @@ class CognitiveEngine:
 
         # Add extended thinking if requested
         if enable_thinking:
-            kwargs["thinking"] = {"type": "adaptive"}
+            if self._thinking_mode == "enabled":
+                # Fallback mode: adaptive was rejected, use explicit budget.
+                budget = max(self._thinking_budget, 1024)
+                kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": budget,
+                }
+            else:
+                kwargs["thinking"] = {"type": "adaptive"}
+                kwargs["output_config"] = {"effort": self._thinking_effort}
 
         # Proactive OAuth refresh — re-read token before it expires
         self._maybe_refresh_oauth()
@@ -340,42 +362,82 @@ class CognitiveEngine:
                 timeout=self._request_timeout_seconds,
             )
 
-        try:
-            response = await with_retries(
-                _create,
-                config=retry_config,
-                on_retry=None,
-            )
-        except anthropic.AuthenticationError as e:
-            # Reactive safety net: token may have expired between proactive
-            # check and actual API call (clock skew, slow credential write).
-            logger.warning("cognitive_engine.auth_error_attempting_refresh", error=str(e))
-            if self._maybe_refresh_oauth(force=True):
+        # When adaptive thinking hasn't been validated yet, probe with a
+        # single direct call (no retry wrapper) so that a 400 rejection
+        # doesn't produce a scary error log from the retry module.
+        _needs_retry_call = True
+        _probing_adaptive = enable_thinking and self._thinking_mode == "adaptive"
+        if _probing_adaptive:
+            try:
+                await self._invoke_hook(self._before_model_call_hook)
+                probe_call = self._async_client.messages.create(**kwargs)
+                response = await asyncio.wait_for(
+                    probe_call,
+                    timeout=self._request_timeout_seconds,
+                )
+                _needs_retry_call = False
+                # Mark adaptive as confirmed so the probe doesn't run again.
+                self._thinking_mode = "adaptive_confirmed"
+                logger.warning(
+                    "cognitive_engine.thinking_mode",
+                    mode="adaptive",
+                    effort=self._thinking_effort,
+                )
+            except anthropic.BadRequestError as e:
+                if "adaptive" in str(e).lower():
+                    self._thinking_mode = "enabled"
+                    budget = max(self._thinking_budget, 1024)
+                    kwargs["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": budget,
+                    }
+                    kwargs.pop("output_config", None)
+                    logger.warning(
+                        "cognitive_engine.thinking_fallback",
+                        reason="adaptive_not_supported",
+                        budget_tokens=budget,
+                    )
+                    # Fall through to the normal retry path below.
+                else:
+                    raise
+
+        if _needs_retry_call:
+            try:
                 response = await with_retries(
                     _create,
                     config=retry_config,
                     on_retry=None,
                 )
-            else:
+            except anthropic.AuthenticationError as e:
+                # Reactive safety net: token may have expired between proactive
+                # check and actual API call (clock skew, slow credential write).
+                logger.warning("cognitive_engine.auth_error_attempting_refresh", error=str(e))
+                if self._maybe_refresh_oauth(force=True):
+                    response = await with_retries(
+                        _create,
+                        config=retry_config,
+                        on_retry=None,
+                    )
+                else:
+                    raise
+            except anthropic.APIConnectionError as e:
+                base_url = getattr(self._async_client, "base_url", None)
+                logger.error(
+                    "cognitive_engine.connection_error",
+                    error=str(e),
+                    base_url=str(base_url) if base_url is not None else None,
+                )
                 raise
-        except anthropic.APIConnectionError as e:
-            base_url = getattr(self._async_client, "base_url", None)
-            logger.error(
-                "cognitive_engine.connection_error",
-                error=str(e),
-                base_url=str(base_url) if base_url is not None else None,
-            )
-            raise
-        except anthropic.RateLimitError as e:
-            logger.warning("cognitive_engine.rate_limited", error=str(e))
-            raise
-        except anthropic.APIError as e:
-            logger.error(
-                "cognitive_engine.api_error",
-                error=str(e),
-                status=getattr(e, "status_code", None),
-            )
-            raise
+            except anthropic.RateLimitError as e:
+                logger.warning("cognitive_engine.rate_limited", error=str(e))
+                raise
+            except anthropic.APIError as e:
+                logger.error(
+                    "cognitive_engine.api_error",
+                    error=str(e),
+                    status=getattr(e, "status_code", None),
+                )
+                raise
 
         # Update telemetry
         elapsed = time.monotonic() - start_time
