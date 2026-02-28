@@ -568,23 +568,20 @@ class GwennSession:
         """
         Attempt to connect to a running daemon.
 
+        Tries the WebSocket gateway first, falls back to the legacy Unix socket.
         Returns True if connected and interactive session completed.
         Returns False if no daemon is running (caller should start in-process).
         """
-        from gwenn.channels.cli_channel import CliChannel, DaemonNotRunningError
+        from gwenn.channels.cli_channel import DaemonNotRunningError
 
         daemon_live: Optional[Live] = None
         daemon_state: Optional[dict[str, Any]] = None
 
-        # Load config minimally to get socket path
+        # Load config minimally to get connection params
         try:
             config = GwennConfig()
             self._config = config
         except Exception:
-            return False
-
-        socket_path = config.daemon.socket_path
-        if not socket_path.exists():
             return False
 
         if sys.stdout.isatty():
@@ -607,9 +604,8 @@ class GwennSession:
             self._set_startup_step(daemon_state, "connect", "running")
             self._refresh_startup_live(daemon_live, daemon_state)
 
-        channel = CliChannel(auth_token=config.daemon.auth_token)
         try:
-            await channel.connect(socket_path)
+            channel = await _connect_daemon_channel(config)
         except DaemonNotRunningError:
             if daemon_state is not None:
                 self._set_startup_step(daemon_state, "connect", "error")
@@ -1801,6 +1797,44 @@ class GwennSession:
 # =============================================================================
 
 
+async def _connect_daemon_channel(
+    config: "GwennConfig",
+) -> "CliChannel | WebSocketCliChannel":
+    """Try to connect to a running daemon, WebSocket-first with Unix socket fallback.
+
+    Returns a connected channel (``WebSocketCliChannel`` or ``CliChannel``).
+    Raises ``DaemonNotRunningError`` if neither transport is reachable.
+    """
+    from gwenn.channels.cli_channel import (
+        CliChannel,
+        DaemonNotRunningError,
+        WebSocketCliChannel,
+    )
+
+    # 1. Try WebSocket gateway
+    if config.daemon.gateway_enabled:
+        ws_url = (
+            f"ws://{config.daemon.gateway_host}:{config.daemon.gateway_port}/ws"
+        )
+        ws_channel = WebSocketCliChannel(auth_token=config.daemon.auth_token)
+        try:
+            await ws_channel.connect(ws_url)
+            return ws_channel
+        except Exception:
+            # Any failure (connection, auth, timeout) → fall through to socket
+            pass
+
+    # 2. Fall back to Unix socket
+    if config.daemon.legacy_socket_enabled:
+        socket_path = config.daemon.socket_path
+        if socket_path.exists():
+            channel = CliChannel(auth_token=config.daemon.auth_token)
+            await channel.connect(socket_path)  # raises DaemonNotRunningError on failure
+            return channel
+
+    raise DaemonNotRunningError("No daemon reachable (gateway and socket both unavailable)")
+
+
 def _run_daemon_foreground() -> None:
     """Start the daemon in the foreground (for systemd or manual testing)."""
     from gwenn.daemon import run_daemon
@@ -1818,14 +1852,10 @@ def _run_stop_daemon() -> None:
             console.print(f"[red]Config error: {e}[/red]")
             return
 
-        from gwenn.channels.cli_channel import CliChannel, DaemonNotRunningError
+        from gwenn.channels.cli_channel import DaemonNotRunningError
 
-        channel = CliChannel(auth_token=config.daemon.auth_token)
         try:
-            await channel.connect(config.daemon.socket_path)
-            await channel.stop_daemon()
-            console.print("[green]Daemon stop requested.[/green]")
-            await channel.disconnect()
+            channel = await _connect_daemon_channel(config)
         except DaemonNotRunningError:
             # Try PID file fallback
             pid_file = config.daemon.pid_file
@@ -1838,6 +1868,13 @@ def _run_stop_daemon() -> None:
                 except (ValueError, ProcessLookupError, OSError) as e:
                     console.print(f"[yellow]PID fallback failed: {e}[/yellow]")
             console.print("[yellow]Daemon is not running.[/yellow]")
+            return
+
+        try:
+            await channel.stop_daemon()
+            console.print("[green]Daemon stop requested.[/green]")
+        finally:
+            await channel.disconnect()
 
     asyncio.run(_stop())
 
@@ -1852,19 +1889,21 @@ def _run_show_status() -> None:
             console.print(f"[red]Config error: {e}[/red]")
             return
 
-        from gwenn.channels.cli_channel import CliChannel, DaemonNotRunningError
+        from gwenn.channels.cli_channel import DaemonNotRunningError
 
-        channel = CliChannel(auth_token=config.daemon.auth_token)
         try:
-            await channel.connect(config.daemon.socket_path)
+            channel = await _connect_daemon_channel(config)
+        except DaemonNotRunningError:
+            console.print("[yellow]Daemon is not running.[/yellow]")
+            return
+
+        try:
             resp = await channel.get_status()
             status = resp.get("status", {})
             hb_resp = await channel.get_heartbeat_status()
             hb = hb_resp.get("status", {})
+        finally:
             await channel.disconnect()
-        except DaemonNotRunningError:
-            console.print("[yellow]Daemon is not running.[/yellow]")
-            return
 
         mood_text = describe_mood(
             status.get("emotion", "neutral"),

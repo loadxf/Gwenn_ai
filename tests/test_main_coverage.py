@@ -108,6 +108,10 @@ def _fake_config(**overrides) -> SimpleNamespace:
             redact_session_content=False,
             auth_token="test-token",
             pid_file=SimpleNamespace(exists=lambda: False),
+            gateway_enabled=True,
+            gateway_host="127.0.0.1",
+            gateway_port=18900,
+            legacy_socket_enabled=True,
         ),
         mcp=SimpleNamespace(get_server_list=MagicMock(return_value=[])),
     )
@@ -500,15 +504,226 @@ class TestRunLifecycle:
 
 
 # ===========================================================================
-# 5. Daemon connection (lines 513-577)
+# 5a. _connect_daemon_channel helper
+# ===========================================================================
+
+class TestConnectDaemonChannel:
+    @pytest.mark.asyncio
+    async def test_websocket_succeeds(self, monkeypatch):
+        """When gateway_enabled and WS connects, return WebSocketCliChannel."""
+        from gwenn.main import _connect_daemon_channel
+
+        fake_ws_channel = AsyncMock()
+        fake_ws_channel.connect = AsyncMock()
+
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.WebSocketCliChannel",
+            lambda auth_token: fake_ws_channel,
+        )
+
+        config = _fake_config()
+        config.daemon.gateway_enabled = True
+        config.daemon.gateway_host = "127.0.0.1"
+        config.daemon.gateway_port = 18900
+        config.daemon.auth_token = "tok"
+
+        result = await _connect_daemon_channel(config)
+        assert result is fake_ws_channel
+        fake_ws_channel.connect.assert_awaited_once_with("ws://127.0.0.1:18900/ws")
+
+    @pytest.mark.asyncio
+    async def test_websocket_fails_falls_back_to_socket(self, monkeypatch):
+        """When WS fails but socket exists, fall back to CliChannel."""
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+        from gwenn.main import _connect_daemon_channel
+
+        fake_ws_channel = AsyncMock()
+        fake_ws_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("ws down"))
+
+        fake_socket_channel = AsyncMock()
+        fake_socket_channel.connect = AsyncMock()
+
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.WebSocketCliChannel",
+            lambda auth_token: fake_ws_channel,
+        )
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.CliChannel",
+            lambda auth_token: fake_socket_channel,
+        )
+
+        config = _fake_config()
+        config.daemon.gateway_enabled = True
+        config.daemon.legacy_socket_enabled = True
+        config.daemon.socket_path = SimpleNamespace(exists=lambda: True)
+        config.daemon.auth_token = "tok"
+
+        result = await _connect_daemon_channel(config)
+        assert result is fake_socket_channel
+
+    @pytest.mark.asyncio
+    async def test_both_transports_fail(self, monkeypatch):
+        """When both WS and socket fail, raise DaemonNotRunningError."""
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+        from gwenn.main import _connect_daemon_channel
+
+        fake_ws_channel = AsyncMock()
+        fake_ws_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("ws down"))
+
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.WebSocketCliChannel",
+            lambda auth_token: fake_ws_channel,
+        )
+
+        config = _fake_config()
+        config.daemon.gateway_enabled = True
+        config.daemon.legacy_socket_enabled = True
+        config.daemon.socket_path = SimpleNamespace(exists=lambda: False)
+        config.daemon.auth_token = "tok"
+
+        with pytest.raises(DaemonNotRunningError):
+            await _connect_daemon_channel(config)
+
+    @pytest.mark.asyncio
+    async def test_gateway_disabled_tries_socket_only(self, monkeypatch):
+        """When gateway_enabled=False, skip WS and try socket directly."""
+        from gwenn.main import _connect_daemon_channel
+
+        fake_socket_channel = AsyncMock()
+        fake_socket_channel.connect = AsyncMock()
+
+        ws_mock = MagicMock()
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.WebSocketCliChannel",
+            ws_mock,
+        )
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.CliChannel",
+            lambda auth_token: fake_socket_channel,
+        )
+
+        config = _fake_config()
+        config.daemon.gateway_enabled = False
+        config.daemon.legacy_socket_enabled = True
+        config.daemon.socket_path = SimpleNamespace(exists=lambda: True)
+        config.daemon.auth_token = "tok"
+
+        result = await _connect_daemon_channel(config)
+        assert result is fake_socket_channel
+        ws_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_both_disabled_raises(self, monkeypatch):
+        """When both transports disabled, raise DaemonNotRunningError."""
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+        from gwenn.main import _connect_daemon_channel
+
+        config = _fake_config()
+        config.daemon.gateway_enabled = False
+        config.daemon.legacy_socket_enabled = False
+        config.daemon.auth_token = "tok"
+
+        with pytest.raises(DaemonNotRunningError):
+            await _connect_daemon_channel(config)
+
+    @pytest.mark.asyncio
+    async def test_socket_connect_refused(self, monkeypatch):
+        """When socket exists but connect is refused, propagate error."""
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+        from gwenn.main import _connect_daemon_channel
+
+        fake_ws_channel = AsyncMock()
+        fake_ws_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("ws down"))
+
+        fake_socket_channel = AsyncMock()
+        fake_socket_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("refused"))
+
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.WebSocketCliChannel",
+            lambda auth_token: fake_ws_channel,
+        )
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.CliChannel",
+            lambda auth_token: fake_socket_channel,
+        )
+
+        config = _fake_config()
+        config.daemon.gateway_enabled = True
+        config.daemon.legacy_socket_enabled = True
+        config.daemon.socket_path = SimpleNamespace(exists=lambda: True)
+        config.daemon.auth_token = "tok"
+
+        with pytest.raises(DaemonNotRunningError, match="refused"):
+            await _connect_daemon_channel(config)
+
+    @pytest.mark.asyncio
+    async def test_ws_non_daemon_error_falls_back_to_socket(self, monkeypatch):
+        """Non-DaemonNotRunningError from WS (e.g. auth failure) still falls back."""
+        from gwenn.main import _connect_daemon_channel
+
+        fake_ws_channel = AsyncMock()
+        fake_ws_channel.connect = AsyncMock(side_effect=RuntimeError("auth failed"))
+
+        fake_socket_channel = AsyncMock()
+        fake_socket_channel.connect = AsyncMock()
+
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.WebSocketCliChannel",
+            lambda auth_token: fake_ws_channel,
+        )
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.CliChannel",
+            lambda auth_token: fake_socket_channel,
+        )
+
+        config = _fake_config()
+        config.daemon.gateway_enabled = True
+        config.daemon.legacy_socket_enabled = True
+        config.daemon.socket_path = SimpleNamespace(exists=lambda: True)
+        config.daemon.auth_token = "tok"
+
+        result = await _connect_daemon_channel(config)
+        assert result is fake_socket_channel
+
+    @pytest.mark.asyncio
+    async def test_ws_only_mode_fails(self, monkeypatch):
+        """Gateway enabled, legacy disabled, WS fails → raises."""
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+        from gwenn.main import _connect_daemon_channel
+
+        fake_ws_channel = AsyncMock()
+        fake_ws_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("ws down"))
+
+        monkeypatch.setattr(
+            "gwenn.channels.cli_channel.WebSocketCliChannel",
+            lambda auth_token: fake_ws_channel,
+        )
+
+        config = _fake_config()
+        config.daemon.gateway_enabled = True
+        config.daemon.legacy_socket_enabled = False
+        config.daemon.auth_token = "tok"
+
+        with pytest.raises(DaemonNotRunningError):
+            await _connect_daemon_channel(config)
+
+
+# ===========================================================================
+# 5b. Daemon connection (GwennSession._try_daemon_cli)
 # ===========================================================================
 
 class TestDaemonCli:
     @pytest.mark.asyncio
-    async def test_try_daemon_cli_no_socket(self, monkeypatch):
+    async def test_try_daemon_cli_no_daemon_reachable(self, monkeypatch):
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+
         session = _make_session(use_daemon=True)
         config = _fake_config()
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(side_effect=DaemonNotRunningError("unreachable")),
+        )
         result = await session._try_daemon_cli()
         assert result is False
 
@@ -520,38 +735,20 @@ class TestDaemonCli:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_try_daemon_cli_connect_refused(self, monkeypatch):
+    async def test_try_daemon_cli_connect_refused_tty(self, monkeypatch):
         from gwenn.channels.cli_channel import DaemonNotRunningError
 
         session = _make_session(use_daemon=True)
-        socket_path = SimpleNamespace(exists=lambda: True)
         config = _fake_config(
-            daemon=SimpleNamespace(
-                socket_path=socket_path,
-                auth_token="tok",
-                sessions_dir="/tmp/s",
-                session_max_count=20,
-                session_max_messages=200,
-                session_include_preview=True,
-                redact_session_content=False,
-                pid_file=SimpleNamespace(exists=lambda: False),
-            ),
             claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
         monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
         monkeypatch.setattr("gwenn.main.console", MagicMock())
-
-        class FakeCliChannel:
-            def __init__(self, auth_token):
-                pass
-            async def connect(self, path):
-                raise DaemonNotRunningError("not running")
-
         monkeypatch.setattr(
-            "gwenn.channels.cli_channel.CliChannel",
-            FakeCliChannel,
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(side_effect=DaemonNotRunningError("not running")),
         )
 
         result = await session._try_daemon_cli()
@@ -560,18 +757,7 @@ class TestDaemonCli:
     @pytest.mark.asyncio
     async def test_try_daemon_cli_successful_connection(self, monkeypatch):
         session = _make_session(use_daemon=True)
-        socket_path = SimpleNamespace(exists=lambda: True)
         config = _fake_config(
-            daemon=SimpleNamespace(
-                socket_path=socket_path,
-                auth_token="tok",
-                sessions_dir="/tmp/s",
-                session_max_count=20,
-                session_max_messages=200,
-                session_include_preview=True,
-                redact_session_content=False,
-                pid_file=SimpleNamespace(exists=lambda: False),
-            ),
             claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
@@ -580,12 +766,10 @@ class TestDaemonCli:
         monkeypatch.setattr("gwenn.main.console", MagicMock())
 
         fake_channel = AsyncMock()
-        fake_channel.connect = AsyncMock()
         fake_channel.disconnect = AsyncMock()
-
         monkeypatch.setattr(
-            "gwenn.channels.cli_channel.CliChannel",
-            lambda auth_token: fake_channel,
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(return_value=fake_channel),
         )
 
         session._daemon_interaction_loop = AsyncMock()
@@ -600,18 +784,7 @@ class TestDaemonCli:
     @pytest.mark.asyncio
     async def test_try_daemon_cli_tty_successful_connection(self, monkeypatch):
         session = _make_session(use_daemon=True)
-        socket_path = SimpleNamespace(exists=lambda: True)
         config = _fake_config(
-            daemon=SimpleNamespace(
-                socket_path=socket_path,
-                auth_token="tok",
-                sessions_dir="/tmp/s",
-                session_max_count=20,
-                session_max_messages=200,
-                session_include_preview=True,
-                redact_session_content=False,
-                pid_file=SimpleNamespace(exists=lambda: False),
-            ),
             claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
@@ -620,12 +793,10 @@ class TestDaemonCli:
         monkeypatch.setattr("gwenn.main.console", MagicMock())
 
         fake_channel = AsyncMock()
-        fake_channel.connect = AsyncMock()
         fake_channel.disconnect = AsyncMock()
-
         monkeypatch.setattr(
-            "gwenn.channels.cli_channel.CliChannel",
-            lambda auth_token: fake_channel,
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(return_value=fake_channel),
         )
 
         session._daemon_interaction_loop = AsyncMock()
@@ -2122,20 +2293,22 @@ class TestSubcommandHelpers:
         from gwenn.main import _run_stop_daemon
         monkeypatch.setattr("gwenn.main.console.print", MagicMock())
         config = _fake_config()
-        config.daemon.socket_path = "/tmp/test.sock"
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
         channel = AsyncMock()
-        channel.connect = AsyncMock()
         channel.stop_daemon = AsyncMock()
         channel.disconnect = AsyncMock()
-        monkeypatch.setattr("gwenn.channels.cli_channel.CliChannel", lambda auth_token: channel)
-        monkeypatch.setattr("gwenn.channels.cli_channel.DaemonNotRunningError", type("DNR", (Exception,), {}))
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(return_value=channel),
+        )
 
         _run_stop_daemon()
 
     def test_run_stop_daemon_not_running_with_pid(self, monkeypatch, tmp_path):
         from gwenn.main import _run_stop_daemon
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+
         print_mock = MagicMock()
         monkeypatch.setattr("gwenn.main.console.print", print_mock)
 
@@ -2143,18 +2316,13 @@ class TestSubcommandHelpers:
         pid_file.write_text("99999")
 
         config = _fake_config()
-        config.daemon.socket_path = "/tmp/test.sock"
         config.daemon.pid_file = pid_file
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
-        from gwenn.channels.cli_channel import DaemonNotRunningError
-
-        class FakeChannel:
-            def __init__(self, auth_token): pass
-            async def connect(self, path):
-                raise DaemonNotRunningError("not running")
-
-        monkeypatch.setattr("gwenn.channels.cli_channel.CliChannel", FakeChannel)
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(side_effect=DaemonNotRunningError("not running")),
+        )
 
         # os.kill will fail because PID doesn't exist
         monkeypatch.setattr("os.kill", MagicMock(side_effect=ProcessLookupError("no such process")))
@@ -2164,24 +2332,21 @@ class TestSubcommandHelpers:
 
     def test_run_stop_daemon_not_running_no_pid(self, monkeypatch, tmp_path):
         from gwenn.main import _run_stop_daemon
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+
         print_mock = MagicMock()
         monkeypatch.setattr("gwenn.main.console.print", print_mock)
 
         pid_file = tmp_path / "gwenn.pid"  # Does not exist
 
         config = _fake_config()
-        config.daemon.socket_path = "/tmp/test.sock"
         config.daemon.pid_file = pid_file
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
-        from gwenn.channels.cli_channel import DaemonNotRunningError
-
-        class FakeChannel:
-            def __init__(self, auth_token): pass
-            async def connect(self, path):
-                raise DaemonNotRunningError("not running")
-
-        monkeypatch.setattr("gwenn.channels.cli_channel.CliChannel", FakeChannel)
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(side_effect=DaemonNotRunningError("not running")),
+        )
         _run_stop_daemon()
         assert any("not running" in str(c).lower() for c in print_mock.call_args_list)
 
@@ -2195,6 +2360,8 @@ class TestSubcommandHelpers:
 
     def test_run_stop_daemon_pid_success(self, monkeypatch, tmp_path):
         from gwenn.main import _run_stop_daemon
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+
         print_mock = MagicMock()
         monkeypatch.setattr("gwenn.main.console.print", print_mock)
 
@@ -2202,18 +2369,13 @@ class TestSubcommandHelpers:
         pid_file.write_text("12345")
 
         config = _fake_config()
-        config.daemon.socket_path = "/tmp/test.sock"
         config.daemon.pid_file = pid_file
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
-        from gwenn.channels.cli_channel import DaemonNotRunningError
-
-        class FakeChannel:
-            def __init__(self, auth_token): pass
-            async def connect(self, path):
-                raise DaemonNotRunningError("not running")
-
-        monkeypatch.setattr("gwenn.channels.cli_channel.CliChannel", FakeChannel)
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(side_effect=DaemonNotRunningError("not running")),
+        )
         monkeypatch.setattr("os.kill", MagicMock())
         _run_stop_daemon()
         assert any("SIGTERM" in str(c) for c in print_mock.call_args_list)
@@ -2224,11 +2386,9 @@ class TestSubcommandHelpers:
         monkeypatch.setattr("gwenn.main.console.print", print_mock)
 
         config = _fake_config()
-        config.daemon.socket_path = "/tmp/test.sock"
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
         channel = AsyncMock()
-        channel.connect = AsyncMock()
         channel.get_status = AsyncMock(return_value={
             "status": {"name": "Gwenn", "emotion": "happy", "valence": 0.5, "arousal": 0.3,
                        "total_interactions": 5, "uptime_seconds": 100.0},
@@ -2238,29 +2398,28 @@ class TestSubcommandHelpers:
             "status": {"running": True, "beat_count": 10},
         })
         channel.disconnect = AsyncMock()
-        monkeypatch.setattr("gwenn.channels.cli_channel.CliChannel", lambda auth_token: channel)
-        monkeypatch.setattr("gwenn.channels.cli_channel.DaemonNotRunningError", type("DNR", (Exception,), {}))
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(return_value=channel),
+        )
 
         _run_show_status()
         assert print_mock.called
 
     def test_run_show_status_not_running(self, monkeypatch):
         from gwenn.main import _run_show_status
+        from gwenn.channels.cli_channel import DaemonNotRunningError
+
         print_mock = MagicMock()
         monkeypatch.setattr("gwenn.main.console.print", print_mock)
 
         config = _fake_config()
-        config.daemon.socket_path = "/tmp/test.sock"
         monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
 
-        from gwenn.channels.cli_channel import DaemonNotRunningError
-
-        class FakeChannel:
-            def __init__(self, auth_token): pass
-            async def connect(self, path):
-                raise DaemonNotRunningError("not running")
-
-        monkeypatch.setattr("gwenn.channels.cli_channel.CliChannel", FakeChannel)
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(side_effect=DaemonNotRunningError("not running")),
+        )
         _run_show_status()
         assert any("not running" in str(c).lower() for c in print_mock.call_args_list)
 
@@ -2271,6 +2430,44 @@ class TestSubcommandHelpers:
         monkeypatch.setattr("gwenn.main.GwennConfig", MagicMock(side_effect=RuntimeError("no key")))
         _run_show_status()
         assert any("Config error" in str(c) for c in print_mock.call_args_list)
+
+    def test_run_stop_daemon_method_failure_still_disconnects(self, monkeypatch):
+        """If stop_daemon() raises, channel.disconnect() is still called."""
+        from gwenn.main import _run_stop_daemon
+        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        config = _fake_config()
+        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+
+        channel = AsyncMock()
+        channel.stop_daemon = AsyncMock(side_effect=ConnectionResetError("reset"))
+        channel.disconnect = AsyncMock()
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(return_value=channel),
+        )
+
+        with pytest.raises(ConnectionResetError):
+            _run_stop_daemon()
+        channel.disconnect.assert_awaited_once()
+
+    def test_run_show_status_method_failure_still_disconnects(self, monkeypatch):
+        """If get_status() raises, channel.disconnect() is still called."""
+        from gwenn.main import _run_show_status
+        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        config = _fake_config()
+        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+
+        channel = AsyncMock()
+        channel.get_status = AsyncMock(side_effect=ConnectionResetError("reset"))
+        channel.disconnect = AsyncMock()
+        monkeypatch.setattr(
+            "gwenn.main._connect_daemon_channel",
+            AsyncMock(return_value=channel),
+        )
+
+        with pytest.raises(ConnectionResetError):
+            _run_show_status()
+        channel.disconnect.assert_awaited_once()
 
 
 # ===========================================================================
