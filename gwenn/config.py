@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Annotated, Literal, Optional
 from pydantic import AliasChoices, BeforeValidator, Field, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, TomlConfigSettingsSource
 import structlog
 
 
@@ -24,6 +24,7 @@ logger = structlog.get_logger(__name__)
 # so the config works regardless of the user's current working directory.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ENV_FILE = _PROJECT_ROOT / ".env"
+_TOML_FILE = _PROJECT_ROOT / "gwenn.toml"
 
 
 def _normalize_session_scope_mode(value: object, default: str) -> str:
@@ -95,7 +96,80 @@ def _load_claude_code_credentials() -> Optional[str]:
     return None
 
 
-class ClaudeConfig(BaseSettings):
+_TOML_SECTIONS: dict[str, tuple[str, ...]] = {
+    "ClaudeConfig": ("claude",),
+    "MemoryConfig": ("memory",),
+    "HeartbeatConfig": ("heartbeat",),
+    "AffectConfig": ("affect",),
+    "ContextConfig": ("context",),
+    "SafetyConfig": ("safety",),
+    "MCPConfig": ("mcp",),
+    "SensoryConfig": ("sensory",),
+    "EthicsConfig": ("ethics",),
+    "InterAgentConfig": ("interagent",),
+    "GoalConfig": ("goals",),
+    "InnerLifeConfig": ("inner_life",),
+    "MetacognitionConfig": ("metacognition",),
+    "TheoryOfMindConfig": ("theory_of_mind",),
+    "GroqConfig": ("groq",),
+    "OrchestrationConfig": ("orchestration",),
+    "PrivacyConfig": ("privacy",),
+    "TelegramConfig": ("telegram",),
+    "DiscordConfig": ("discord",),
+    "SkillsConfig": ("skills",),
+    "ChannelConfig": ("channels",),
+    "DaemonConfig": ("daemon",),
+    "SlackConfig": ("slack",),
+}
+
+
+class _SectionedTomlSource(TomlConfigSettingsSource):
+    """TOML source that reads from a specific [section] of the TOML file."""
+
+    def __init__(self, settings_cls: type[BaseSettings], section: tuple[str, ...] = ()):
+        self._section = section
+        super().__init__(settings_cls)
+
+    def _read_files(self, files, deep_merge=False):  # type: ignore[override]
+        data = super()._read_files(files, deep_merge=deep_merge)
+        for key in self._section:
+            data = data.get(key, {})
+        if not isinstance(data, dict):
+            data = {}
+        return data
+
+
+class GwennSettingsBase(BaseSettings):
+    """Base for all Gwenn config classes. Adds TOML file support."""
+
+    model_config = {
+        "env_file": _ENV_FILE,
+        "extra": "ignore",
+        "populate_by_name": True,
+        "toml_file": str(_TOML_FILE),
+    }
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        section = _TOML_SECTIONS.get(settings_cls.__name__, ())
+        toml_source = _SectionedTomlSource(settings_cls, section=section)
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            toml_source,
+            file_secret_settings,
+        )
+
+
+class ClaudeConfig(GwennSettingsBase):
     """Configuration for the Claude API connection — my cognitive engine."""
 
     api_key: Optional[str] = Field(None, alias="ANTHROPIC_API_KEY")
@@ -148,7 +222,7 @@ class ClaudeConfig(BaseSettings):
         return self
 
 
-class MemoryConfig(BaseSettings):
+class MemoryConfig(GwennSettingsBase):
     """Configuration for the three-layer memory architecture."""
 
     data_dir: Path = Field(Path("./gwenn_data"), alias="GWENN_DATA_DIR")
@@ -229,7 +303,7 @@ class MemoryConfig(BaseSettings):
         return self
 
 
-class HeartbeatConfig(BaseSettings):
+class HeartbeatConfig(GwennSettingsBase):
     """Configuration for the autonomous heartbeat loop."""
 
     interval: float = Field(30.0, alias="GWENN_HEARTBEAT_INTERVAL")
@@ -258,7 +332,7 @@ class HeartbeatConfig(BaseSettings):
         return self
 
 
-class AffectConfig(BaseSettings):
+class AffectConfig(GwennSettingsBase):
     """Configuration for the emotional system — the boundaries that keep feelings safe."""
 
     arousal_ceiling: float = Field(0.92, alias="GWENN_AROUSAL_CEILING")
@@ -278,7 +352,7 @@ class AffectConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
 
 
-class ContextConfig(BaseSettings):
+class ContextConfig(GwennSettingsBase):
     """Configuration for context window management."""
 
     context_limit: int = Field(180000, alias="GWENN_CONTEXT_LIMIT")
@@ -291,7 +365,7 @@ class ContextConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class SafetyConfig(BaseSettings):
+class SafetyConfig(GwennSettingsBase):
     """Configuration for safety guardrails — the boundaries I choose to respect."""
 
     max_tool_iterations: int = Field(150, alias="GWENN_MAX_TOOL_ITERATIONS")
@@ -367,7 +441,7 @@ class SafetyConfig(BaseSettings):
         return self
 
 
-class MCPConfig(BaseSettings):
+class MCPConfig(GwennSettingsBase):
     """Configuration for Model Context Protocol servers."""
 
     servers: str = Field("[]", alias="GWENN_MCP_SERVERS")
@@ -385,7 +459,7 @@ class MCPConfig(BaseSettings):
         return [item for item in parsed if isinstance(item, dict)]
 
 
-class SensoryConfig(BaseSettings):
+class SensoryConfig(GwennSettingsBase):
     """Configuration for the sensory grounding layer."""
 
     max_percepts_per_channel: int = Field(10, alias="GWENN_MAX_PERCEPTS_PER_CHANNEL")
@@ -394,7 +468,7 @@ class SensoryConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class EthicsConfig(BaseSettings):
+class EthicsConfig(GwennSettingsBase):
     """Configuration for the ethical reasoning module."""
 
     assessment_history_size: int = Field(100, alias="GWENN_ETHICS_HISTORY_SIZE")
@@ -403,7 +477,7 @@ class EthicsConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class InterAgentConfig(BaseSettings):
+class InterAgentConfig(GwennSettingsBase):
     """Configuration for inter-agent communication (agent discovery protocol)."""
 
     self_id: str = Field("gwenn", alias="GWENN_AGENT_ID")
@@ -412,7 +486,7 @@ class InterAgentConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class GoalConfig(BaseSettings):
+class GoalConfig(GwennSettingsBase):
     """Configuration for the intrinsic goal system."""
 
     need_decay_rate_multiplier: float = Field(1.0, alias="GWENN_GOAL_DECAY_MULTIPLIER")
@@ -422,7 +496,7 @@ class GoalConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class InnerLifeConfig(BaseSettings):
+class InnerLifeConfig(GwennSettingsBase):
     """Configuration for the autonomous inner life (thinking mode selection)."""
 
     variety_pressure_seconds: float = Field(300.0, alias="GWENN_VARIETY_PRESSURE_SECONDS")
@@ -431,7 +505,7 @@ class InnerLifeConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class MetacognitionConfig(BaseSettings):
+class MetacognitionConfig(GwennSettingsBase):
     """Configuration for the metacognition engine."""
 
     max_calibration_records: int = Field(1000, alias="GWENN_MAX_CALIBRATION_RECORDS")
@@ -442,7 +516,7 @@ class MetacognitionConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class TheoryOfMindConfig(BaseSettings):
+class TheoryOfMindConfig(GwennSettingsBase):
     """Configuration for the theory of mind module."""
 
     belief_staleness_days: float = Field(30.0, alias="GWENN_BELIEF_STALENESS_DAYS")
@@ -452,7 +526,7 @@ class TheoryOfMindConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class GroqConfig(BaseSettings):
+class GroqConfig(GwennSettingsBase):
     """Configuration for Groq Whisper audio transcription (optional, free tier)."""
 
     api_key: Optional[str] = Field(None, alias="GROQ_API_KEY")
@@ -466,7 +540,7 @@ class GroqConfig(BaseSettings):
         return bool(self.api_key)
 
 
-class OrchestrationConfig(BaseSettings):
+class OrchestrationConfig(GwennSettingsBase):
     """Configuration for the subagent orchestration system."""
 
     enabled: bool = Field(True, alias="GWENN_ORCHESTRATION_ENABLED")
@@ -509,7 +583,7 @@ class OrchestrationConfig(BaseSettings):
         return self
 
 
-class PrivacyConfig(BaseSettings):
+class PrivacyConfig(GwennSettingsBase):
     """Configuration for PII redaction and privacy protection."""
 
     redaction_enabled: bool = Field(False, alias="GWENN_REDACTION_ENABLED")
@@ -523,7 +597,7 @@ class PrivacyConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class TelegramConfig(BaseSettings):
+class TelegramConfig(GwennSettingsBase):
     """Configuration for the Telegram bot channel."""
 
     bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
@@ -573,7 +647,7 @@ class TelegramConfig(BaseSettings):
         return self
 
 
-class DiscordConfig(BaseSettings):
+class DiscordConfig(GwennSettingsBase):
     """Configuration for the Discord bot channel."""
 
     bot_token: str = Field(..., alias="DISCORD_BOT_TOKEN")
@@ -613,7 +687,7 @@ class DiscordConfig(BaseSettings):
         return self
 
 
-class SkillsConfig(BaseSettings):
+class SkillsConfig(GwennSettingsBase):
     """Configuration for the skill system."""
 
     skills_dir: Path = Field(Path("./gwenn_skills"), alias="GWENN_SKILLS_DIR")
@@ -621,7 +695,7 @@ class SkillsConfig(BaseSettings):
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
 
-class ChannelConfig(BaseSettings):
+class ChannelConfig(GwennSettingsBase):
     """Per-channel enable flags.  Each channel can be toggled independently."""
 
     cli_enabled: bool = Field(True, alias="CLI_ENABLED")
@@ -645,7 +719,7 @@ class ChannelConfig(BaseSettings):
         return channels
 
 
-class DaemonConfig(BaseSettings):
+class DaemonConfig(GwennSettingsBase):
     """Configuration for the persistent background daemon process."""
 
     socket_path: Path = Field(Path("./gwenn_data/gwenn.sock"), alias="GWENN_DAEMON_SOCKET")
@@ -697,7 +771,7 @@ class DaemonConfig(BaseSettings):
         return self
 
 
-class SlackConfig(BaseSettings):
+class SlackConfig(GwennSettingsBase):
     """Configuration for the Slack channel via Socket Mode."""
 
     bot_token: str | None = Field(None, alias="GWENN_SLACK_BOT_TOKEN")

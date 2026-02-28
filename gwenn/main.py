@@ -28,6 +28,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import anthropic
@@ -1927,6 +1928,141 @@ def _run_show_status() -> None:
     asyncio.run(_status())
 
 
+def _run_config(extra_args: list[str]) -> None:
+    """Handle gwenn config sub-operations.
+
+    Sub-operations:
+      gwenn config              — Show resolved config summary
+      gwenn config get <key>    — Get value by dotted key
+      gwenn config set <key> <val> — Set value in gwenn.toml
+      gwenn config unset <key>  — Remove key from gwenn.toml
+      gwenn config init         — Generate gwenn.toml template
+      gwenn config validate     — Validate all config sources
+      gwenn config list         — List all config keys with sources
+    """
+    from gwenn.config_file import (
+        delete_value,
+        find_config,
+        generate_template,
+        get_value,
+        load_config,
+        set_value,
+        write_config,
+    )
+
+    op = extra_args[0] if extra_args else "list"
+
+    if op == "init":
+        dest = Path("gwenn.toml")
+        if dest.exists():
+            console.print(f"[yellow]{dest} already exists. Use 'gwenn config set' to modify.[/yellow]")
+            return
+        dest.write_text(generate_template(), encoding="utf-8")
+        console.print(f"[green]Created {dest}[/green]")
+
+    elif op == "get":
+        if len(extra_args) < 2:
+            console.print("[red]Usage: gwenn config get <key>[/red]")
+            return
+        key = extra_args[1]
+        path = find_config()
+        if not path:
+            console.print("[yellow]No gwenn.toml found.[/yellow]")
+            return
+        data = load_config(path)
+        try:
+            val = get_value(data, key)
+            console.print(f"{key} = {val!r}")
+        except KeyError:
+            console.print(f"[yellow]{key} not set in {path}[/yellow]")
+
+    elif op == "set":
+        if len(extra_args) < 3:
+            console.print("[red]Usage: gwenn config set <key> <value>[/red]")
+            return
+        key, raw_value = extra_args[1], extra_args[2]
+        # Auto-coerce value types
+        value: object
+        if raw_value.lower() in ("true", "false"):
+            value = raw_value.lower() == "true"
+        else:
+            try:
+                value = int(raw_value)
+            except ValueError:
+                try:
+                    import math
+                    fval = float(raw_value)
+                    if not math.isfinite(fval):
+                        console.print(f"[red]Invalid value: {raw_value}[/red]")
+                        return
+                    value = fval
+                except ValueError:
+                    value = raw_value
+
+        dest = find_config()
+        if dest is None:
+            from gwenn.config_file import _PROJECT_ROOT
+            dest = _PROJECT_ROOT / "gwenn.toml"
+        data = load_config(dest) if dest.exists() else {}
+        set_value(data, key, value)
+        write_config(dest, data)
+        console.print(f"[green]{key} = {value!r} (saved to {dest})[/green]")
+
+    elif op == "unset":
+        if len(extra_args) < 2:
+            console.print("[red]Usage: gwenn config unset <key>[/red]")
+            return
+        key = extra_args[1]
+        path = find_config()
+        if not path:
+            console.print("[yellow]No gwenn.toml found.[/yellow]")
+            return
+        data = load_config(path)
+        try:
+            delete_value(data, key)
+            write_config(path, data)
+            console.print(f"[green]Removed {key} from {path}[/green]")
+        except KeyError:
+            console.print(f"[yellow]{key} not set in {path}[/yellow]")
+
+    elif op == "validate":
+        path = find_config()
+        console.print(f"[bold]TOML file:[/bold] {path or '(none)'}")
+        if path:
+            try:
+                load_config(path)
+                console.print("[green]  Valid TOML syntax.[/green]")
+            except Exception as e:
+                console.print(f"[red]  Invalid TOML: {e}[/red]")
+        try:
+            from gwenn.config import GwennConfig
+            GwennConfig()
+            console.print("[green]Config validation passed.[/green]")
+        except ValueError as e:
+            msg = str(e)
+            if "authentication" in msg.lower() or "api_key" in msg.lower():
+                console.print(f"[yellow]Auth not configured (expected for validation): {e}[/yellow]")
+            else:
+                console.print(f"[red]Config validation failed: {e}[/red]")
+        except Exception as e:
+            console.print(f"[red]Config validation failed: {e}[/red]")
+
+    else:
+        # Default: list all config keys with source indicators
+        path = find_config()
+        toml_data = load_config(path) if path else {}
+        console.print(f"[bold]TOML file:[/bold] {path or '(none)'}")
+        if toml_data:
+            for section, values in sorted(toml_data.items()):
+                if isinstance(values, dict):
+                    for k, v in sorted(values.items()):
+                        console.print(f"  {section}.{k} = {v!r}")
+                else:
+                    console.print(f"  {section} = {values!r}")
+        else:
+            console.print("  [dim](no TOML overrides)[/dim]")
+
+
 def _run_service_install() -> None:
     """Install Gwenn as a system service."""
     from gwenn.service import get_service_manager
@@ -1980,9 +2116,9 @@ def main():
     parser.add_argument(
         "subcommand",
         nargs="?",
-        choices=["daemon", "stop", "status", "install", "uninstall", "restart"],
+        choices=["daemon", "stop", "status", "install", "uninstall", "restart", "config"],
         default=None,
-        help="Subcommand: daemon (start), stop, status, install, uninstall, restart",
+        help="Subcommand: daemon|stop|status|install|uninstall|restart|config",
     )
     parser.add_argument(
         "--channel",
@@ -1995,7 +2131,11 @@ def main():
         action="store_true",
         help="Force in-process mode even if a daemon is running",
     )
-    args = parser.parse_args()
+    args, extra = parser.parse_known_args()
+
+    # Only the config subcommand accepts extra positional args.
+    if args.subcommand != "config" and extra:
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
 
     if args.subcommand == "daemon":
         _run_daemon_foreground()
@@ -2009,6 +2149,8 @@ def main():
         _run_service_uninstall()
     elif args.subcommand == "restart":
         _run_service_restart()
+    elif args.subcommand == "config":
+        _run_config(extra)
     else:
         session = GwennSession(
             channel_override=args.channel,

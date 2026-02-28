@@ -1,0 +1,94 @@
+# Gwenn Configuration
+# This file is loaded after .env. Environment variables override these values.
+# See .env.example for the full list of available settings.
+#
+# Copy this file to your project root as gwenn.toml:
+#   cp gwenn/templates/gwenn.toml.example gwenn.toml
+#
+# Or generate one from current settings:
+#   gwenn config init
+
+[claude]
+# model = "claude-sonnet-4-5-20250929"
+# max_tokens = 8192
+# thinking_budget = 16000
+
+[memory]
+# data_dir = "./gwenn_data"
+# retrieval_mode = "keyword"
+# working_memory_slots = 7
+
+[heartbeat]
+# interval = 30.0
+# min_interval = 5.0
+# max_interval = 120.0
+# proactive_messages = false
+
+[affect]
+# arousal_ceiling = 0.92
+
+[context]
+# context_limit = 180000
+
+[safety]
+# max_tool_iterations = 150
+# sandbox_enabled = true
+
+[mcp]
+# servers = "[]"
+
+[sensory]
+# max_percepts_per_channel = 10
+
+[ethics]
+# assessment_history_size = 100
+
+[interagent]
+# self_id = "gwenn"
+
+[goals]
+# need_decay_rate_multiplier = 1.0
+
+[inner_life]
+# variety_pressure_seconds = 300.0
+
+[metacognition]
+# max_calibration_records = 1000
+
+[theory_of_mind]
+# belief_staleness_days = 30.0
+
+[groq]
+# whisper_model = "whisper-large-v3-turbo"
+
+[orchestration]
+# enabled = true
+# max_concurrent_subagents = 5
+
+[privacy]
+# redaction_enabled = false
+
+[telegram]
+# bot_token = ""
+# allowed_user_ids = []
+
+[discord]
+# bot_token = ""
+
+[slack]
+# bot_token = ""
+# app_token = ""
+
+[skills]
+# skills_dir = "./gwenn_skills"
+
+[channels]
+# cli_enabled = true
+# telegram_enabled = false
+# discord_enabled = false
+# slack_enabled = false
+
+[daemon]
+# gateway_enabled = true
+# gateway_host = "127.0.0.1"
+# gateway_port = 18900
