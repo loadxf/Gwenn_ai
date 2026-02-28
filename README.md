@@ -183,17 +183,17 @@ If arrow keys print raw sequences like `^[[A`, ensure your Python has
 On first run with a fresh data directory, Gwenn asks a short setup (when started
 from an interactive terminal) to learn:
 - What to call you
-- Her primary role for you
-- Your current goals
+- What kind of companion you'd like her to be
+- Your interests
 - Your communication preference
-- Boundaries/preferences
+- Anything important she should keep in mind
 
 Press Enter to skip any question. If you provide answers, Gwenn stores them in:
 - `GWENN_DATA_DIR/identity.json` (`onboarding_completed` + `onboarding_profile`)
 - `GWENN_DATA_DIR/GWENN_CONTEXT.md` (a durable "Primary User Onboarding" block)
 
 For Telegram/Discord users, you can also run in-channel setup with:
-- Telegram: `/setup Name | Role | Needs | Style | Boundaries` (or `/setup skip`)
+- Telegram: `/setup Name | Companion type | Interests/focus | Communication style | Keep in mind` (or `/setup skip`)
 - Discord: `/setup` slash command with fields (or `skip=true`)
 
 ### 6) Choose memory retrieval mode
@@ -283,7 +283,7 @@ Gwenn ships with tools across several categories:
 | Category | Tools |
 |----------|-------|
 | **Memory** | `remember`, `recall`, `search_knowledge`, `check_emotional_state`, `check_goals`, `set_note_to_self` |
-| **Utility** | `get_datetime`, `calculate`, `fetch_url`, `convert_units`, `get_calendar`, `generate_token`, `format_json`, `encode_decode`, `hash_text`, `text_stats`, `get_system_info`, `present_choices` |
+| **Utility** | `get_datetime`, `calculate`, `fetch_url`, `convert_units`, `get_calendar`, `generate_token`, `format_json`, `encode_decode`, `hash_text`, `text_stats`, `get_system_info`, `run_command`, `present_choices` |
 | **Communication** | `think_aloud` |
 | **Skills** | `skill_builder`, `update_skill`, `delete_skill`, `reload_skills`, `list_skills` |
 | **Filesystem** | `read_file`, `write_file` |
@@ -338,7 +338,7 @@ pytest -q
 ruff check gwenn tests
 ```
 
-Current baseline: `3030 passed`, Ruff clean.
+Current baseline: `3116 passed`, Ruff clean, 100% coverage.
 
 ## Tech stack
 
@@ -409,11 +409,14 @@ Gwenn_ai/
 │   │   ├── orchestrator.py         # subagent lifecycle & swarm coordination
 │   │   ├── runners.py              # in-process and Docker execution backends
 │   │   ├── models.py               # SubagentSpec, SwarmSpec, result types
-│   │   └── docker_manager.py       # Docker container management
+│   │   ├── docker_manager.py       # Docker container management
+│   │   ├── tool_proxy.py           # tool invocation proxy for subagents
+│   │   └── subagent_entry.py       # subagent process entry point
 │   │
 │   ├── tools/
 │   │   ├── registry.py             # tool definitions and risk tiers
 │   │   ├── executor.py             # sandboxed execution
+│   │   ├── filesystem_context.py   # filesystem path validation
 │   │   ├── builtin/                # built-in tools (calculate, fetch_url, etc.)
 │   │   └── mcp/                    # MCP protocol client
 │   │
@@ -424,10 +427,14 @@ Gwenn_ai/
 │   ├── api/
 │   │   └── claude.py               # Claude API wrapper with retry
 │   │
+│   ├── media/
+│   │   ├── audio.py                # Groq Whisper voice transcription
+│   │   └── video.py                # video frame extraction (OpenCV)
+│   │
 │   └── privacy/
 │       └── redaction.py            # PII scrubbing for logs and persistence
 │
-├── tests/                          # 3030 tests across 35+ test files
+├── tests/                          # 3116 tests across 56+ test files
 │   ├── conftest.py
 │   ├── eval/                       # evaluation framework (ablation, benchmarks)
 │   └── test_*.py                   # unit, integration, adversarial, and safety tests

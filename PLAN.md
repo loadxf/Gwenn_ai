@@ -205,7 +205,7 @@ retrieval optional with a config flag and falling back to keyword overlap.
 
 ### 3.1 Build Core Unit Tests -- DONE
 
-**Status:** Resolved. 35+ test files with 2941 tests covering all core subsystems:
+**Status:** Resolved. 56+ test files with 3116 tests covering all core subsystems (100% coverage):
 - `tests/test_episodic_memory.py` — Retrieve scoring, mood-congruent retrieval
 - `tests/test_working_memory.py` — Slot management, eviction, decay
 - `tests/test_consolidation.py` — FACT/RELATIONSHIP/SELF/PATTERN parsing, malformed lines
@@ -343,7 +343,7 @@ contribution). No framework exists for this.
 | 2.1 | Persist semantic memory | High | Medium | DONE |
 | 2.2 | Persist affect state | Medium | Low | DONE |
 | 2.3 | Embedding retrieval | Medium | High | DONE (keyword/embedding/hybrid) |
-| 3.1 | Unit tests | High | Medium | DONE (2941 tests) |
+| 3.1 | Unit tests | High | Medium | DONE (3116 tests, 100% coverage) |
 | 3.2 | Integration tests | Medium | Medium | DONE |
 | 3.3 | Adversarial tests | Medium | Medium | DONE |
 | 4.1 | Deny-by-default policy | High | Low | DONE |

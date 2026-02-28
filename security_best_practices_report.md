@@ -9,7 +9,7 @@ This report was updated after remediation work and verification.
 
 Verification performed after fixes:
 - `ruff check gwenn tests` (clean)
-- `pytest -q` (`1371 passed`)
+- `pytest -q` (`3116 passed`, 100% coverage)
 - Second-pass pattern scan over execution/auth/storage paths
 
 ### Additional hardening (2026-02-19)

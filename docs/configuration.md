@@ -28,7 +28,8 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 |----------|---------|-------------|
 | `GWENN_MODEL` | `claude-sonnet-4-5-20250929` | Claude model to use. Recommended: `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | `GWENN_MAX_TOKENS` | `8192` | Max output tokens per response |
-| `GWENN_THINKING_BUDGET` | `16000` | Token budget for extended thinking |
+| `GWENN_THINKING_BUDGET` | `16000` | Token budget for extended thinking (used as fallback when adaptive is unavailable) |
+| `GWENN_THINKING_EFFORT` | `high` | Thinking effort level: `low`, `medium`, `high`, or `max`. Controls depth of reasoning in adaptive mode. |
 | `GWENN_REQUEST_TIMEOUT_SECONDS` | `120.0` | API request timeout |
 | `GWENN_RETRY_MAX_RETRIES` | `3` | Max retry attempts on transient failure |
 | `GWENN_RETRY_BASE_DELAY` | `0.5` | Base delay between retries (seconds) |

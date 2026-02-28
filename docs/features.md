@@ -45,9 +45,11 @@ iteration limits and API call budgets.
 
 | Tool | Description |
 |------|-------------|
-| `spawn_subagent` | Create a single focused worker. Parameters: `task` (description), `tools` (optional tool subset), `max_iterations` |
-| `spawn_swarm` | Launch multiple subagents in parallel. Parameters: `tasks` (list), `aggregation` (concatenate/synthesize/vote) |
-| `collect_results` | Gather results from a spawned task or swarm by `task_id` |
+| `spawn_subagent` | Create a single focused worker. Parameters: `task_description`, `tools` (optional subset), `max_iterations`, `isolation` (in_process/docker), `system_prompt` |
+| `spawn_swarm` | Launch multiple subagents in parallel. Parameters: `description`, `tasks` (list), `aggregation_strategy` (concatenate/synthesize/vote) |
+| `check_subagent` | Check the status of a running subagent without waiting. Parameter: `task_id` |
+| `collect_results` | Gather results from a completed task or swarm. Parameter: `task_id` |
+| `cancel_subagent` | Cancel a running subagent or swarm. Parameter: `task_id` |
 
 ### Aggregation strategies
 
@@ -824,11 +826,11 @@ Note: basic log field truncation is always active, regardless of the
 ### CLI onboarding
 
 On first run with a fresh data directory, Gwenn asks five setup questions:
-1. What to call you
-2. Her primary role for you
-3. Your current goals
-4. Your communication preference
-5. Boundaries/preferences
+1. What's your name, or what should I call you?
+2. What kind of companion would you like me to be?
+3. What are your interests?
+4. How do you prefer to communicate?
+5. Anything important I should always keep in mind about you?
 
 Press Enter to skip any question. Answers are stored in
 `GWENN_DATA_DIR/identity.json` and `GWENN_DATA_DIR/GWENN_CONTEXT.md`.
@@ -837,7 +839,7 @@ Press Enter to skip any question. Answers are stored in
 
 Owners can run setup in chat:
 ```
-/setup Name | Role | Needs | Style | Boundaries
+/setup Name | Companion type | Interests/focus | Communication style | Keep in mind
 /setup skip
 ```
 
@@ -845,6 +847,6 @@ Owners can run setup in chat:
 
 Owners can run setup via slash command:
 ```
-/setup name:Alice role:assistant needs:coding style:casual boundaries:none
+/setup name:Alice role:thinking partner interests:programming style:casual boundaries:none
 /setup skip:true
 ```
