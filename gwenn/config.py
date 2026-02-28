@@ -618,6 +618,9 @@ class TelegramConfig(GwennSettingsBase):
     enable_media: bool = Field(False, alias="TELEGRAM_ENABLE_MEDIA")
     # Auto-install python-telegram-bot on first startup if missing.
     auto_install: bool = Field(True, alias="GWENN_AUTO_INSTALL_TELEGRAM")
+    # Swarm visualization: pool of bot tokens for visible subagents.
+    swarm_bot_tokens: StrList = Field(default_factory=list, alias="GWENN_TELEGRAM_SWARM_BOT_TOKENS")
+    swarm_visible: bool = Field(True, alias="GWENN_TELEGRAM_SWARM_VISIBLE")
 
     model_config = {
         "env_file": _ENV_FILE,

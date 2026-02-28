@@ -33,6 +33,9 @@ from gwenn.orchestration.models import (
 )
 from gwenn.orchestration.runners import SubagentRunnerBase
 
+# Lazy imports for event types to avoid circular dependencies.
+# These are imported inside methods that emit events.
+
 logger = structlog.get_logger(__name__)
 
 
@@ -45,11 +48,15 @@ class Orchestrator:
         runner: Optional[SubagentRunnerBase] = None,
         engine: Any = None,  # CognitiveEngine — for synthesize aggregation
         redactor: Any = None,  # PIIRedactor — for result redaction before storage
+        event_bus: Any = None,  # EventBus — for emitting swarm events
+        bot_pool: Any = None,  # TelegramBotPool — for swarm visualization
     ):
         self._config = config
         self._runner = runner
         self._engine = engine
         self._redactor = redactor
+        self._event_bus = event_bus
+        self._bot_pool = bot_pool
 
         # Active tasks: task_id -> asyncio.Task
         self._active_tasks: dict[str, asyncio.Task] = {}
@@ -110,6 +117,19 @@ class Orchestrator:
             )
 
         task_id = spec.task_id
+
+        # Emit TaskDispatchMessage for swarm visualization.
+        if spec.parent_task_id or spec.persona:
+            try:
+                from gwenn.events import TaskDispatchMessage
+                self._emit_event(TaskDispatchMessage(
+                    sender_task_id="coordinator",
+                    recipient_task_id=task_id,
+                    task_description=spec.task_description,
+                    assigned_persona_name=spec.persona.name if spec.persona else None,
+                ))
+            except Exception:
+                pass
 
         # Apply defaults from config
         if not spec.model and self._config.subagent_model:
@@ -177,6 +197,9 @@ class Orchestrator:
             raise
 
         self._swarm_tasks[swarm_id] = task_ids
+
+        # Acquire bots from pool for swarm visualization (Phase 6).
+        await self._acquire_swarm_bots(swarm_id, swarm.agents)
 
         logger.info(
             "orchestration.spawn_swarm",
@@ -299,6 +322,9 @@ class Orchestrator:
             total_tokens_used=total_tokens,
         )
 
+        # Release swarm bots back to pool (Phase 6).
+        await self._release_swarm_bots(swarm_id, task_ids)
+
         # Clean up
         self._active_swarms.pop(swarm_id, None)
         self._swarm_tasks.pop(swarm_id, None)
@@ -407,12 +433,145 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 logger.warning("orchestrator.shutdown_timeout", remaining=len(self._active_tasks))
 
+        # Release all swarm bots.
+        if self._bot_pool is not None:
+            try:
+                await self._bot_pool.release_all()
+            except Exception:
+                logger.debug("orchestrator.bot_pool_release_error", exc_info=True)
+
         self._active_tasks.clear()
         self._progress.clear()
         self._active_swarms.clear()
         self._swarm_tasks.clear()
 
         logger.info("orchestrator.shutdown_complete")
+
+    # ---- Swarm Bot Pool Helpers (Phase 6) ----
+
+    def _emit_event(self, event: Any) -> None:
+        """Emit an event on the bus if available. Fails silently."""
+        if self._event_bus is not None:
+            try:
+                self._event_bus.emit(event)
+            except Exception:
+                logger.debug("orchestrator.emit_event_failed", exc_info=True)
+
+    async def _acquire_swarm_bots(
+        self,
+        swarm_id: str,
+        agents: list[SubagentSpec],
+    ) -> None:
+        """Acquire bots from the pool for each agent with a persona."""
+        if self._bot_pool is None:
+            return
+        for spec in agents:
+            if spec.persona is None:
+                continue
+            try:
+                slot = await self._bot_pool.acquire(spec.persona, spec.task_id)
+                if slot is not None:
+                    try:
+                        from gwenn.events import SwarmBotAcquiredEvent
+                        self._emit_event(SwarmBotAcquiredEvent(
+                            swarm_id=swarm_id,
+                            task_id=spec.task_id,
+                            bot_name=slot.bot_username,
+                            persona_name=spec.persona.name,
+                        ))
+                    except Exception:
+                        pass
+            except Exception:
+                logger.warning(
+                    "orchestrator.bot_acquire_failed",
+                    task_id=spec.task_id,
+                    exc_info=True,
+                )
+
+    async def _release_swarm_bots(
+        self,
+        swarm_id: str,
+        task_ids: list[str],
+    ) -> None:
+        """Release all bots assigned to swarm tasks back to the pool."""
+        if self._bot_pool is None:
+            return
+        for task_id in task_ids:
+            slot = self._bot_pool.get_slot_for_task(task_id)
+            if slot is not None:
+                try:
+                    await self._bot_pool.release(slot)
+                    try:
+                        from gwenn.events import SwarmBotReleasedEvent
+                        self._emit_event(SwarmBotReleasedEvent(
+                            swarm_id=swarm_id,
+                            task_id=task_id,
+                            bot_name=slot.bot_username,
+                        ))
+                    except Exception:
+                        pass
+                except Exception:
+                    logger.warning(
+                        "orchestrator.bot_release_failed",
+                        task_id=task_id,
+                        exc_info=True,
+                    )
+
+    async def send_swarm_message(
+        self,
+        swarm_id: str,
+        task_id: str,
+        text: str,
+    ) -> bool:
+        """Send a visible message through the swarm bot assigned to task_id.
+
+        Returns True if sent successfully, False if no bot pool or no slot.
+        Emits a SwarmTurnEvent on success.
+        """
+        if self._bot_pool is None:
+            return False
+        slot = self._bot_pool.get_slot_for_task(task_id)
+        if slot is None:
+            return False
+
+        # Resolve session for this task to find the Telegram chat/thread.
+        session_id = self._origin_sessions.get(task_id)
+        if not session_id or not session_id.startswith("telegram_"):
+            return False
+
+        scope = session_id[len("telegram_"):]
+        chat_id: int | None = None
+        thread_id: int | None = None
+        if scope.startswith("thread:"):
+            # Thread routing requires the channel's _thread_to_chat map,
+            # which we don't have here. Use the bot pool's send_as directly
+            # with the thread and chat IDs encoded in the session_id.
+            # For thread sessions, the chat_id is stored by TelegramChannel.
+            # We'll handle this through the channel's send_as_swarm_bot instead.
+            return False
+        elif scope.startswith("chat:"):
+            try:
+                chat_id = int(scope[len("chat:"):])
+            except ValueError:
+                return False
+
+        if chat_id is None:
+            return False
+
+        await self._bot_pool.send_as(slot, chat_id, thread_id, text)
+
+        try:
+            from gwenn.events import SwarmTurnEvent
+            self._emit_event(SwarmTurnEvent(
+                swarm_id=swarm_id,
+                task_id=task_id,
+                bot_name=slot.bot_username,
+                message_preview=text[:100],
+            ))
+        except Exception:
+            pass
+
+        return True
 
     # ---- Internal Methods ----
 
@@ -455,6 +614,19 @@ class Orchestrator:
                     logger.warning("orchestration.redaction_failed", task_id=task_id, exc_info=True)
 
         self._completed_results[task_id] = result
+
+        # Emit CompletionMessage for swarm visualization.
+        try:
+            from gwenn.events import CompletionMessage
+            self._emit_event(CompletionMessage(
+                sender_task_id=task_id,
+                recipient_task_id="coordinator",
+                result_text=result.result_text[:500] if result.result_text else "",
+                files_modified=result.files_modified,
+                success=result.status == "completed",
+            ))
+        except Exception:
+            pass
 
         # Evict oldest completed results to prevent unbounded growth
         max_completed = max(50, self._config.max_total_api_calls)

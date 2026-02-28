@@ -355,3 +355,92 @@ class InteroceptiveSnapshotEvent(GwennEvent):
     cpu_percent: float
     memory_percent: float
     response_latency_ms: float
+
+
+# ---------------------------------------------------------------------------
+# Swarm Visualization Events
+# ---------------------------------------------------------------------------
+
+
+class SwarmBotAcquiredEvent(GwennEvent):
+    """Emitted when a bot is acquired from the pool for a subagent."""
+
+    swarm_id: str
+    task_id: str
+    bot_name: str
+    persona_name: str
+
+
+class SwarmBotReleasedEvent(GwennEvent):
+    """Emitted when a bot is released back to the pool."""
+
+    swarm_id: str
+    task_id: str
+    bot_name: str
+
+
+class SwarmTurnEvent(GwennEvent):
+    """Emitted when a subagent bot posts a visible message."""
+
+    swarm_id: str
+    task_id: str
+    bot_name: str
+    message_preview: str
+
+
+# ---------------------------------------------------------------------------
+# Typed Inter-Agent Messages
+# ---------------------------------------------------------------------------
+
+
+class AgentMessage(GwennEvent):
+    """Base class for all inter-agent messages."""
+
+    sender_task_id: str
+    recipient_task_id: str
+    swarm_id: str | None = None
+
+
+class TaskDispatchMessage(AgentMessage):
+    """Coordinator assigns a task to a subagent."""
+
+    task_description: str
+    assigned_persona_name: str | None = None
+
+
+class StatusUpdateMessage(AgentMessage):
+    """Subagent reports progress."""
+
+    status: str  # "thinking", "researching", "implementing", "blocked"
+    progress_pct: float | None = None
+    detail: str = ""
+
+
+class CompletionMessage(AgentMessage):
+    """Subagent finished — here are the results."""
+
+    result_text: str
+    files_modified: list[str] = Field(default_factory=list)
+    success: bool = True
+
+
+class EscalationMessage(AgentMessage):
+    """Subagent is stuck and needs help or human input."""
+
+    reason: str  # "blocked", "confused", "needs_approval", "conflict"
+    detail: str
+    suggested_action: str | None = None
+
+
+class RequestHelpMessage(AgentMessage):
+    """Subagent asks another subagent for assistance."""
+
+    request: str
+    context: str = ""
+
+
+class BroadcastMessage(AgentMessage):
+    """Message to all agents or a role group."""
+
+    recipient_task_id: str = "all"
+    content: str

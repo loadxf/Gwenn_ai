@@ -18,11 +18,21 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
+class SubagentPersona(BaseModel):
+    """Persona assigned to a subagent for visible swarm communication."""
+
+    name: str
+    role: str
+    style: str = "neutral"
+    avatar_url: str | None = None
+
+
 class SubagentSpec(BaseModel):
     """Task definition for a single subagent."""
 
     task_id: str = Field(default_factory=lambda: f"sub-{uuid.uuid4().hex[:12]}")
     task_description: str
+    persona: SubagentPersona | None = None
     system_prompt: Optional[str] = None
     model: str = ""  # empty = use parent model
     max_tokens: int = 4096

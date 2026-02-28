@@ -38,6 +38,7 @@ from typing import Any, TYPE_CHECKING
 import structlog
 
 from gwenn.channels.base import BaseChannel
+from gwenn.channels.telegram_bot_pool import TelegramBotPool
 from gwenn.types import AgentResponse, ButtonSpec, UserMessage
 
 if TYPE_CHECKING:
@@ -189,6 +190,11 @@ class TelegramChannel(BaseChannel):
         # messages to the correct Telegram forum topic.
         self._thread_to_chat: dict[str, int] = {}
 
+        # Bot pool for swarm visualization (Phase 6).
+        self._bot_pool: TelegramBotPool | None = None
+        if config.swarm_bot_tokens and config.swarm_visible:
+            self._bot_pool = TelegramBotPool(bot_tokens=list(config.swarm_bot_tokens))
+
     # ------------------------------------------------------------------
     # BaseChannel interface
     # ------------------------------------------------------------------
@@ -228,6 +234,17 @@ class TelegramChannel(BaseChannel):
         )
         logger.info("telegram_channel.started")
 
+        # Initialize the swarm bot pool (fetch bot identities from Telegram).
+        if self._bot_pool is not None:
+            try:
+                await self._bot_pool.initialize()
+                logger.info(
+                    "telegram_channel.bot_pool_initialized",
+                    pool_size=self._bot_pool.pool_size,
+                )
+            except Exception:
+                logger.warning("telegram_channel.bot_pool_init_failed", exc_info=True)
+
         # Register commands with Telegram so the "/" menu shows all of them.
         await self._sync_bot_commands()
 
@@ -239,6 +256,12 @@ class TelegramChannel(BaseChannel):
 
     async def stop(self) -> None:
         """Stop polling and shut down the PTB application."""
+        # Release all swarm bots back to pool.
+        if self._bot_pool is not None:
+            try:
+                await self._bot_pool.release_all()
+            except Exception:
+                logger.debug("telegram_channel.bot_pool_release_error", exc_info=True)
         if self._audio_transcriber is not None:
             try:
                 await self._audio_transcriber.close()
@@ -1442,6 +1465,53 @@ class TelegramChannel(BaseChannel):
             update_id=update_id,
             exc_info=error,
         )
+
+    @property
+    def bot_pool(self) -> TelegramBotPool | None:
+        """Access the swarm bot pool (None if not configured)."""
+        return self._bot_pool
+
+    async def send_as_swarm_bot(
+        self,
+        task_id: str,
+        session_id: str,
+        text: str,
+    ) -> bool:
+        """Send a message as a swarm subagent bot.
+
+        Looks up the bot slot assigned to *task_id* and sends *text* to the
+        Telegram chat/thread identified by *session_id*. Returns False if no
+        bot pool, no slot for the task, or the session can't be resolved.
+        """
+        if self._bot_pool is None:
+            return False
+        slot = self._bot_pool.get_slot_for_task(task_id)
+        if slot is None:
+            return False
+
+        # Parse session_id → chat_id + thread_id.
+        if not session_id.startswith("telegram_"):
+            return False
+        scope = session_id[len("telegram_"):]
+        chat_id: int | None = None
+        thread_id: int | None = None
+
+        if scope.startswith("thread:"):
+            thread_id_str = scope[len("thread:"):]
+            chat_id = self._thread_to_chat.get(thread_id_str)
+            if chat_id is None:
+                return False
+            thread_id = int(thread_id_str)
+        elif scope.startswith("chat:"):
+            try:
+                chat_id = int(scope[len("chat:"):])
+            except ValueError:
+                return False
+        else:
+            return False
+
+        await self._bot_pool.send_as(slot, chat_id, thread_id, text)
+        return True
 
     @staticmethod
     def _parse_setup_payload(raw_payload: str) -> dict[str, str]:

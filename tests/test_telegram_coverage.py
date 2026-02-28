@@ -39,6 +39,8 @@ def make_config(
     cfg.user_lock_cache_size = 512
     cfg.concurrent_updates = concurrent_updates
     cfg.enable_media = enable_media
+    cfg.swarm_bot_tokens = []
+    cfg.swarm_visible = False
     return cfg
 
 
