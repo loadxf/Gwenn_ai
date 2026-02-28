@@ -23,6 +23,7 @@ schedule the next beat.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
@@ -32,11 +33,17 @@ import structlog
 from gwenn.affect.appraisal import AppraisalEvent, StimulusType
 from gwenn.cognition.goals import NeedType
 from gwenn.cognition.inner_life import ThinkingMode
-from gwenn.config import HeartbeatConfig
+from gwenn.config import GwennConfig, HeartbeatConfig
 from gwenn.memory.episodic import Episode  # noqa: F401, F811 — used at runtime in _integrate
 
 if TYPE_CHECKING:
     from gwenn.agent import SentientAgent
+    from gwenn.channels.session import SessionManager
+    from gwenn.events import EventBus
+    from gwenn.gateway import GatewayServer
+    from gwenn.rpc import RequestRouter
+
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
 
 logger = structlog.get_logger(__name__)
 
@@ -78,10 +85,26 @@ class Heartbeat:
     and logs all errors rather than propagating them.
     """
 
-    def __init__(self, config: HeartbeatConfig, agent: SentientAgent):
-        self._config = config
-        self._agent = agent
-        self._interval = config.interval
+    def __init__(
+        self,
+        config: HeartbeatConfig | GwennConfig,
+        agent: SentientAgent | None = None,
+    ):
+        # Determine mode based on config type.
+        # Core mode: Heartbeat creates and owns agent, gateway, channels.
+        # Legacy mode: Agent creates heartbeat, passes itself in.
+        if isinstance(config, GwennConfig):
+            self._full_config: GwennConfig | None = config
+            self._config: HeartbeatConfig = config.heartbeat
+            self._agent: SentientAgent | None = None
+            self._is_core = True
+        else:
+            self._full_config = None
+            self._config = config
+            self._agent = agent
+            self._is_core = False
+
+        self._interval = self._config.interval
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._beat_count = 0
@@ -103,6 +126,15 @@ class Heartbeat:
         # Bounded to prevent unbounded growth over long runtimes.
         self._processed_subagent_ids: set[str] = set()
         self._max_processed_ids = 2000
+
+        # Core-mode owned subsystems (populated in run())
+        self._event_bus: EventBus | None = None
+        self._gateway: GatewayServer | None = None
+        self._router: RequestRouter | None = None
+        self._session_store: Any = None
+        self._session_manager: SessionManager | None = None
+        self._channel_task: asyncio.Task[None] | None = None
+        self._shutdown_event = asyncio.Event()
 
     # -------------------------------------------------------------------------
     # Lifecycle
@@ -132,6 +164,350 @@ class Heartbeat:
             except asyncio.CancelledError:
                 pass
         logger.info("heartbeat.stopped", total_beats=self._beat_count)
+
+    # -------------------------------------------------------------------------
+    # Core-mode lifecycle — heartbeat owns everything
+    # -------------------------------------------------------------------------
+
+    async def run(self) -> None:
+        """Full lifecycle — Gwenn is born, lives, and sleeps.
+
+        Only available in core mode (constructed with GwennConfig).
+        Manages event bus → gateway → agent → channels → cognitive loop.
+        """
+        if not self._is_core or self._full_config is None:
+            raise RuntimeError("run() requires core mode (construct with GwennConfig)")
+
+        from gwenn.events import create_event_bus
+
+        # 0. START NERVOUS SYSTEM
+        self._event_bus = create_event_bus()
+        await self._event_bus.start()
+
+        try:
+            # 1. OPEN CIRCULATORY SYSTEM
+            await self._start_gateway()
+
+            # 2. WAKE UP
+            await self._wake_up()
+
+            # 3. OPEN SENSES
+            await self._start_channels()
+
+            # 4. LIVE
+            await self._live()
+        finally:
+            # 5. SLEEP
+            try:
+                await self._sleep()
+            finally:
+                # 6. STOP NERVOUS SYSTEM
+                if self._event_bus is not None:
+                    await self._event_bus.stop()
+
+    async def _start_gateway(self) -> None:
+        """Create and start the WebSocket/HTTP gateway server."""
+        assert self._full_config is not None
+        assert self._event_bus is not None
+
+        if not self._full_config.daemon.gateway_enabled:
+            logger.info("heartbeat.gateway_disabled")
+            return
+
+        from gwenn.memory.session_store import SessionStore
+
+        session_store = SessionStore(
+            self._full_config.daemon.sessions_dir,
+            max_count=self._full_config.daemon.session_max_count,
+            max_messages=self._full_config.daemon.session_max_messages,
+        )
+
+        # Router needs the agent — use a placeholder that will be wired
+        # after _wake_up().  For now, store the session_store.
+        self._session_store = session_store
+        logger.info("heartbeat.gateway_deferred_until_agent_ready")
+
+    async def _wire_gateway(self) -> None:
+        """Wire the gateway with agent and router after agent is ready."""
+        assert self._full_config is not None
+        assert self._event_bus is not None
+        assert self._agent is not None
+
+        if not self._full_config.daemon.gateway_enabled:
+            return
+
+        from gwenn.gateway import GatewayServer
+        from gwenn.rpc import RequestRouter
+
+        session_store = self._session_store
+
+        self._router = RequestRouter(
+            agent=self._agent,
+            session_store=session_store,
+            event_bus=self._event_bus,
+            respond_lock=self._agent.respond_lock,
+            shutdown_callback=self._request_shutdown,
+            session_include_preview=bool(
+                self._full_config.daemon.session_include_preview
+            ),
+        )
+
+        self._gateway = GatewayServer(
+            config=self._full_config.daemon,
+            router=self._router,
+            event_bus=self._event_bus,
+            session_store=session_store,
+            auth_token=(self._full_config.daemon.auth_token or "").strip() or None,
+            shutdown_callback=self._request_shutdown,
+        )
+
+        host = self._full_config.daemon.gateway_host
+        port = self._full_config.daemon.gateway_port
+        await self._gateway.start(host, port)
+        logger.info("heartbeat.gateway_started", host=host, port=port)
+
+    async def _wake_up(self) -> None:
+        """Create and initialize the SentientAgent."""
+        assert self._full_config is not None
+
+        from gwenn.agent import SentientAgent
+        from gwenn.api.claude import CognitiveEngineInitError
+
+        try:
+            self._agent = SentientAgent(self._full_config)
+        except CognitiveEngineInitError as e:
+            logger.error("heartbeat.agent_init_failed", error=str(e))
+            raise
+
+        logger.info("heartbeat.waking_up")
+        await self._agent.initialize()
+        await self._agent.start()
+
+        # Wire the agent's heartbeat reference so user-activity acceleration
+        # and status reporting work in core mode.
+        self._agent.heartbeat = self
+
+        logger.info("heartbeat.agent_ready")
+
+        # Now wire up the gateway with the live agent
+        await self._wire_gateway()
+
+    async def _start_channels(self) -> None:
+        """Start platform channels (Telegram, Discord, etc.)."""
+        assert self._full_config is not None
+        assert self._agent is not None
+
+        channel_list = self._full_config.channel.get_channel_list()
+        if not channel_list:
+            return
+
+        self._channel_task = asyncio.create_task(
+            self._run_platform_channels(channel_list),
+            name="heartbeat-channels",
+        )
+        self._channel_task.add_done_callback(self._on_channel_task_done)
+
+    async def _run_platform_channels(self, channel_list: list[str]) -> None:
+        """Start Telegram/Discord channels in the heartbeat's event loop."""
+        from gwenn.channels.startup import build_channels, run_channels_until_shutdown
+
+        assert self._agent is not None
+
+        sessions, channels = build_channels(self._agent, channel_list=channel_list)
+        if not channels:
+            return
+
+        self._session_manager = sessions
+
+        try:
+            await run_channels_until_shutdown(
+                self._agent,
+                sessions,
+                channels,
+                self._shutdown_event,
+                continue_on_start_error=(
+                    "telegram" in channel_list and "discord" in channel_list
+                ),
+            )
+        except Exception as exc:
+            if self._is_nonfatal_channel_error(exc):
+                logger.warning(
+                    "heartbeat.channels_startup_skipped",
+                    channels=channel_list,
+                    error_type=type(exc).__name__,
+                    error=self._redact_channel_error(str(exc)),
+                )
+                return
+            raise
+
+    def _on_channel_task_done(self, task: asyncio.Task[None]) -> None:
+        """Monitor channel task and trigger shutdown if it crashes."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        if self._is_nonfatal_channel_error(exc):
+            logger.warning(
+                "heartbeat.channels_task_failed_nonfatal",
+                error_type=type(exc).__name__,
+                error=self._redact_channel_error(str(exc)),
+            )
+            return
+        logger.error(
+            "heartbeat.channels_task_failed",
+            error=self._redact_channel_error(str(exc)),
+            exc_info=True,
+        )
+        self._request_shutdown("heartbeat_channels_task_failed")
+
+    async def _live(self) -> None:
+        """The eternal cognitive loop — runs until shutdown is requested."""
+        self._running = True
+        _MAX_CONSECUTIVE = self._config.circuit_max_consecutive
+        _CIRCUIT_BASE_SECONDS = self._config.circuit_base_seconds
+        _CIRCUIT_MAX_SECONDS = self._config.circuit_max_seconds
+
+        while self._running and not self._shutdown_event.is_set():
+            if self._circuit_open_until is not None:
+                remaining = self._circuit_open_until - time.monotonic()
+                if remaining > 0:
+                    await asyncio.sleep(min(self._interval, remaining))
+                    continue
+                self._circuit_open_until = None
+                logger.info("heartbeat.circuit_closed")
+            try:
+                await self._beat()
+                self._consecutive_failures = 0
+                self._circuit_open_count = 0
+                self._last_error = None
+
+                # Emit heartbeat event on the bus
+                if self._event_bus is not None:
+                    from gwenn.events import HeartbeatBeatEvent
+
+                    emotion = "neutral"
+                    arousal = 0.0
+                    if self._agent is not None:
+                        try:
+                            emotion = self._agent.affect_state.current_emotion.value
+                            arousal = self._agent.affect_state.dimensions.arousal
+                        except Exception:
+                            pass
+                    self._event_bus.emit(HeartbeatBeatEvent(
+                        beat_count=self._beat_count,
+                        emotion=emotion,
+                        arousal=arousal,
+                        phase="complete",
+                    ))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._consecutive_failures += 1
+                self._last_error = str(e)
+                logger.error(
+                    "heartbeat.beat_failed",
+                    error=str(e),
+                    consecutive=self._consecutive_failures,
+                    exc_info=True,
+                )
+                if self._consecutive_failures >= _MAX_CONSECUTIVE:
+                    backoff = min(
+                        _CIRCUIT_BASE_SECONDS * (2 ** self._circuit_open_count),
+                        _CIRCUIT_MAX_SECONDS,
+                    )
+                    self._circuit_open_count += 1
+                    self._circuit_open_until = time.monotonic() + backoff
+                    logger.critical(
+                        "heartbeat.circuit_open",
+                        failures=self._consecutive_failures,
+                        cool_down_seconds=backoff,
+                        open_count=self._circuit_open_count,
+                    )
+                    self._consecutive_failures = 0
+
+            # Shutdown-aware sleep: wake immediately if shutdown is signaled
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=self._interval
+                )
+                break  # Shutdown signaled during sleep
+            except asyncio.TimeoutError:
+                pass  # Normal interval elapsed
+
+    async def _sleep(self) -> None:
+        """Graceful shutdown: stop channels, agent, gateway."""
+        self._running = False
+        self._shutdown_event.set()
+
+        # Stop channels (with timeout to avoid hanging on misbehaving adapters)
+        if self._channel_task is not None:
+            try:
+                await asyncio.wait_for(self._channel_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                self._channel_task.cancel()
+                logger.error("heartbeat.channels_task_join_timeout")
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("heartbeat.channels_task_join_failed")
+            self._channel_task = None
+
+        # Stop agent
+        if self._agent is not None:
+            try:
+                await self._agent.shutdown()
+            except Exception:
+                logger.exception("heartbeat.agent_shutdown_failed")
+
+        # Stop gateway
+        if self._gateway is not None:
+            try:
+                await self._gateway.stop()
+            except Exception:
+                logger.exception("heartbeat.gateway_stop_failed")
+            else:
+                logger.info("heartbeat.gateway_stopped")
+
+        logger.info("heartbeat.sleep_complete")
+
+    def _request_shutdown(self, reason: str) -> None:
+        """Trigger heartbeat shutdown and activate the agent kill switch."""
+        agent = self._agent
+        if agent is not None:
+            safety = getattr(agent, "safety", None)
+            emergency_stop = getattr(safety, "emergency_stop", None)
+            if callable(emergency_stop):
+                try:
+                    emergency_stop(reason)
+                except Exception:
+                    logger.debug(
+                        "heartbeat.emergency_stop_failed",
+                        reason=reason,
+                        exc_info=True,
+                    )
+        self._shutdown_event.set()
+
+    @staticmethod
+    def _is_nonfatal_channel_error(exc: Exception) -> bool:
+        """Return True for channel startup errors that should not stop the heartbeat."""
+        if isinstance(exc, ImportError):
+            msg = str(exc).lower()
+            if "telegram" in msg or "discord" in msg:
+                return True
+            return False
+        err_type = type(exc).__name__
+        err_mod = type(exc).__module__
+        if err_type == "InvalidToken" and err_mod.startswith("telegram"):
+            return True
+        if err_type == "LoginFailure" and err_mod.startswith("discord"):
+            return True
+        return False
+
+    @staticmethod
+    def _redact_channel_error(message: str) -> str:
+        """Mask Telegram bot tokens in channel error strings before logging."""
+        return _TELEGRAM_BOT_TOKEN_RE.sub("[REDACTED_TELEGRAM_TOKEN]", message or "")
 
     def notify_user_activity(self) -> None:
         """Called when user sends a message — increases heartbeat rate."""
@@ -296,6 +672,14 @@ class Heartbeat:
         except Exception as e:
             logger.debug("heartbeat.environmental_grounding_failed", error=str(e))
 
+        # Gateway health (core mode only)
+        gateway_connections = 0
+        if self._gateway is not None:
+            try:
+                gateway_connections = self._gateway.active_connection_count
+            except Exception:
+                pass
+
         return {
             "timestamp": now,
             "beat_number": self._beat_count,
@@ -309,6 +693,7 @@ class Heartbeat:
             "goal_status": self._agent.goal_system.get_goals_summary(),
             "resilience_status": self._agent.resilience.status,
             "beats_since_consolidation": self._beats_since_consolidation,
+            "gateway_connections": gateway_connections,
         }
 
     def _orient(self, state: dict[str, Any]) -> ThinkingMode:
@@ -758,8 +1143,9 @@ class Heartbeat:
         circuit_recovery_in = 0.0
         if self._circuit_open_until is not None:
             circuit_recovery_in = max(0.0, self._circuit_open_until - now_mono)
-        return {
+        result: dict[str, Any] = {
             "running": self._running,
+            "is_core": self._is_core,
             "beat_count": self._beat_count,
             "current_interval": round(self._interval, 1),
             "last_beat_time": self._last_beat_time,
@@ -770,3 +1156,9 @@ class Heartbeat:
             "circuit_recovery_in": round(circuit_recovery_in, 1),
             "last_error": self._last_error,
         }
+        if self._is_core and self._gateway is not None:
+            try:
+                result["gateway_connections"] = self._gateway.active_connection_count
+            except Exception:
+                pass
+        return result
