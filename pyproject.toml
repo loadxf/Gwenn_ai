@@ -28,12 +28,15 @@ dependencies = [
     "python-telegram-bot[rate-limiter]>=22.0",  # Telegram channel support (default)
     "discord.py>=2.3.0",                        # Discord channel support (default)
     "opencv-python-headless>=4.9",              # Video frame extraction (~56MB, no GUI deps)
+    "aiohttp>=3.10.0",            # WebSocket gateway + async HTTP (also used by slack-bolt async)
+    "slack-bolt>=1.18.0",         # Slack channel via Socket Mode
 ]
 
 [project.optional-dependencies]
 telegram = ["python-telegram-bot[rate-limiter]>=22.0"]
 discord = ["discord.py>=2.3.0"]
-channels = ["python-telegram-bot[rate-limiter]>=22.0", "discord.py>=2.3.0"]
+slack = ["slack-bolt>=1.18.0", "aiohttp>=3.10.0"]
+channels = ["python-telegram-bot[rate-limiter]>=22.0", "discord.py>=2.3.0", "slack-bolt>=1.18.0"]
 groq = ["groq>=0.11.0"]
 dev = [
     "pytest>=7.4.0",

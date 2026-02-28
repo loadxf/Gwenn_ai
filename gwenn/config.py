@@ -627,6 +627,7 @@ class ChannelConfig(BaseSettings):
     cli_enabled: bool = Field(True, alias="CLI_ENABLED")
     telegram_enabled: bool = Field(False, alias="TELEGRAM_ENABLED")
     discord_enabled: bool = Field(False, alias="DISCORD_ENABLED")
+    slack_enabled: bool = Field(False, alias="SLACK_ENABLED")
 
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
 
@@ -639,6 +640,8 @@ class ChannelConfig(BaseSettings):
             channels.append("telegram")
         if self.discord_enabled:
             channels.append("discord")
+        if self.slack_enabled:
+            channels.append("slack")
         return channels
 
 
@@ -656,6 +659,17 @@ class DaemonConfig(BaseSettings):
     session_include_preview: bool = Field(False, alias="GWENN_DAEMON_SESSION_INCLUDE_PREVIEW")
     redact_session_content: bool = Field(True, alias="GWENN_DAEMON_REDACT_SESSION_CONTENT")
 
+    # Gateway (WebSocket + HTTP server)
+    gateway_enabled: bool = Field(True, alias="GWENN_GATEWAY_ENABLED")
+    gateway_host: str = Field("127.0.0.1", alias="GWENN_GATEWAY_HOST")
+    gateway_port: int = Field(18900, alias="GWENN_GATEWAY_PORT")
+    legacy_socket_enabled: bool = Field(True, alias="GWENN_LEGACY_SOCKET_ENABLED")
+    mcp_server_enabled: bool = Field(False, alias="GWENN_MCP_SERVER_ENABLED")
+    a2a_enabled: bool = Field(False, alias="GWENN_A2A_ENABLED")
+
+    # Feature flag: heartbeat-as-core architecture (Phase 1)
+    heartbeat_core: bool = Field(True, alias="GWENN_HEARTBEAT_CORE")
+
     # Factory defaults for detecting whether paths were explicitly set.
     _DEFAULT_SOCKET: Path = Path("./gwenn_data/gwenn.sock")
     _DEFAULT_PID: Path = Path("./gwenn_data/gwenn.pid")
@@ -671,7 +685,43 @@ class DaemonConfig(BaseSettings):
         self.session_max_messages = max(1, int(self.session_max_messages))
         if isinstance(self.auth_token, str):
             self.auth_token = self.auth_token.strip() or None
+        self.gateway_host = self.gateway_host.strip()
+        self.gateway_port = max(1, min(65535, int(self.gateway_port)))
+        if self.gateway_enabled and self.gateway_host in ("0.0.0.0", "::"):
+            logger.warning(
+                "config.gateway_host_not_localhost",
+                host=self.gateway_host,
+                hint="Gateway will be exposed on all interfaces. "
+                     "Set GWENN_GATEWAY_HOST=127.0.0.1 for local-only access.",
+            )
         return self
+
+
+class SlackConfig(BaseSettings):
+    """Configuration for the Slack channel via Socket Mode."""
+
+    bot_token: str | None = Field(None, alias="GWENN_SLACK_BOT_TOKEN")
+    app_token: str | None = Field(None, alias="GWENN_SLACK_APP_TOKEN")
+
+    model_config = {
+        "env_file": _ENV_FILE,
+        "extra": "ignore",
+        "populate_by_name": True,
+        "env_ignore_empty": True,
+    }
+
+    @model_validator(mode="after")
+    def normalize_tokens(self) -> "SlackConfig":
+        if isinstance(self.bot_token, str):
+            self.bot_token = self.bot_token.strip() or None
+        if isinstance(self.app_token, str):
+            self.app_token = self.app_token.strip() or None
+        return self
+
+    @property
+    def is_available(self) -> bool:
+        """Both bot_token and app_token are required for Socket Mode."""
+        return bool(self.bot_token and self.app_token)
 
 
 class GwennConfig:
@@ -723,6 +773,9 @@ class GwennConfig:
 
         # Daemon config (persistent background process)
         self.daemon = DaemonConfig()
+
+        # Slack config (optional — tokens not required)
+        self.slack = SlackConfig()
 
         # Derive daemon paths from memory.data_dir when they still equal factory defaults.
         # NOTE: Use instance access (self.daemon._DEFAULT_*) not class access
