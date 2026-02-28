@@ -25,6 +25,7 @@ dependencies = [
     "python-dotenv>=1.0.0",        # .env file loading
     "httpx>=0.27.0",               # Async HTTP for MCP and tool calls
     "structlog>=23.2.0",           # Structured logging for observability
+    "click>=8.1.0",                # CLI command framework
     "rich>=13.7.0",                # Terminal UI for heartbeat display
     "python-telegram-bot[rate-limiter]>=22.0",  # Telegram channel support (default)
     "discord.py>=2.3.0",                        # Discord channel support (default)
