@@ -111,6 +111,7 @@ class GatewayServer:
         self._app = web.Application()
         self._app.router.add_get("/ws", self._handle_ws)
         self._app.router.add_get("/health", self._handle_health)
+        self._app.router.add_get("/dashboard", self._handle_dashboard)
 
         # MCP stubs (gated)
         if self._config.mcp_server_enabled:
@@ -189,6 +190,40 @@ class GatewayServer:
             "uptime": round(uptime, 1),
             "connections": len(self._connections),
         })
+
+    async def _handle_dashboard(self, request: web.Request) -> web.Response:
+        """Dashboard — includes heartbeat, agent, and health status."""
+        uptime = time.monotonic() - self._started_at if self._started_at else 0.0
+        result: dict[str, Any] = {
+            "status": "ok",
+            "uptime": round(uptime, 1),
+            "connections": len(self._connections),
+        }
+
+        # Heartbeat status
+        if self._heartbeat is not None:
+            try:
+                result["heartbeat"] = self._heartbeat.status
+            except Exception:
+                pass
+
+            # Self-healing status
+            healing = getattr(self._heartbeat, "_healing_engine", None)
+            if healing is not None:
+                try:
+                    result["health"] = healing.health_summary
+                except Exception:
+                    result["health"] = {"status": "unknown"}
+
+        # Agent status
+        agent = getattr(self._heartbeat, "_agent", None) if self._heartbeat else None
+        if agent is not None:
+            try:
+                result["agent"] = agent.status
+            except Exception:
+                pass
+
+        return web.json_response(result)
 
     async def _handle_mcp_stub(self, request: web.Request) -> web.Response:
         """MCP Streamable HTTP — stub."""
