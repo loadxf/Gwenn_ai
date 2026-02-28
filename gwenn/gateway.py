@@ -72,6 +72,7 @@ class GatewayServer:
         *,
         auth_token: str | None = None,
         shutdown_callback: Callable[[str], None] | None = None,
+        heartbeat: Any = None,
     ) -> None:
         self._config = config
         self._router = router
@@ -79,6 +80,7 @@ class GatewayServer:
         self._session_store = session_store
         self._auth_token = (auth_token or "").strip() or None
         self._shutdown_callback = shutdown_callback
+        self._heartbeat = heartbeat
 
         self._max_connections = max(1, config.max_connections)
         self._connection_timeout = max(1.0, config.connection_timeout)

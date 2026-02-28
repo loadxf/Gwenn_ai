@@ -290,6 +290,7 @@ class Heartbeat:
             session_store=session_store,
             auth_token=(self._full_config.daemon.auth_token or "").strip() or None,
             shutdown_callback=self._request_shutdown,
+            heartbeat=self,
         )
 
         host = self._full_config.daemon.gateway_host
@@ -1264,9 +1265,15 @@ class Heartbeat:
         new_interval = base * activity_factor * arousal_factor
         self._interval = max(min_interval, min(max_interval, new_interval))
 
-        # If recovery actions were taken, accelerate next beat to verify sooner
+        # If recovery actions were taken, accelerate next beat to verify sooner.
+        # Exception: reduce_heartbeat_load intentionally slows down, so don't override it.
         if self._pending_recovery_actions:
-            self._interval = min_interval
+            load_reduction = any(
+                getattr(a, "action_type", "") == "reduce_heartbeat_load"
+                for a in self._pending_recovery_actions
+            )
+            if not load_reduction:
+                self._interval = min_interval
             self._pending_recovery_actions = []
 
     # -------------------------------------------------------------------------
@@ -1348,14 +1355,17 @@ class Heartbeat:
             name = getattr(ch, "channel_name", "unknown")
             statuses[name] = {"crashed": False, "error": ""}
 
-        # Check if channel task has failed (crashed channels)
+        # Check if channel task has failed (crashed channels).
+        # The single _channel_task wraps all channels, so we cannot isolate
+        # which specific channel crashed. Emit one composite "channels" issue
+        # rather than marking every individual channel as crashed.
         if self._channel_task is not None and self._channel_task.done():
             exc = self._channel_task.exception() if not self._channel_task.cancelled() else None
             if exc is not None:
-                # Mark all channels as potentially crashed
-                for name in statuses:
-                    statuses[name]["crashed"] = True
-                    statuses[name]["error"] = str(exc)[:200]
+                statuses["channels"] = {
+                    "crashed": True,
+                    "error": f"channel_task_exception: {type(exc).__name__}",
+                }
 
         # Check for stale sessions
         if self._session_manager is not None:
@@ -1389,7 +1399,7 @@ class Heartbeat:
         progress = getattr(orchestrator, "_progress", {})
         active_tasks = getattr(orchestrator, "_active_tasks", {})
         config = getattr(orchestrator, "_config", None)
-        default_timeout = getattr(config, "subagent_timeout", 120.0) if config else 120.0
+        default_timeout = getattr(config, "default_timeout", 120.0) if config else 120.0
         multiplier = 2.0
         if self._full_config is not None:
             multiplier = self._full_config.self_healing.stuck_subagent_timeout_multiplier

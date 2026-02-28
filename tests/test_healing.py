@@ -275,6 +275,7 @@ class TestHeal:
             component="orchestrator",
             detail="task task-abc running 300s (timeout 120s)",
             suggested_action="cancel_stuck_subagent",
+            target_id="task-abc",
         )
         agent = MagicMock()
         agent.orchestrator = MagicMock()
@@ -427,8 +428,8 @@ class TestRateLimit:
     @pytest.mark.asyncio
     async def test_rate_limit_stops_actions(self) -> None:
         engine = _make_engine(**{"GWENN_SELF_HEALING_MAX_ACTIONS_HOUR": 2})
-        # Fill action timestamps
-        now = time.time()
+        # Fill action timestamps (monotonic)
+        now = time.monotonic()
         engine._action_timestamps = deque([now, now], maxlen=200)
 
         issue = HealthIssue(
@@ -446,7 +447,7 @@ class TestRateLimit:
 
     def test_old_timestamps_expire(self) -> None:
         engine = _make_engine(**{"GWENN_SELF_HEALING_MAX_ACTIONS_HOUR": 5})
-        old = time.time() - 7200  # 2 hours ago
+        old = time.monotonic() - 7200  # 2 hours ago
         engine._action_timestamps = deque([old, old, old], maxlen=200)
         assert engine._check_rate_limit() is True  # Old ones don't count
 
@@ -586,7 +587,7 @@ class TestHealthSummary:
         engine._recent_actions.append(
             RecoveryAction(action_type="restart_channel", success=False)
         )
-        engine._action_timestamps.append(time.time())
+        engine._action_timestamps.append(time.monotonic())
         summary = engine.health_summary
         assert summary["status"] == "degraded"
 

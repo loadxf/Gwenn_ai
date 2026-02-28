@@ -43,6 +43,7 @@ class HealthIssue(BaseModel):
     component: str = ""  # telegram, discord, slack, gateway, orchestrator
     detail: str = ""
     suggested_action: str = ""
+    target_id: str = ""  # Structured ID for the target (task_id, channel name, etc.)
 
 
 class RecoveryAction(BaseModel):
@@ -126,6 +127,7 @@ class SelfHealingEngine:
                     component="orchestrator",
                     detail=f"task {task_id} running {status.get('elapsed_seconds', 0):.0f}s (timeout {status.get('timeout_seconds', 0):.0f}s)",
                     suggested_action="cancel_stuck_subagent",
+                    target_id=task_id,
                 ))
 
         # 4. Memory pressure
@@ -199,7 +201,7 @@ class SelfHealingEngine:
             if action is not None:
                 actions.append(action)
                 self._recent_actions.append(action)
-                self._action_timestamps.append(time.time())
+                self._action_timestamps.append(time.monotonic())
                 # Set cooldown
                 self._cooldowns[cooldown_key] = now_mono + self._config.cooldown_seconds
 
@@ -349,6 +351,10 @@ class SelfHealingEngine:
             if callable(reg):
                 reg(new_ch)
 
+            # Clear the failed channel task reference to prevent re-detection
+            if hasattr(heartbeat, "_channel_task"):
+                heartbeat._channel_task = None
+
             logger.info("healing.channel_restarted", component=component)
             return True
         except Exception:
@@ -401,12 +407,7 @@ class SelfHealingEngine:
             action_type="cancel_stuck_subagent",
         )
 
-        # Extract task_id from issue detail
-        task_id = ""
-        detail = issue.detail
-        if detail.startswith("task "):
-            task_id = detail.split(" ")[1]
-
+        task_id = issue.target_id
         if not task_id:
             action.completed_at = time.time()
             action.success = False
@@ -523,7 +524,7 @@ class SelfHealingEngine:
 
     def _check_rate_limit(self) -> bool:
         """Return True if we're within the hourly action limit."""
-        now = time.time()
+        now = time.monotonic()
         cutoff = now - 3600.0
         # Remove old timestamps
         while self._action_timestamps and self._action_timestamps[0] < cutoff:
@@ -589,7 +590,7 @@ class SelfHealingEngine:
     @property
     def health_summary(self) -> dict[str, Any]:
         """Summary dict for monitoring endpoints."""
-        now = time.time()
+        now = time.monotonic()
         recent_action_count = sum(
             1 for ts in self._action_timestamps if ts > now - 3600
         )
