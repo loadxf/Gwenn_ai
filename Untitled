@@ -147,13 +147,13 @@ GWENN_INTERAGENT_BUFFER_SIZE=100
 GWENN_MCP_SERVERS=[]
 
 # =============================================================================
-# Channel Configuration
+# Channel Configuration — enable/disable each channel independently
 # =============================================================================
-# GWENN_CHANNEL=cli  (default — original terminal behavior)
-# GWENN_CHANNEL=telegram | discord | all
-GWENN_CHANNEL=cli
+CLI_ENABLED=true
+TELEGRAM_ENABLED=false
+DISCORD_ENABLED=false
 
-# --- Telegram (required if GWENN_CHANNEL=telegram or all) ---
+# --- Telegram (required if TELEGRAM_ENABLED=true) ---
 # Obtain from @BotFather → /newbot
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 # User IDs to whitelist ([] = public, no restriction).
@@ -172,7 +172,7 @@ TELEGRAM_MAX_HISTORY_LENGTH=50
 # Enable photo/document/voice handling (requires Claude vision for images).
 # TELEGRAM_ENABLE_MEDIA=false
 
-# --- Discord (required if GWENN_CHANNEL=discord or all) ---
+# --- Discord (required if DISCORD_ENABLED=true) ---
 # Obtain from Discord Developer Portal → Bot → Token
 # Required intents: Message Content (enable in portal)
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
@@ -192,8 +192,8 @@ GWENN_DAEMON_SOCKET=./gwenn_data/gwenn.sock
 GWENN_DAEMON_PID_FILE=./gwenn_data/gwenn.pid
 # Optional shared token for daemon request authentication (recommended)
 GWENN_DAEMON_AUTH_TOKEN=
-# Channels the daemon manages: cli | cli,telegram | cli,discord | cli,telegram,discord
-GWENN_DAEMON_CHANNELS=cli
+# Channel flags above (CLI_ENABLED, TELEGRAM_ENABLED, DISCORD_ENABLED) also
+# control which channels the daemon manages.
 GWENN_DAEMON_MAX_CONNECTIONS=10
 GWENN_DAEMON_CONNECTION_TIMEOUT=300.0
 

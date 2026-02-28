@@ -36,7 +36,7 @@ async def test_startup_onboarding_runs_for_non_cli_when_interactive(monkeypatch)
     session._prompt_startup_input = _fake_prompt
     monkeypatch.setattr("gwenn.main.sys.stdin.isatty", lambda: True)
 
-    await session._run_first_startup_onboarding_if_needed("telegram")
+    await session._run_first_startup_onboarding_if_needed(False)
 
     agent.apply_startup_onboarding.assert_called_once()
     call = agent.apply_startup_onboarding.call_args
@@ -56,7 +56,7 @@ async def test_startup_onboarding_skipped_when_non_interactive(monkeypatch):
     session._agent = agent
     monkeypatch.setattr("gwenn.main.sys.stdin.isatty", lambda: False)
 
-    await session._run_first_startup_onboarding_if_needed("telegram")
+    await session._run_first_startup_onboarding_if_needed(False)
 
     agent.apply_startup_onboarding.assert_not_called()
 
@@ -372,7 +372,7 @@ async def test_run_channels_skips_failed_channel_in_all_mode(monkeypatch):
 
     session = GwennSession(channel_override="all")
     session._shutdown_event.set()  # trigger immediate shutdown
-    await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="all")
+    await session._run_channels(agent=MagicMock(), config=MagicMock(), channel_list=["telegram", "discord"])
 
     # Discord is skipped; Telegram starts and stops at shutdown.
     assert events == ["telegram:start", "discord:start", "telegram:stop"]
@@ -398,7 +398,7 @@ async def test_run_channels_prints_import_error_instead_of_raising(monkeypatch):
         _raise_import_error,
     )
 
-    await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="telegram")
+    await session._run_channels(agent=MagicMock(), config=MagicMock(), channel_list=["telegram"])
 
     assert any(
         "missing optional dependency" in str(call.args[0])
@@ -434,7 +434,7 @@ async def test_run_channels_prints_friendly_invalid_token_message(monkeypatch):
         _raise_invalid_token,
     )
 
-    await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="telegram")
+    await session._run_channels(agent=MagicMock(), config=MagicMock(), channel_list=["telegram"])
 
     printed = " ".join(str(call.args[0]) for call in print_mock.call_args_list)
     assert "Telegram bot token was rejected" in printed
@@ -485,7 +485,7 @@ async def test_run_channels_stops_all_on_shutdown(monkeypatch):
 
     session = GwennSession(channel_override="all")
     session._shutdown_event.set()
-    await session._run_channels(agent=MagicMock(), config=MagicMock(), mode="all")
+    await session._run_channels(agent=MagicMock(), config=MagicMock(), channel_list=["telegram", "discord"])
 
     assert events == [
         "telegram:start",

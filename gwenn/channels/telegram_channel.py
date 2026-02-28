@@ -185,6 +185,9 @@ class TelegramChannel(BaseChannel):
         self._proactive_queue: list[str] = []
         # Pending approval requests: id -> (event, result_holder)
         self._pending_approvals: dict[str, tuple[asyncio.Event, list[bool]]] = {}
+        # Maps thread_id (str) -> chat_id (int) so send_to_session can route
+        # messages to the correct Telegram forum topic.
+        self._thread_to_chat: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # BaseChannel interface
@@ -290,6 +293,33 @@ class TelegramChannel(BaseChannel):
             if uid:
                 await self.send_message(uid, text)
                 await asyncio.sleep(0.5)
+
+    async def send_to_session(self, session_id: str, text: str) -> bool:
+        """Send to the originating Telegram context of a session."""
+        if not session_id.startswith("telegram_") or self._app is None:
+            return False
+        scope = session_id[len("telegram_"):]  # "thread:123" or "chat:456" or "user:789"
+
+        if scope.startswith("thread:"):
+            thread_id_str = scope[len("thread:"):]
+            chat_id = self._thread_to_chat.get(thread_id_str)
+            if chat_id is None:
+                return False
+            thread_id = int(thread_id_str)
+            for chunk in format_for_telegram(text):
+                await self._app.bot.send_message(
+                    chat_id=chat_id, text=chunk,
+                    message_thread_id=thread_id, parse_mode=TELEGRAM_PARSE_MODE)
+            return True
+        elif scope.startswith("chat:"):
+            chat_id_str = scope[len("chat:"):]
+            await self.send_message(chat_id_str, text)
+            return True
+        elif scope.startswith("user:"):
+            user_id_str = scope[len("user:"):]
+            await self.send_message(user_id_str, text)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -961,6 +991,9 @@ class TelegramChannel(BaseChannel):
                 thread_id = getattr(
                     getattr(update, "message", None), "message_thread_id", None
                 )
+                # Cache thread→chat mapping for send_to_session routing.
+                if thread_id is not None:
+                    self._thread_to_chat[str(thread_id)] = update.effective_chat.id
                 # Store active chat context so request_approval() can route
                 # approval buttons to this topic instead of owner DMs.
                 _ACTIVE_TG_CONTEXT.set((update.effective_chat.id, thread_id))

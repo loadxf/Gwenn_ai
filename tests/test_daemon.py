@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 
-from gwenn.config import DaemonConfig
+from gwenn.config import ChannelConfig, DaemonConfig
 from gwenn.memory.session_store import SessionStore, _format_session_time
 
 
@@ -48,26 +48,29 @@ class TestDaemonConfig:
     def test_defaults(self, tmp_path: Path) -> None:
         """DaemonConfig should have sensible defaults (isolated from .env)."""
         cfg = DaemonConfig(_env_file=None)
-        assert cfg.channels == "cli"
         assert cfg.max_connections == 10
         assert cfg.session_max_count == 20
         assert cfg.session_max_messages == 200
         assert cfg.session_include_preview is False
         assert cfg.redact_session_content is True
 
-    def test_get_channel_list_single(self) -> None:
-        cfg = DaemonConfig(_env_file=None)
+    def test_get_channel_list_defaults(self) -> None:
+        cfg = ChannelConfig(_env_file=None)
         assert cfg.get_channel_list() == ["cli"]
 
     def test_get_channel_list_multiple(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("GWENN_DAEMON_CHANNELS", "cli,telegram,discord")
-        cfg = DaemonConfig()
+        monkeypatch.setenv("CLI_ENABLED", "true")
+        monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+        monkeypatch.setenv("DISCORD_ENABLED", "true")
+        cfg = ChannelConfig()
         assert cfg.get_channel_list() == ["cli", "telegram", "discord"]
 
-    def test_get_channel_list_spaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("GWENN_DAEMON_CHANNELS", " cli , telegram ")
-        cfg = DaemonConfig()
-        assert cfg.get_channel_list() == ["cli", "telegram"]
+    def test_get_channel_list_telegram_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLI_ENABLED", "false")
+        monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+        monkeypatch.setenv("DISCORD_ENABLED", "false")
+        cfg = ChannelConfig()
+        assert cfg.get_channel_list() == ["telegram"]
 
     def test_custom_socket_path(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         sock = str(tmp_path / "gwenn.sock")
@@ -502,7 +505,7 @@ class TestGwennDaemonDispatch:
         cfg.daemon.auth_token = None
         cfg.daemon.session_include_preview = False
         cfg.daemon.redact_session_content = True
-        cfg.daemon.get_channel_list.return_value = ["cli"]
+        cfg.channel.get_channel_list.return_value = ["cli"]
         return cfg
 
     @pytest.fixture

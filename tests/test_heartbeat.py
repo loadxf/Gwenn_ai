@@ -1345,7 +1345,13 @@ async def test_integrate_subagent_broadcasts_long_result():
         status="completed",
         result_text="Z" * 250,
     )
-    orchestrator = SimpleNamespace(collect_completed=lambda: [result])
+    orchestrator = SimpleNamespace(
+        collect_completed=lambda: [result],
+        get_origin_session=lambda task_id: None,
+    )
+
+    async def _noop_send_to_session(session_id, text):
+        return False
 
     agent = _make_integrate_agent(
         # Low arousal to avoid broadcasting the main thought
@@ -1353,6 +1359,7 @@ async def test_integrate_subagent_broadcasts_long_result():
             dimensions=SimpleNamespace(valence=0.0, arousal=0.1),
         ),
         broadcast_to_channels=_broadcast,
+        send_to_session=_noop_send_to_session,
     )
     agent.orchestrator = orchestrator
     heartbeat = Heartbeat(config, agent)
@@ -1376,13 +1383,20 @@ async def test_integrate_subagent_broadcast_exception_swallowed():
         status="completed",
         result_text="Z" * 250,
     )
-    orchestrator = SimpleNamespace(collect_completed=lambda: [result])
+    orchestrator = SimpleNamespace(
+        collect_completed=lambda: [result],
+        get_origin_session=lambda task_id: None,
+    )
+
+    async def _noop_send_to_session(session_id, text):
+        return False
 
     agent = _make_integrate_agent(
         affect_state=SimpleNamespace(
             dimensions=SimpleNamespace(valence=0.0, arousal=0.1),
         ),
         broadcast_to_channels=_failing_broadcast,
+        send_to_session=_noop_send_to_session,
     )
     agent.orchestrator = orchestrator
     heartbeat = Heartbeat(config, agent)

@@ -209,6 +209,7 @@ class GwennSession:
         self._session_started_at = time.time()
         self._output_style = "balanced"
         self._slash_completion_matches: list[str] = []
+        self._channel_task: asyncio.Task | None = None
         self._stdin_term_attrs: Any = None
         self._capture_terminal_state()
         self._configure_readline_completion()
@@ -397,7 +398,14 @@ class GwennSession:
             startup_state["model"] = config.claude.model
             startup_state["data_dir"] = str(config.memory.data_dir)
         self._refresh_startup_live(startup_live, startup_state)
-        channel_mode = self._channel_override or config.channel.channel
+        # Build enabled channel list from config (or CLI override for backward compat)
+        if self._channel_override:
+            # Legacy --channel flag: treat as the sole enabled channel
+            channel_list = [self._channel_override] if self._channel_override != "all" else ["cli", "telegram", "discord"]
+        else:
+            channel_list = config.channel.get_channel_list()
+        cli_enabled = "cli" in channel_list
+        platform_channels = [c for c in channel_list if c != "cli"]
 
         # ---- PHASE 2: CREATION ----
         self._set_startup_step(startup_state or {}, "wake", "running")
@@ -432,7 +440,7 @@ class GwennSession:
                 startup_live.stop()
                 startup_live = None
                 startup_state = None
-            await self._run_first_startup_onboarding_if_needed(channel_mode)
+            await self._run_first_startup_onboarding_if_needed(cli_enabled)
         except Exception:
             self._set_startup_step(startup_state or {}, "memory", "error")
             self._refresh_startup_live(startup_live, startup_state)
@@ -458,15 +466,23 @@ class GwennSession:
         # Final startup state in the single panel.
         if startup_state is not None:
             startup_state["status"] = self._agent.status
-            if channel_mode == "cli":
+            if cli_enabled and platform_channels:
+                enabled_names = ", ".join(channel_list)
+                startup_state["ready_lines"] = [
+                    f"Gwenn is awake. CLI + channels active: {enabled_names}",
+                    "Press Ctrl+C twice quickly to close gracefully.",
+                    "Type / and press Tab to see matching slash commands.",
+                ]
+            elif cli_enabled:
                 startup_state["ready_lines"] = [
                     "Gwenn is awake. Type your message, or '/exit' to close.",
                     "Press Ctrl+C twice quickly to close gracefully.",
                     "Type / and press Tab to see matching slash commands.",
                 ]
             else:
+                enabled_names = ", ".join(channel_list) or "none"
                 startup_state["ready_lines"] = [
-                    f"Gwenn is awake. Running in channel mode: {channel_mode}.",
+                    f"Gwenn is awake. Running in channel mode: {enabled_names}",
                     "Press Ctrl+C twice quickly to close the CLI session.",
                 ]
             self._refresh_startup_live(startup_live, startup_state)
@@ -486,7 +502,39 @@ class GwennSession:
 
         # ---- PHASE 5: INTERACTION LOOP (CLI or channel mode) ----
         try:
-            if channel_mode == "cli":
+            if cli_enabled and platform_channels:
+                # --- CLI + platform channels: run channels as background task ---
+                enabled_names = ", ".join(channel_list)
+                if sys.stdout.isatty() and startup_state is None:
+                    console.print()
+                    console.print(
+                        f"[green]Gwenn is awake. CLI + channels active: {enabled_names}[/green]"
+                    )
+                    console.print("[dim]Press Ctrl+C twice quickly to close gracefully.[/dim]")
+                    console.print("[dim]Type / and press Tab to see matching slash commands.[/dim]")
+                    console.print()
+                self._channel_task = asyncio.create_task(
+                    self._run_channels(self._agent, config, platform_channels),
+                    name="gwenn-channels-background",
+                )
+                self._channel_task.add_done_callback(self._on_channel_task_done)
+                try:
+                    await self._interaction_loop()
+                finally:
+                    # CLI exited — tear down channels
+                    self._shutdown_event.set()
+                    if self._channel_task and not self._channel_task.done():
+                        try:
+                            await asyncio.wait_for(self._channel_task, timeout=10)
+                        except asyncio.TimeoutError:
+                            logger.warning("session.channel_task_timeout")
+                            self._channel_task.cancel()
+                            try:
+                                await self._channel_task
+                            except asyncio.CancelledError:
+                                pass
+            elif cli_enabled:
+                # --- CLI only ---
                 if sys.stdout.isatty() and startup_state is None:
                     console.print()
                     console.print(
@@ -497,14 +545,16 @@ class GwennSession:
                     console.print()
                 await self._interaction_loop()
             else:
+                # --- Channels only (no CLI) ---
+                enabled_names = ", ".join(channel_list) or "none"
                 if sys.stdout.isatty() and startup_state is None:
                     console.print()
                     console.print(
-                        f"[green]Gwenn is awake. Running in channel mode: {channel_mode}[/green]"
+                        f"[green]Gwenn is awake. Running in channel mode: {enabled_names}[/green]"
                     )
                     console.print("[dim]Press Ctrl+C twice quickly to close the CLI session.[/dim]")
                     console.print()
-                await self._run_channels(self._agent, config, channel_mode)
+                await self._run_channels(self._agent, config, platform_channels)
         finally:
             # ---- PHASE 6: SHUTDOWN ----
             # Always reached even if the interaction loop or channel startup raises.
@@ -652,7 +702,7 @@ class GwennSession:
     # First-run onboarding (Gwenn's initial setup)
     # ------------------------------------------------------------------
 
-    async def _run_first_startup_onboarding_if_needed(self, channel_mode: str) -> None:
+    async def _run_first_startup_onboarding_if_needed(self, cli_enabled: bool) -> None:
         """
         Run first-time onboarding to capture the primary user's needs and preferences.
 
@@ -665,7 +715,7 @@ class GwennSession:
         if not sys.stdin.isatty():
             logger.info(
                 "session.onboarding_skipped_non_interactive",
-                channel_mode=channel_mode,
+                cli_enabled=cli_enabled,
             )
             return
 
@@ -932,7 +982,7 @@ class GwennSession:
         cfg = self._config
         console.print(
             Panel(
-                f"Channel: {markup_escape(cfg.channel.channel)}\n"
+                f"Channels: {markup_escape(', '.join(cfg.channel.get_channel_list()) or 'none')}\n"
                 f"Data dir: {markup_escape(str(cfg.memory.data_dir))}\n"
                 f"Memory DB: {markup_escape(str(cfg.memory.episodic_db_path))}\n"
                 f"Retrieval mode: {cfg.memory.retrieval_mode}\n"
@@ -1403,7 +1453,7 @@ class GwennSession:
                 logger.error("session.interaction_error", error=str(e), exc_info=True)
                 console.print(f"[red]Error: {e}[/red]")
 
-    async def _run_channels(self, agent: SentientAgent, config: GwennConfig, mode: str) -> None:
+    async def _run_channels(self, agent: SentientAgent, config: GwennConfig, channel_list: list[str]) -> None:
         """
         Start one or more platform channel adapters and wait until shutdown.
 
@@ -1412,11 +1462,11 @@ class GwennSession:
         """
         from gwenn.channels.startup import build_channels, run_channels_until_shutdown
 
-        sessions, channels = build_channels(agent, channel_list=[mode])
+        sessions, channels = build_channels(agent, channel_list=channel_list)
         if not channels:
             console.print(
-                f"[red]No channels could be started for mode {mode!r}. "
-                f"Check your .env configuration (bot tokens, etc.) or use: cli, telegram, discord, all.[/red]"
+                f"[red]No channels could be started for {channel_list!r}. "
+                f"Check your .env configuration (bot tokens, etc.).[/red]"
             )
             return
 
@@ -1426,7 +1476,7 @@ class GwennSession:
                 sessions,
                 channels,
                 self._shutdown_event,
-                continue_on_start_error=(mode == "all"),
+                continue_on_start_error=(len(channel_list) > 1),
             )
         except Exception as exc:
             if not _is_nonfatal_channel_start_error(exc):
@@ -1446,6 +1496,23 @@ class GwennSession:
                 )
                 return
             console.print(f"[red]{_redact_channel_error(str(exc))}[/red]")
+
+    def _on_channel_task_done(self, task: asyncio.Task) -> None:
+        """Done callback for the background channel task (CLI + channels mode).
+
+        Logs failures and prints a warning but does NOT request shutdown,
+        so the CLI session keeps running even if channels crash.
+        """
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.error("session.channel_task_failed", error=str(exc), exc_info=exc)
+            console.print(
+                "[yellow]Warning: Platform channels stopped unexpectedly. "
+                "CLI session is still active.[/yellow]"
+            )
 
     # ------------------------------------------------------------------
     # Input handling
@@ -1597,6 +1664,16 @@ class GwennSession:
     async def _shutdown(self) -> None:
         """Graceful shutdown sequence — saves session, then shuts down agent."""
         try:
+            # Safety net: ensure background channel task is cleaned up
+            if self._channel_task and not self._channel_task.done():
+                self._shutdown_event.set()
+                self._channel_task.cancel()
+                try:
+                    await self._channel_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._channel_task = None
+
             # Save CLI conversation history for future /resume (before agent shuts down)
             if self._agent and self._config and self._agent._conversation_history:
                 try:
@@ -1828,7 +1905,7 @@ def main():
         "--channel",
         choices=["cli", "telegram", "discord", "all"],
         default=None,
-        help="Channel to run (overrides GWENN_CHANNEL env var). Default: cli",
+        help="Channel to run (overrides CLI_ENABLED/TELEGRAM_ENABLED/DISCORD_ENABLED). Default: cli",
     )
     parser.add_argument(
         "--no-daemon",

@@ -135,7 +135,7 @@ class GwennDaemon:
         logger.info("daemon.agent_started")
 
         # Start configured channels (telegram, discord) if requested
-        channel_list = self._config.daemon.get_channel_list()
+        channel_list = self._config.channel.get_channel_list()
         if "telegram" in channel_list or "discord" in channel_list:
             self._channel_task = asyncio.create_task(
                 self._run_platform_channels(channel_list),

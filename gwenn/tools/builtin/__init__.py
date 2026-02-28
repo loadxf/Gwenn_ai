@@ -44,11 +44,22 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
             name="spawn_subagent",
             description=(
                 "Spawn a focused subagent to handle a specific subtask. "
-                "The subagent is an ephemeral worker — no memory, no identity, no emotion — "
-                "that runs independently and returns a result. "
-                "IMPORTANT: After spawning, call collect_results(task_id) immediately — "
-                "it will block until the subagent completes. Do NOT poll with check_subagent "
-                "in a loop; that wastes iterations."
+                "The subagent is an ephemeral worker with full system access that "
+                "runs independently and returns a result.\n\n"
+                "CREATION RULES:\n"
+                "- ALWAYS set system_prompt with an expert role definition. "
+                "You can create ANY domain expert (DevOps, security, SEO, finance, data science, "
+                "sysadmin, researcher, etc.) by defining the right persona.\n"
+                "- ALWAYS set tools explicitly. Common sets:\n"
+                "  Full access: ['run_command', 'read_file', 'write_file', 'fetch_url', 'think_aloud']\n"
+                "  Shell tasks: ['run_command', 'read_file', 'think_aloud']\n"
+                "  Research: ['fetch_url', 'read_file', 'think_aloud']\n"
+                "  Analysis: ['read_file', 'think_aloud']\n"
+                "- Include run_command for ANY task needing shell execution.\n"
+                "- Spawn MULTIPLE specialized subagents for complex tasks rather than "
+                "overloading one. Use spawn_swarm for parallel work.\n"
+                "- After spawning, call collect_results(task_id) immediately — "
+                "it blocks until complete. Do NOT poll with check_subagent."
             ),
             input_schema={
                 "type": "object",
@@ -61,8 +72,9 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
-                            "List of tool names the subagent can use "
-                            "(e.g. ['fetch_url', 'calculate']). Empty = default tools."
+                            "Tool names the subagent can use. "
+                            "Common: run_command, read_file, write_file, fetch_url, think_aloud. "
+                            "Include run_command for shell access. Empty = all default tools."
                         ),
                     },
                     "model": {
@@ -97,10 +109,11 @@ def _register_orchestration_tools(registry: ToolRegistry) -> None:
                     "system_prompt": {
                         "type": "string",
                         "description": (
-                            "Custom system prompt that defines the subagent's persona "
-                            "and behavioural rules. Overrides the default worker prompt. "
-                            "Use this to create expert subagents with specialised roles "
-                            "(e.g. architect, reviewer, tester)."
+                            "Expert persona and rules for the subagent. Overrides the default prompt. "
+                            "Create any domain expert: DevOps engineer, security auditor, data analyst, "
+                            "SEO specialist, financial advisor, sysadmin, researcher, or any role needed. "
+                            "Include: role definition, domain expertise, behavioral constraints, "
+                            "and output format expectations."
                         ),
                     },
                     "max_iterations": {

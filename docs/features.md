@@ -545,15 +545,14 @@ gwenn --channel discord    # Discord only
 gwenn --channel all        # All channels simultaneously
 ```
 
-Or set the default in `.env`:
+Or set the defaults in `.env`:
 ```bash
-GWENN_CHANNEL=cli          # cli | telegram | discord | all
+CLI_ENABLED=true           # Enable CLI terminal
+TELEGRAM_ENABLED=false     # Enable Telegram bot
+DISCORD_ENABLED=false      # Enable Discord bot
 ```
 
-The daemon can also manage channels:
-```bash
-GWENN_DAEMON_CHANNELS=cli,telegram    # Channels the daemon starts
-```
+The daemon uses the same flags to determine which channels to start.
 
 ### Telegram
 
@@ -706,7 +705,7 @@ GWENN_DAEMON_SOCKET=./gwenn_data/gwenn.sock
 GWENN_DAEMON_PID_FILE=./gwenn_data/gwenn.pid
 GWENN_DAEMON_MAX_CONNECTIONS=10
 GWENN_DAEMON_CONNECTION_TIMEOUT=300.0
-GWENN_DAEMON_CHANNELS=cli            # cli | cli,telegram | cli,discord | cli,telegram,discord
+# Channels are controlled by CLI_ENABLED, TELEGRAM_ENABLED, DISCORD_ENABLED
 ```
 
 ---

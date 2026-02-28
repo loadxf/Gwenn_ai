@@ -62,6 +62,9 @@ class Orchestrator:
         self._active_swarms: dict[str, SwarmSpec] = {}
         self._swarm_tasks: dict[str, list[str]] = {}  # swarm_id -> [task_ids]
 
+        # Origin session tracking: task_id -> session_id (for routing results back)
+        self._origin_sessions: dict[str, str] = {}
+
         # Concurrency control
         self._concurrency_semaphore = asyncio.Semaphore(config.max_concurrent_subagents)
 
@@ -126,6 +129,10 @@ class Orchestrator:
             parent_task_id=spec.parent_task_id,
             runtime_tier=spec.runtime_tier,
         )
+
+        # Track origin session for routing results back to the right chat/topic
+        if spec.origin_session_id:
+            self._origin_sessions[task_id] = spec.origin_session_id
 
         # Launch as asyncio.Task
         task = asyncio.create_task(self._run_with_semaphore(spec))
@@ -333,6 +340,10 @@ class Orchestrator:
         """
         return list(self._completed_results.values())
 
+    def get_origin_session(self, task_id: str) -> str | None:
+        """Return the originating session_id for a task, or None."""
+        return self._origin_sessions.get(task_id)
+
     async def handle_nested_spawn(
         self,
         parent_task_id: str,
@@ -450,6 +461,7 @@ class Orchestrator:
         if len(self._completed_results) > max_completed:
             oldest_key = next(iter(self._completed_results))
             del self._completed_results[oldest_key]
+            self._origin_sessions.pop(oldest_key, None)
 
         # Update progress
         progress = self._progress.get(task_id)

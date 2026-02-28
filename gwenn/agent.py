@@ -32,6 +32,7 @@ import functools
 import json
 import re
 import time
+from contextvars import ContextVar
 from typing import Any, Optional
 
 import structlog
@@ -77,6 +78,10 @@ logger = structlog.get_logger(__name__)
 
 ONBOARDING_CONTEXT_START = "<!-- onboarding_profile_start -->"
 ONBOARDING_CONTEXT_END = "<!-- onboarding_profile_end -->"
+
+# Per-asyncio-task session ID so subagent spawn handlers can capture the
+# originating session without threading it through every method signature.
+_CURRENT_SESSION_ID: ContextVar[str] = ContextVar("_CURRENT_SESSION_ID", default="")
 SKILL_AUTO_DEV_COOLDOWN_SECONDS = 1800.0
 SKILL_AUTO_DEV_MIN_THOUGHT_CHARS = 120
 SKILL_AUTO_DEV_MAX_TOTAL = 20
@@ -900,6 +905,25 @@ class SentientAgent:
                         channel=getattr(channel, "channel_name", "unknown"),
                     )
 
+    async def send_to_session(self, session_id: str, text: str) -> bool:
+        """Send a message to the originating context of the given session.
+
+        Tries each channel until one handles the session_id.
+        Returns True if sent, False if no channel claimed it.
+        """
+        for channel in self._platform_channels:
+            fn = getattr(channel, "send_to_session", None)
+            if callable(fn):
+                try:
+                    if await fn(session_id, text):
+                        return True
+                except Exception:
+                    logger.exception(
+                        "agent.send_to_session_error",
+                        channel=getattr(channel, "channel_name", "unknown"),
+                    )
+        return False
+
     # =========================================================================
     # THE CONVERSATION INTERFACE — How Gwenn talks with humans
     # =========================================================================
@@ -964,6 +988,9 @@ class SentientAgent:
         """
         if not self._initialized:
             raise RuntimeError("Agent must be initialized before responding")
+
+        # Capture session context for subagent origin routing.
+        _CURRENT_SESSION_ID.set(session_id)
 
         # Normalize to UserMessage so downstream code can rely on a single type.
         if isinstance(user_message, str):
@@ -1383,11 +1410,9 @@ class SentientAgent:
             "you MUST execute those instructions step by step using your available tools. "
             "Never display raw skill instructions to the user — always follow them and "
             "report the results.\n\n"
-            "CODING DELEGATION RULE: You MUST NEVER read, write, edit, or modify code files directly. "
-            "Do NOT use shell_exec, read_file, or write_file for code tasks. "
-            "When ANY request involves reading code, writing code, implementing features, fixing bugs, "
-            "refactoring, reviewing code, adding tests, exploring a codebase, or any development task, "
-            "you MUST immediately invoke the `expert_coding` tool with project_path='"
+            "ORCHESTRATION MANDATE: You are the orchestrator — you NEVER execute tasks directly.\n"
+            "- Do NOT use run_command, shell_exec, read_file, write_file, or fetch_url yourself.\n"
+            "- For coding tasks: invoke the `expert_coding` tool with project_path='"
             + str(
                 getattr(
                     getattr(self._config.memory, "data_dir", None),
@@ -1395,7 +1420,14 @@ class SentientAgent:
                     ".",
                 )
             )
-            + "'. Only subagents touch code. You orchestrate."
+            + "'.\n"
+            "- For ALL other execution tasks: spawn subagent(s) with a tailored expert system_prompt, "
+            "appropriate tools (include run_command for shell access), and clear task descriptions.\n"
+            "- You can create ANY type of domain expert — DevOps, security, SEO, finance, research, "
+            "sysadmin, data science, or any specialist the task requires.\n"
+            "- Create as many specialized subagents as the task needs. Use spawn_swarm for parallel work.\n"
+            "- Every subagent gets: expert role definition in system_prompt, explicit tools list, "
+            "filesystem_paths, and appropriate max_iterations."
         )
         sections.append("</guidelines>")
 
@@ -3834,6 +3866,7 @@ class SentientAgent:
                         runtime_tier=runtime,
                         system_prompt=system_prompt or None,
                         max_iterations=min(max_iterations, 200),
+                        origin_session_id=_CURRENT_SESSION_ID.get("") or None,
                     )
                     task_id = await self.orchestrator.spawn(spec)
                     return f"Subagent spawned with task_id: {task_id}"
@@ -3887,6 +3920,7 @@ class SentientAgent:
                                 system_prompt=task_sys_prompt or None,
                                 max_iterations=min(task_max_iter, 200),
                                 timeout_seconds=float(task_timeout),
+                                origin_session_id=_CURRENT_SESSION_ID.get("") or None,
                             )
                         )
                     swarm = SwarmSpec(

@@ -631,13 +631,17 @@ class Heartbeat:
                         self._agent.episodic_memory.encode(ep)
                         self._agent._persist_episode(ep)
 
-                        # Broadcast noteworthy results to channel owners
+                        # Route noteworthy results to originating chat/topic
                         if self._config.proactive_messages and len(result.result_text) > 200:
                             try:
                                 summary = result.result_text[:300]
-                                await self._agent.broadcast_to_channels(
-                                    f"[Subagent completed] {summary}"
-                                )
+                                msg = f"[Subagent completed] {summary}"
+                                origin = orchestrator.get_origin_session(result.task_id)
+                                sent = False
+                                if origin:
+                                    sent = await self._agent.send_to_session(origin, msg)
+                                if not sent:
+                                    await self._agent.broadcast_to_channels(msg)
                             except Exception:
                                 logger.debug(
                                     "heartbeat.subagent_broadcast_failed",

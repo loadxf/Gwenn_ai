@@ -61,7 +61,7 @@ def _make_mock_config(tmp_path: Path) -> MagicMock:
     cfg.daemon.auth_token = None
     cfg.daemon.session_include_preview = False
     cfg.daemon.redact_session_content = False  # disable redaction for tests
-    cfg.daemon.get_channel_list.return_value = ["cli"]
+    cfg.channel.get_channel_list.return_value = ["cli"]
     cfg.mcp.get_server_list.return_value = []
     return cfg
 
@@ -313,7 +313,7 @@ class TestWritePidFile:
 class TestStartAgent:
     async def test_start_agent_success_no_channels(self, tmp_path: Path) -> None:
         d = _make_daemon(tmp_path)
-        d._config.daemon.get_channel_list.return_value = ["cli"]
+        d._config.channel.get_channel_list.return_value = ["cli"]
 
         mock_agent = _make_mock_agent()
 
@@ -326,7 +326,7 @@ class TestStartAgent:
 
     async def test_start_agent_creates_channel_task(self, tmp_path: Path) -> None:
         d = _make_daemon(tmp_path)
-        d._config.daemon.get_channel_list.return_value = ["cli", "telegram"]
+        d._config.channel.get_channel_list.return_value = ["cli", "telegram"]
 
         mock_agent = _make_mock_agent()
 
@@ -354,7 +354,7 @@ class TestStartAgent:
     async def test_start_agent_discord_channel_task(self, tmp_path: Path) -> None:
         """Discord alone should also trigger channel task creation."""
         d = _make_daemon(tmp_path)
-        d._config.daemon.get_channel_list.return_value = ["cli", "discord"]
+        d._config.channel.get_channel_list.return_value = ["cli", "discord"]
 
         mock_agent = _make_mock_agent()
 

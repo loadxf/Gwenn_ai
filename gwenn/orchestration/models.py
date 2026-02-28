@@ -35,6 +35,7 @@ class SubagentSpec(BaseModel):
     priority: int = 0
     parent_task_id: Optional[str] = None
     depth: int = 0
+    origin_session_id: Optional[str] = None  # e.g. "telegram_thread:12345"
 
 
 class SubagentResult(BaseModel):

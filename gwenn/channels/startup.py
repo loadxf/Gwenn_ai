@@ -41,7 +41,7 @@ def build_channels(
     tg_config: Any = None
     dc_config: Any = None
 
-    if "telegram" in channel_list or "all" in channel_list:
+    if "telegram" in channel_list:
         try:
             from gwenn.config import TelegramConfig
 
@@ -49,7 +49,7 @@ def build_channels(
         except Exception as e:
             logger.error("channels.telegram_config_failed", error=str(e))
 
-    if "discord" in channel_list or "all" in channel_list:
+    if "discord" in channel_list:
         try:
             from gwenn.config import DiscordConfig
 

@@ -622,11 +622,24 @@ class SkillsConfig(BaseSettings):
 
 
 class ChannelConfig(BaseSettings):
-    """Which channel(s) Gwenn runs on.  GWENN_CHANNEL=cli|telegram|discord|all"""
+    """Per-channel enable flags.  Each channel can be toggled independently."""
 
-    channel: str = Field("cli", alias="GWENN_CHANNEL")
+    cli_enabled: bool = Field(True, alias="CLI_ENABLED")
+    telegram_enabled: bool = Field(False, alias="TELEGRAM_ENABLED")
+    discord_enabled: bool = Field(False, alias="DISCORD_ENABLED")
 
     model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
+
+    def get_channel_list(self) -> list[str]:
+        """Return the list of enabled channel names."""
+        channels: list[str] = []
+        if self.cli_enabled:
+            channels.append("cli")
+        if self.telegram_enabled:
+            channels.append("telegram")
+        if self.discord_enabled:
+            channels.append("discord")
+        return channels
 
 
 class DaemonConfig(BaseSettings):
@@ -635,7 +648,6 @@ class DaemonConfig(BaseSettings):
     socket_path: Path = Field(Path("./gwenn_data/gwenn.sock"), alias="GWENN_DAEMON_SOCKET")
     pid_file: Path = Field(Path("./gwenn_data/gwenn.pid"), alias="GWENN_DAEMON_PID_FILE")
     auth_token: str | None = Field(None, alias="GWENN_DAEMON_AUTH_TOKEN")
-    channels: str = Field("cli", alias="GWENN_DAEMON_CHANNELS")
     max_connections: int = Field(10, alias="GWENN_DAEMON_MAX_CONNECTIONS")
     connection_timeout: float = Field(300.0, alias="GWENN_DAEMON_CONNECTION_TIMEOUT")
     sessions_dir: Path = Field(Path("./gwenn_data/sessions"), alias="GWENN_DAEMON_SESSIONS_DIR")
@@ -660,9 +672,6 @@ class DaemonConfig(BaseSettings):
         if isinstance(self.auth_token, str):
             self.auth_token = self.auth_token.strip() or None
         return self
-
-    def get_channel_list(self) -> list[str]:
-        return [c.strip() for c in self.channels.split(",") if c.strip()]
 
 
 class GwennConfig:

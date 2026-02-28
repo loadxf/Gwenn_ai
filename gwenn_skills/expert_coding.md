@@ -68,7 +68,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 
 ### ARCHITECT
 - **Use for:** System design, implementation planning, impact analysis, dependency mapping
-- **Tools:** `read_file`, `think_aloud`
+- **Tools:** `read_file`, `run_command`, `think_aloud`
 - **Max iterations:** 25
 - **Timeout:** 180s
 - **Default isolation:** `in_process`
@@ -84,7 +84,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 
 ### BACKEND
 - **Use for:** Server logic, APIs, business logic, data processing, service layers
-- **Tools:** `read_file`, `write_file`, `think_aloud`
+- **Tools:** `read_file`, `write_file`, `run_command`, `think_aloud`
 - **Max iterations:** 40
 - **Timeout:** 300s
 - **Default isolation:** `in_process`
@@ -99,7 +99,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 
 ### FRONTEND
 - **Use for:** UI components, client-side logic, styling, user interactions
-- **Tools:** `read_file`, `write_file`, `think_aloud`
+- **Tools:** `read_file`, `write_file`, `run_command`, `think_aloud`
 - **Max iterations:** 40
 - **Timeout:** 300s
 - **Default isolation:** `in_process`
@@ -114,7 +114,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 
 ### DATABASE
 - **Use for:** Schema changes, migrations, query optimization, data modelling
-- **Tools:** `read_file`, `write_file`, `think_aloud`
+- **Tools:** `read_file`, `write_file`, `run_command`, `think_aloud`
 - **Max iterations:** 30
 - **Timeout:** 240s
 - **Default isolation:** `in_process`
@@ -129,7 +129,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 
 ### DEBUGGER
 - **Use for:** Bug investigation, root cause analysis, reproduction steps
-- **Tools:** `read_file`, `think_aloud`
+- **Tools:** `read_file`, `run_command`, `think_aloud`
 - **Max iterations:** 25
 - **Timeout:** 180s
 - **Default isolation:** `in_process`
@@ -144,7 +144,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 
 ### REVIEWER
 - **Use for:** Code review, quality assessment, standards compliance
-- **Tools:** `read_file`, `think_aloud`
+- **Tools:** `read_file`, `run_command`, `think_aloud`
 - **Max iterations:** 25
 - **Timeout:** 180s
 - **Default isolation:** `in_process`
@@ -160,7 +160,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 
 ### TESTER
 - **Use for:** Writing tests, edge case coverage, test infrastructure
-- **Tools:** `read_file`, `write_file`, `think_aloud`
+- **Tools:** `read_file`, `write_file`, `run_command`, `think_aloud`
 - **Max iterations:** 40
 - **Timeout:** 300s
 - **Default isolation:** `in_process`
@@ -176,7 +176,7 @@ When spawning subagents, select from these expert types. Each has a tailored sys
 
 ### DOCS
 - **Use for:** Documentation, docstrings, API docs, changelog entries
-- **Tools:** `read_file`, `write_file`, `think_aloud`
+- **Tools:** `read_file`, `write_file`, `run_command`, `think_aloud`
 - **Max iterations:** 20
 - **Timeout:** 120s
 - **Default isolation:** `in_process`
@@ -218,7 +218,7 @@ Execute phases based on the `{style}` parameter.
 Spawn an **ARCHITECT** subagent with:
 - `task_description`: "Analyze the following task and produce an implementation plan: {task}. Project is at {project_path}."
 - `system_prompt`: Architect prefix + anti-vibe-coding directives
-- `tools`: ["read_file", "think_aloud"]
+- `tools`: ["read_file", "run_command", "think_aloud"]
 - `max_iterations`: 25
 
 **After collecting results:** Immediately proceed to the next phase using the architect's output. Do NOT wait for user confirmation between phases.

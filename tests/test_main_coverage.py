@@ -95,7 +95,7 @@ def _fake_config(**overrides) -> SimpleNamespace:
             episodic_db_path="/tmp/gwenn-test/db",
             retrieval_mode="hybrid",
         ),
-        channel=SimpleNamespace(channel="cli"),
+        channel=SimpleNamespace(get_channel_list=lambda: ["cli"]),
         heartbeat=SimpleNamespace(interval=30, min_interval=10, max_interval=120),
         safety=SimpleNamespace(sandbox_enabled=True),
         privacy=SimpleNamespace(redaction_enabled=True),
@@ -748,7 +748,7 @@ class TestOnboarding:
     async def test_onboarding_no_agent(self):
         session = _make_session()
         session._agent = None
-        await session._run_first_startup_onboarding_if_needed("cli")
+        await session._run_first_startup_onboarding_if_needed(True)
 
     @pytest.mark.asyncio
     async def test_onboarding_all_empty_answers(self, monkeypatch):
@@ -759,7 +759,7 @@ class TestOnboarding:
         monkeypatch.setattr("gwenn.main.sys.stdin.isatty", lambda: True)
         monkeypatch.setattr("gwenn.main.console.print", MagicMock())
         session._prompt_startup_input = AsyncMock(return_value="")
-        await session._run_first_startup_onboarding_if_needed("cli")
+        await session._run_first_startup_onboarding_if_needed(True)
         agent.apply_startup_onboarding.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1848,7 +1848,7 @@ class TestRunChannels:
             "gwenn.channels.startup.build_channels",
             lambda agent, channel_list: (MagicMock(), []),
         )
-        await session._run_channels(MagicMock(), MagicMock(), "badmode")
+        await session._run_channels(MagicMock(), MagicMock(), ["badmode"])
         assert any("No channels" in str(c) for c in print_mock.call_args_list)
 
     @pytest.mark.asyncio
@@ -1866,7 +1866,7 @@ class TestRunChannels:
             raise LoginFailure("bad token")
 
         monkeypatch.setattr("gwenn.channels.startup.run_channels_until_shutdown", _raise)
-        await session._run_channels(MagicMock(), MagicMock(), "discord")
+        await session._run_channels(MagicMock(), MagicMock(), ["discord"])
         assert any("Discord" in str(c) for c in print_mock.call_args_list)
 
 

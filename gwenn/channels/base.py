@@ -94,6 +94,10 @@ class BaseChannel(ABC):
         concept of an owner).
         """
 
+    async def send_to_session(self, session_id: str, text: str) -> bool:
+        """Send to the originating context of a session. Returns False if not handled."""
+        return False
+
     # ------------------------------------------------------------------
     # Shared helpers — subclasses use these
     # ------------------------------------------------------------------

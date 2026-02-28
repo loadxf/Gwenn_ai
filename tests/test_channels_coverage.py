@@ -691,7 +691,7 @@ class TestBuildChannels:
 
         with patch("gwenn.config.TelegramConfig", side_effect=RuntimeError("err")):
             with patch("gwenn.config.DiscordConfig", side_effect=RuntimeError("err")):
-                sessions, channels = build_channels(agent, channel_list=["all"])
+                sessions, channels = build_channels(agent, channel_list=["telegram", "discord"])
         assert channels == []
 
     def test_build_channels_both_configs_uses_strictest(self):
@@ -717,7 +717,7 @@ class TestBuildChannels:
                 with patch("gwenn.channels.telegram_channel.TelegramChannel"):
                     with patch("gwenn.channels.discord_channel.DiscordChannel"):
                         sessions, channels = build_channels(
-                            agent, channel_list=["all"]
+                            agent, channel_list=["telegram", "discord"]
                         )
         assert sessions._max_history == 30
         assert sessions._ttl == 3600

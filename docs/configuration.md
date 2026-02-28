@@ -41,7 +41,9 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GWENN_CHANNEL` | `cli` | Active channel: `cli`, `telegram`, `discord`, or `all` |
+| `CLI_ENABLED` | `true` | Enable the CLI terminal channel |
+| `TELEGRAM_ENABLED` | `false` | Enable the Telegram bot channel |
+| `DISCORD_ENABLED` | `false` | Enable the Discord bot channel |
 
 ## Memory & Persistence
 
@@ -272,7 +274,7 @@ Each server object supports:
 | `GWENN_DAEMON_SOCKET` | `./gwenn_data/gwenn.sock` | Unix socket path |
 | `GWENN_DAEMON_PID_FILE` | `./gwenn_data/gwenn.pid` | PID file path |
 | `GWENN_DAEMON_AUTH_TOKEN` | *(empty)* | Shared auth token (recommended) |
-| `GWENN_DAEMON_CHANNELS` | `cli` | Channels managed by daemon |
+| *(uses CLI/TELEGRAM/DISCORD_ENABLED)* | | Channels managed by daemon |
 | `GWENN_DAEMON_MAX_CONNECTIONS` | `10` | Max concurrent connections |
 | `GWENN_DAEMON_CONNECTION_TIMEOUT` | `300.0` | Connection timeout (seconds) |
 | `GWENN_DAEMON_SESSIONS_DIR` | `./gwenn_data/sessions` | Session storage directory |

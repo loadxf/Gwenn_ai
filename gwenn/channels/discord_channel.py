@@ -166,6 +166,28 @@ class DiscordChannel(BaseChannel):
                 await self.send_message(uid, text)
                 await asyncio.sleep(0.5)
 
+    async def send_to_session(self, session_id: str, text: str) -> bool:
+        """Send to the originating Discord context of a session."""
+        if not session_id.startswith("discord_") or self._client is None:
+            return False
+        scope = session_id[len("discord_"):]
+
+        if scope.startswith("thread:") or scope.startswith("chat:"):
+            channel_id_str = scope.split(":", 1)[1]
+            try:
+                channel = self._client.get_channel(int(channel_id_str))
+                if channel is None:
+                    channel = await self._client.fetch_channel(int(channel_id_str))
+                for chunk in format_for_discord(text):
+                    await channel.send(chunk)
+                return True
+            except Exception:
+                return False
+        elif scope.startswith("user:"):
+            await self.send_message(scope[len("user:"):], text)
+            return True
+        return False
+
     # ------------------------------------------------------------------
     # Internal helpers used by _GwennDiscordClient
     # ------------------------------------------------------------------
