@@ -314,6 +314,85 @@ class RequestRouter:
         return make_response(req_id, {"status": "stopping"})
 
     # ------------------------------------------------------------------
+    # Checkpoint RPC handlers (Phase 7)
+    # ------------------------------------------------------------------
+
+    async def _handle_checkpoint_list(
+        self,
+        params: dict[str, Any],
+        req_id: str | int | None,
+        history: list[dict[str, Any]],
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        heartbeat = getattr(self._agent, "heartbeat", None)
+        if heartbeat is None:
+            return make_error(req_id, INVALID_PARAMS, "heartbeat not available")
+        mgr = getattr(heartbeat, "_checkpoint_manager", None)
+        if mgr is None:
+            return make_response(req_id, {"checkpoints": [], "enabled": False})
+        return make_response(req_id, {
+            "checkpoints": mgr.list_checkpoints(),
+            "enabled": True,
+        })
+
+    async def _handle_checkpoint_create(
+        self,
+        params: dict[str, Any],
+        req_id: str | int | None,
+        history: list[dict[str, Any]],
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        heartbeat = getattr(self._agent, "heartbeat", None)
+        if heartbeat is None:
+            return make_error(req_id, INVALID_PARAMS, "heartbeat not available")
+        mgr = getattr(heartbeat, "_checkpoint_manager", None)
+        if mgr is None:
+            return make_error(req_id, INVALID_PARAMS, "checkpointing not enabled")
+        try:
+            checkpoint = await mgr.create_checkpoint(self._agent, heartbeat)
+            path = await mgr.save_checkpoint(checkpoint)
+            return make_response(req_id, {
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "beat_count": checkpoint.beat_count,
+                "size_bytes": path.stat().st_size,
+            })
+        except Exception as e:
+            return make_error(req_id, INTERNAL_ERROR, f"checkpoint failed: {e}")
+
+    async def _handle_checkpoint_restore(
+        self,
+        params: dict[str, Any],
+        req_id: str | int | None,
+        history: list[dict[str, Any]],
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        heartbeat = getattr(self._agent, "heartbeat", None)
+        if heartbeat is None:
+            return make_error(req_id, INVALID_PARAMS, "heartbeat not available")
+        mgr = getattr(heartbeat, "_checkpoint_manager", None)
+        if mgr is None:
+            return make_error(req_id, INVALID_PARAMS, "checkpointing not enabled")
+
+        checkpoint_id = params.get("checkpoint_id")
+        if checkpoint_id:
+            checkpoint = await mgr.load_checkpoint(checkpoint_id)
+        else:
+            checkpoint = await mgr.load_latest_checkpoint()
+
+        if checkpoint is None:
+            return make_error(req_id, INVALID_PARAMS, "no checkpoint found")
+
+        try:
+            await mgr.restore_from_checkpoint(self._agent, checkpoint)
+            return make_response(req_id, {
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "beat_count": checkpoint.beat_count,
+                "restored": True,
+            })
+        except Exception as e:
+            return make_error(req_id, INTERNAL_ERROR, f"restore failed: {e}")
+
+    # ------------------------------------------------------------------
     # Handler registry
     # ------------------------------------------------------------------
 
@@ -327,4 +406,7 @@ class RequestRouter:
         "reset_session": _handle_reset_session,
         "runtime_info": _handle_runtime_info,
         "stop": _handle_stop,
+        "checkpoint.list": _handle_checkpoint_list,
+        "checkpoint.create": _handle_checkpoint_create,
+        "checkpoint.restore": _handle_checkpoint_restore,
     }

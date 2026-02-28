@@ -317,6 +317,11 @@ class HeartbeatConfig(GwennSettingsBase):
     circuit_base_seconds: float = Field(60.0, alias="GWENN_HEARTBEAT_CIRCUIT_BASE_SECONDS")
     circuit_max_seconds: float = Field(900.0, alias="GWENN_HEARTBEAT_CIRCUIT_MAX_SECONDS")
 
+    # Checkpoint/Restore — periodic cognitive state snapshots for crash recovery
+    checkpoint_enabled: bool = Field(True, alias="GWENN_CHECKPOINT_ENABLED")
+    checkpoint_interval_beats: int = Field(50, alias="GWENN_CHECKPOINT_INTERVAL_BEATS")
+    checkpoint_max_count: int = Field(10, alias="GWENN_CHECKPOINT_MAX_COUNT")
+
     model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
 
     @model_validator(mode="after")

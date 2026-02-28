@@ -358,6 +358,27 @@ class InteroceptiveSnapshotEvent(GwennEvent):
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint Events
+# ---------------------------------------------------------------------------
+
+
+class CheckpointCreatedEvent(GwennEvent):
+    """Emitted after a cognitive checkpoint is saved to disk."""
+
+    checkpoint_id: str
+    beat_count: int
+    size_bytes: int
+
+
+class CheckpointRestoredEvent(GwennEvent):
+    """Emitted when a checkpoint is restored on startup."""
+
+    checkpoint_id: str
+    beats_recovered: int
+    age_seconds: float
+
+
+# ---------------------------------------------------------------------------
 # Swarm Visualization Events
 # ---------------------------------------------------------------------------
 

@@ -131,6 +131,21 @@ class Heartbeat:
         from gwenn.interoception import InteroceptiveMonitor
         self._interoceptive_monitor = InteroceptiveMonitor()
 
+        # Checkpoint manager for periodic cognitive state snapshots (Phase 7).
+        self._checkpoint_manager = None
+        if self._config.checkpoint_enabled:
+            from gwenn.checkpoint import CheckpointManager
+            data_dir = getattr(
+                getattr(self._full_config, "memory", None), "data_dir", None
+            )
+            if data_dir is not None:
+                from pathlib import Path
+                self._checkpoint_manager = CheckpointManager(
+                    checkpoint_dir=Path(data_dir) / "checkpoints",
+                    max_checkpoints=self._config.checkpoint_max_count,
+                    interval_beats=self._config.checkpoint_interval_beats,
+                )
+
         # Core-mode owned subsystems (populated in run())
         self._event_bus: EventBus | None = None
         self._gateway: GatewayServer | None = None
@@ -292,6 +307,31 @@ class Heartbeat:
         self._agent.heartbeat = self
 
         logger.info("heartbeat.agent_ready")
+
+        # Restore from last checkpoint if available (Phase 7).
+        if self._checkpoint_manager is not None:
+            try:
+                checkpoint = await self._checkpoint_manager.load_latest_checkpoint()
+                if checkpoint is not None:
+                    await self._checkpoint_manager.restore_from_checkpoint(
+                        self._agent, checkpoint
+                    )
+                    self._beat_count = checkpoint.beat_count
+                    if self._event_bus is not None:
+                        import time as _time
+                        from gwenn.events import CheckpointRestoredEvent
+                        self._event_bus.emit(CheckpointRestoredEvent(
+                            checkpoint_id=checkpoint.checkpoint_id,
+                            beats_recovered=checkpoint.beat_count,
+                            age_seconds=_time.time() - checkpoint.timestamp,
+                        ))
+                    logger.info(
+                        "heartbeat.checkpoint_restored",
+                        checkpoint_id=checkpoint.checkpoint_id,
+                        beat_count=checkpoint.beat_count,
+                    )
+            except Exception:
+                logger.warning("heartbeat.checkpoint_restore_failed", exc_info=True)
 
         # Wire event bus into affect system for EmotionChangedEvent emission
         if self._event_bus is not None:
@@ -1105,6 +1145,26 @@ class Heartbeat:
                         )
         except Exception as e:
             logger.debug("heartbeat.subagent_collect_failed", error=str(e))
+
+        # Checkpoint: periodic cognitive state snapshot for crash recovery.
+        if (
+            self._checkpoint_manager is not None
+            and self._checkpoint_manager.should_checkpoint(self._beat_count)
+        ):
+            try:
+                checkpoint = await self._checkpoint_manager.create_checkpoint(
+                    self._agent, self
+                )
+                path = await self._checkpoint_manager.save_checkpoint(checkpoint)
+                if self._event_bus is not None:
+                    from gwenn.events import CheckpointCreatedEvent
+                    self._event_bus.emit(CheckpointCreatedEvent(
+                        checkpoint_id=checkpoint.checkpoint_id,
+                        beat_count=checkpoint.beat_count,
+                        size_bytes=path.stat().st_size,
+                    ))
+            except Exception:
+                logger.warning("heartbeat.checkpoint_failed", exc_info=True)
 
     def _schedule(self, state: dict[str, Any]) -> None:
         """
