@@ -702,6 +702,12 @@ class SlackConfig(BaseSettings):
 
     bot_token: str | None = Field(None, alias="GWENN_SLACK_BOT_TOKEN")
     app_token: str | None = Field(None, alias="GWENN_SLACK_APP_TOKEN")
+    allowed_user_ids: StrList = Field(default_factory=list, alias="GWENN_SLACK_ALLOWED_USER_IDS")
+    owner_user_ids: StrList = Field(default_factory=list, alias="GWENN_SLACK_OWNER_USER_IDS")
+    max_history_length: int = Field(50, alias="GWENN_SLACK_MAX_HISTORY_LENGTH")
+    session_ttl_seconds: float = Field(3600.0, alias="GWENN_SLACK_SESSION_TTL")
+    session_scope_mode: str = Field("per_thread", alias="GWENN_SLACK_SESSION_SCOPE")
+    user_lock_cache_size: int = Field(512, alias="GWENN_SLACK_USER_LOCK_CACHE_SIZE")
 
     model_config = {
         "env_file": _ENV_FILE,

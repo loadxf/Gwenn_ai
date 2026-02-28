@@ -40,6 +40,7 @@ def build_channels(
 
     tg_config: Any = None
     dc_config: Any = None
+    sl_config: Any = None
 
     if "telegram" in channel_list:
         try:
@@ -57,21 +58,29 @@ def build_channels(
         except Exception as e:
             logger.error("channels.discord_config_failed", error=str(e))
 
+    if "slack" in channel_list:
+        try:
+            from gwenn.config import SlackConfig
+
+            sl_config = SlackConfig()
+            if not sl_config.is_available:
+                logger.warning("channels.slack_tokens_missing")
+                sl_config = None
+        except Exception as e:
+            logger.error("channels.slack_config_failed", error=str(e))
+
     # Determine SessionManager params from actual channel config values.
-    # When running both channels, use the stricter (smaller) history cap
-    # and the longer of the two TTLs so sessions aren't evicted prematurely
-    # for either platform's users.
-    if tg_config and dc_config:
-        max_history = min(tg_config.max_history_length, dc_config.max_history_length)
-        session_ttl = max(tg_config.session_ttl_seconds, dc_config.session_ttl_seconds)
-    elif tg_config:
-        max_history = tg_config.max_history_length
-        session_ttl = tg_config.session_ttl_seconds
-    elif dc_config:
-        max_history = dc_config.max_history_length
-        session_ttl = dc_config.session_ttl_seconds
-    else:
+    # When running multiple channels, use the stricter (smaller) history cap
+    # and the longer of the TTLs so sessions aren't evicted prematurely
+    # for any platform's users.
+    configs_with_session = [
+        c for c in (tg_config, dc_config, sl_config) if c is not None
+    ]
+    if not configs_with_session:
         return SessionManager(), []
+
+    max_history = min(c.max_history_length for c in configs_with_session)
+    session_ttl = max(c.session_ttl_seconds for c in configs_with_session)
 
     sessions = SessionManager(
         max_history_length=max_history,
@@ -88,6 +97,11 @@ def build_channels(
         from gwenn.channels.discord_channel import DiscordChannel
 
         channels.append(DiscordChannel(agent, sessions, dc_config))
+
+    if sl_config is not None:
+        from gwenn.channels.slack_channel import SlackChannel
+
+        channels.append(SlackChannel(agent, sessions, sl_config))
 
     return sessions, channels
 
