@@ -120,6 +120,7 @@ _TOML_SECTIONS: dict[str, tuple[str, ...]] = {
     "ChannelConfig": ("channels",),
     "DaemonConfig": ("daemon",),
     "SlackConfig": ("slack",),
+    "SelfHealingConfig": ("self_healing",),
 }
 
 
@@ -334,6 +335,39 @@ class HeartbeatConfig(GwennSettingsBase):
         self.circuit_max_consecutive = max(1, int(self.circuit_max_consecutive))
         self.circuit_base_seconds = max(1.0, float(self.circuit_base_seconds))
         self.circuit_max_seconds = max(self.circuit_base_seconds, float(self.circuit_max_seconds))
+        return self
+
+
+class SelfHealingConfig(GwennSettingsBase):
+    """Configuration for autonomous self-healing (Tier 1 — deterministic recovery)."""
+
+    enabled: bool = Field(True, alias="GWENN_SELF_HEALING_ENABLED")
+    cooldown_seconds: float = Field(300.0, alias="GWENN_SELF_HEALING_COOLDOWN")
+    max_actions_per_hour: int = Field(20, alias="GWENN_SELF_HEALING_MAX_ACTIONS_HOUR")
+    channel_restart_enabled: bool = Field(True, alias="GWENN_SELF_HEALING_CHANNEL_RESTART")
+    stuck_subagent_timeout_multiplier: float = Field(
+        2.0, alias="GWENN_SELF_HEALING_STUCK_MULTIPLIER"
+    )
+    memory_pressure_threshold: float = Field(
+        85.0, alias="GWENN_SELF_HEALING_MEMORY_THRESHOLD"
+    )
+    error_rate_threshold: float = Field(
+        5.0, alias="GWENN_SELF_HEALING_ERROR_RATE_THRESHOLD"
+    )
+
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
+
+    @model_validator(mode="after")
+    def normalize_limits(self) -> "SelfHealingConfig":
+        self.cooldown_seconds = max(10.0, float(self.cooldown_seconds))
+        self.max_actions_per_hour = max(1, int(self.max_actions_per_hour))
+        self.stuck_subagent_timeout_multiplier = max(
+            1.1, float(self.stuck_subagent_timeout_multiplier)
+        )
+        self.memory_pressure_threshold = max(
+            50.0, min(99.0, float(self.memory_pressure_threshold))
+        )
+        self.error_rate_threshold = max(0.1, float(self.error_rate_threshold))
         return self
 
 
@@ -852,6 +886,9 @@ class GwennConfig:
 
         # Orchestration config (subagent spawning & coordination)
         self.orchestration = OrchestrationConfig()
+
+        # Self-healing (autonomous recovery)
+        self.self_healing = SelfHealingConfig()
 
         # Groq Whisper transcription (optional)
         self.groq = GroqConfig()
