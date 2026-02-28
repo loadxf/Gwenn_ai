@@ -70,8 +70,36 @@ class GwennDaemon:
         # and platform channels share the same serialisation lock.
 
     async def run(self) -> None:
-        """Full daemon lifecycle: init → serve → shutdown."""
+        """Full daemon lifecycle: init → serve → shutdown.
+
+        When ``heartbeat_core`` is enabled, the heartbeat manages the full
+        lifecycle (event bus → gateway → agent → channels). The daemon is
+        just a PID-file wrapper.
+        """
         self._write_pid_file()
+        try:
+            if self._config.daemon.heartbeat_core:
+                await self._run_heartbeat_core()
+            else:
+                await self._run_legacy()
+        finally:
+            self._cleanup_pid_and_socket()
+
+    async def _run_heartbeat_core(self) -> None:
+        """Heartbeat-as-core mode: delegate lifecycle to Heartbeat.run().
+
+        Heartbeat.run() owns all internal cleanup (event bus, gateway, agent,
+        channels) via its _sleep() method. The daemon only handles PID/socket
+        files via _cleanup_pid_and_socket() in the outer finally block.
+        """
+        from gwenn.heartbeat import Heartbeat
+
+        logger.info("daemon.mode", mode="heartbeat_core")
+        heartbeat = Heartbeat(self._config)
+        await heartbeat.run()
+
+    async def _run_legacy(self) -> None:
+        """Legacy mode: daemon manages agent, socket server, and channels."""
         try:
             await self._start_agent()
             await self._start_socket_server()
@@ -503,7 +531,7 @@ class GwennDaemon:
     # ------------------------------------------------------------------
 
     async def _cleanup(self) -> None:
-        """Graceful shutdown: stop server, shut down agent, remove files."""
+        """Graceful shutdown for legacy mode: stop server, shut down agent."""
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -522,7 +550,8 @@ class GwennDaemon:
         if self._agent:
             await self._agent.shutdown()
 
-        # Remove socket and PID files
+    def _cleanup_pid_and_socket(self) -> None:
+        """Remove PID and socket files — shared by both modes."""
         for path in (self._socket_path, self._pid_file):
             try:
                 path.unlink(missing_ok=True)

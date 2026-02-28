@@ -61,6 +61,7 @@ def _make_mock_config(tmp_path: Path) -> MagicMock:
     cfg.daemon.auth_token = None
     cfg.daemon.session_include_preview = False
     cfg.daemon.redact_session_content = False  # disable redaction for tests
+    cfg.daemon.heartbeat_core = False  # legacy mode for daemon tests
     cfg.channel.get_channel_list.return_value = ["cli"]
     cfg.mcp.get_server_list.return_value = []
     return cfg
@@ -190,13 +191,14 @@ class TestGwennDaemonInit:
 
 @pytest.mark.asyncio
 class TestDaemonRun:
-    async def test_run_full_lifecycle(self, tmp_path: Path) -> None:
+    async def test_run_full_lifecycle_legacy(self, tmp_path: Path) -> None:
         from gwenn.daemon import GwennDaemon
 
         d = _make_daemon(tmp_path)
 
         # Patch lifecycle stages
         d._write_pid_file = MagicMock()
+        d._cleanup_pid_and_socket = MagicMock()
         d._start_agent = AsyncMock()
         d._start_socket_server = AsyncMock()
         d._cleanup = AsyncMock()
@@ -210,17 +212,52 @@ class TestDaemonRun:
         d._start_agent.assert_awaited_once()
         d._start_socket_server.assert_awaited_once()
         d._cleanup.assert_awaited_once()
+        d._cleanup_pid_and_socket.assert_called_once()
 
     async def test_run_calls_cleanup_on_exception(self, tmp_path: Path) -> None:
         d = _make_daemon(tmp_path)
         d._write_pid_file = MagicMock()
+        d._cleanup_pid_and_socket = MagicMock()
         d._start_agent = AsyncMock(side_effect=RuntimeError("boom"))
         d._cleanup = AsyncMock()
 
         with pytest.raises(RuntimeError, match="boom"):
             await d.run()
+        d._cleanup_pid_and_socket.assert_called_once()
 
-        d._cleanup.assert_awaited_once()
+    async def test_run_heartbeat_core_mode(self, tmp_path: Path) -> None:
+        """When heartbeat_core=True, daemon delegates to Heartbeat.run()."""
+        d = _make_daemon(tmp_path)
+        d._config.daemon.heartbeat_core = True
+        d._write_pid_file = MagicMock()
+        d._cleanup_pid_and_socket = MagicMock()
+
+        with patch("gwenn.heartbeat.Heartbeat") as MockHB:
+            mock_hb_instance = MagicMock()
+            mock_hb_instance.run = AsyncMock()
+            MockHB.return_value = mock_hb_instance
+
+            await d.run()
+
+            MockHB.assert_called_once_with(d._config)
+            mock_hb_instance.run.assert_awaited_once()
+
+    async def test_run_heartbeat_core_cleanup_on_error(self, tmp_path: Path) -> None:
+        """PID/socket cleanup runs even if heartbeat.run() raises."""
+        d = _make_daemon(tmp_path)
+        d._config.daemon.heartbeat_core = True
+        d._write_pid_file = MagicMock()
+        d._cleanup_pid_and_socket = MagicMock()
+
+        with patch("gwenn.heartbeat.Heartbeat") as MockHB:
+            mock_hb_instance = MagicMock()
+            mock_hb_instance.run = AsyncMock(side_effect=RuntimeError("crash"))
+            MockHB.return_value = mock_hb_instance
+
+            with pytest.raises(RuntimeError, match="crash"):
+                await d.run()
+
+            d._cleanup_pid_and_socket.assert_called_once()
 
 
 # =============================================================================
@@ -949,12 +986,8 @@ class TestSend:
 @pytest.mark.asyncio
 class TestCleanup:
     async def test_cleanup_full(self, tmp_path: Path) -> None:
-        """Full cleanup: server, channel task, agent, files."""
+        """Full cleanup: server, channel task, agent."""
         d = _make_daemon(tmp_path)
-
-        # Create socket and PID files
-        d._socket_path.touch()
-        d._pid_file.touch()
 
         # Mock server
         d._server = MagicMock()
@@ -971,8 +1004,6 @@ class TestCleanup:
         d._server.close.assert_called_once()
         d._server.wait_closed.assert_awaited_once()
         d._agent.shutdown.assert_awaited_once()
-        assert not d._socket_path.exists()
-        assert not d._pid_file.exists()
         assert d._channel_task is None
 
     async def test_cleanup_no_server(self, tmp_path: Path) -> None:
@@ -1025,17 +1056,23 @@ class TestCleanup:
     async def test_cleanup_unlink_oserror(self, tmp_path: Path) -> None:
         """If unlink of socket/pid fails with OSError, cleanup continues."""
         d = _make_daemon(tmp_path)
-        d._server = None
-        d._channel_task = None
-
         d._socket_path = tmp_path / "gwenn.sock"
         d._pid_file = tmp_path / "gwenn.pid"
         d._socket_path.touch()
         d._pid_file.touch()
 
         with patch.object(Path, "unlink", side_effect=OSError("cannot remove")):
-            await d._cleanup()
+            d._cleanup_pid_and_socket()
         # Should not raise
+
+    def test_cleanup_pid_and_socket_removes_files(self, tmp_path: Path) -> None:
+        """_cleanup_pid_and_socket removes PID and socket files."""
+        d = _make_daemon(tmp_path)
+        d._socket_path.touch()
+        d._pid_file.touch()
+        d._cleanup_pid_and_socket()
+        assert not d._socket_path.exists()
+        assert not d._pid_file.exists()
 
 
 # =============================================================================
