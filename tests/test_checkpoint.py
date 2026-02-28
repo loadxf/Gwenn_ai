@@ -427,6 +427,40 @@ class TestRestoreFromCheckpoint:
         # Should not raise with empty checkpoint data
         await mgr.restore_from_checkpoint(agent, cp)
 
+    @pytest.mark.asyncio
+    async def test_restore_affect_clamps_out_of_range(self) -> None:
+        """Values outside [-1, 1] should be clamped during restore."""
+        mgr = CheckpointManager(Path("/tmp/test"))
+        cp = CognitiveCheckpoint(
+            affect_state={
+                "valence": 5.0,
+                "arousal": -3.0,
+                "dominance": 0.5,
+            }
+        )
+
+        dims = MagicMock()
+        dims.valence = 0.0
+        dims.arousal = 0.0
+        dims.dominance = 0.0
+
+        agent = MagicMock()
+        agent.affect_state = MagicMock()
+        agent.affect_state.dimensions = dims
+        agent.affect_state.update_classification = MagicMock()
+        del agent.working_memory
+        del agent.goal_system
+        del agent.metacognition
+        del agent.sensory
+        del agent.interagent
+        del agent.identity
+
+        await mgr.restore_from_checkpoint(agent, cp)
+
+        assert dims.valence == 1.0   # clamped from 5.0
+        assert dims.arousal == -1.0  # clamped from -3.0
+        assert dims.dominance == 0.5  # within range, unchanged
+
 
 # ---------------------------------------------------------------------------
 # CheckpointManager — config validation

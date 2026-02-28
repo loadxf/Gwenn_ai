@@ -374,6 +374,11 @@ class RequestRouter:
             return make_error(req_id, INVALID_PARAMS, "checkpointing not enabled")
 
         checkpoint_id = params.get("checkpoint_id")
+        if checkpoint_id is not None and (
+            not isinstance(checkpoint_id, str) or len(checkpoint_id) > 64
+        ):
+            return make_error(req_id, INVALID_PARAMS, "invalid checkpoint_id")
+
         if checkpoint_id:
             checkpoint = await mgr.load_checkpoint(checkpoint_id)
         else:
@@ -384,6 +389,9 @@ class RequestRouter:
 
         try:
             await mgr.restore_from_checkpoint(self._agent, checkpoint)
+            # Sync heartbeat state with restored checkpoint.
+            heartbeat._beat_count = checkpoint.beat_count
+            mgr._last_checkpoint_beat = checkpoint.beat_count
             return make_response(req_id, {
                 "checkpoint_id": checkpoint.checkpoint_id,
                 "beat_count": checkpoint.beat_count,

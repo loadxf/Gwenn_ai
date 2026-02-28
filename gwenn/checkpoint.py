@@ -160,10 +160,11 @@ class CheckpointManager:
         """
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate filename: YYYYMMDD-HHMMSS-{4hex}.json.gz
+        # Generate filename: YYYYMMDD-HHMMSS-ffffff-{4hex}.json.gz
+        # Microseconds ensure deterministic sort even within the same second.
         dt = datetime.fromtimestamp(checkpoint.timestamp, tz=timezone.utc)
         filename = (
-            f"{dt.strftime('%Y%m%d-%H%M%S')}-{checkpoint.checkpoint_id[:4]}.json.gz"
+            f"{dt.strftime('%Y%m%d-%H%M%S-%f')}-{checkpoint.checkpoint_id[:4]}.json.gz"
         )
         target = self._checkpoint_dir / filename
 
@@ -178,7 +179,7 @@ class CheckpointManager:
         try:
             with open(fd, "wb") as f:
                 f.write(compressed)
-            Path(tmp_path).rename(target)
+            Path(tmp_path).replace(target)
         except Exception:
             # Clean up temp file on failure
             try:
@@ -325,7 +326,7 @@ class CheckpointManager:
             return []
         files = sorted(
             self._checkpoint_dir.glob("*.json.gz"),
-            key=lambda p: p.stat().st_mtime,
+            key=lambda p: p.name,
             reverse=True,
         )
         return files
@@ -353,26 +354,32 @@ class CheckpointManager:
                 logger.debug("checkpoint.prune_failed", path=str(old_file))
 
     @staticmethod
+    def _clamp(value: float, lo: float = -1.0, hi: float = 1.0) -> float:
+        """Clamp a numeric value to [lo, hi]."""
+        return max(lo, min(hi, float(value)))
+
+    @staticmethod
     def _restore_affect(affect: Any, data: dict) -> None:
         """Restore AffectiveState dimensions from checkpoint data."""
+        clamp = CheckpointManager._clamp
         dims = getattr(affect, "dimensions", None)
         if dims is None:
             return
         for key in ("valence", "arousal", "dominance", "certainty", "goal_congruence"):
             if key in data:
-                setattr(dims, key, float(data[key]))
+                setattr(dims, key, clamp(data[key]))
         # Restore baseline if present
         baseline = data.get("baseline")
         if baseline and hasattr(affect, "baseline"):
             for key in ("valence", "arousal", "dominance", "certainty", "goal_congruence"):
                 if key in baseline:
-                    setattr(affect.baseline, key, float(baseline[key]))
+                    setattr(affect.baseline, key, clamp(baseline[key]))
         # Restore momentum
         momentum = data.get("momentum")
         if momentum and hasattr(affect, "momentum"):
             for key in ("valence", "arousal", "dominance"):
                 if key in momentum:
-                    setattr(affect.momentum, key, float(momentum[key]))
+                    setattr(affect.momentum, key, clamp(momentum[key]))
         # Re-classify emotion after restoring dimensions
         if hasattr(affect, "update_classification"):
             affect.update_classification()
