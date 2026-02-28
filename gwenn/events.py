@@ -344,3 +344,14 @@ class MemoryConsolidatedEvent(GwennEvent):
 
     episodes_processed: int
     knowledge_extracted: int
+
+
+class InteroceptiveSnapshotEvent(GwennEvent):
+    """Emitted each heartbeat beat with system self-awareness signals."""
+
+    fatigue: float
+    flow: float
+    overwhelm: float
+    cpu_percent: float
+    memory_percent: float
+    response_latency_ms: float

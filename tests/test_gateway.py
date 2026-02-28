@@ -639,7 +639,7 @@ class TestEventPush:
         ws = MagicMock()
         ws.closed = False
         ws.send_json = AsyncMock()
-        conn = ClientConnection(conn_id="c1", ws=ws)
+        conn = ClientConnection(conn_id="c1", ws=ws, subscriptions={"*"})
 
         event = GwennEvent(event_type="test.event")
         gateway._push_event(conn, event)
@@ -841,10 +841,189 @@ class TestPushTaskTracking:
         ws = MagicMock()
         ws.closed = False
         ws.send_json = AsyncMock()
-        conn = ClientConnection(conn_id="c1", ws=ws)
+        conn = ClientConnection(conn_id="c1", ws=ws, subscriptions={"*"})
 
         event = GwennEvent(event_type="test.event")
         gateway._push_event(conn, event)
         assert len(gateway._push_tasks) == 1
         await asyncio.sleep(0.01)  # Let task complete
         assert len(gateway._push_tasks) == 0  # Auto-removed on completion
+
+
+# ---------------------------------------------------------------------------
+# Event subscription filtering
+# ---------------------------------------------------------------------------
+
+
+class TestEventSubscriptions:
+    def test_push_event_skips_no_subscriptions(self, gateway: GatewayServer) -> None:
+        """Clients with no subscriptions receive nothing."""
+        ws = MagicMock()
+        ws.closed = False
+        conn = ClientConnection(conn_id="c1", ws=ws)
+        assert not conn.subscriptions
+
+        event = GwennEvent(event_type="heartbeat.beat")
+        gateway._push_event(conn, event)
+        assert len(gateway._push_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_push_event_matches_wildcard(self, gateway: GatewayServer) -> None:
+        """Subscription '*' matches all events."""
+        ws = MagicMock()
+        ws.closed = False
+        ws.send_json = AsyncMock()
+        conn = ClientConnection(conn_id="c1", ws=ws, subscriptions={"*"})
+
+        event = GwennEvent(event_type="anything.at.all")
+        gateway._push_event(conn, event)
+        assert len(gateway._push_tasks) == 1
+        await asyncio.sleep(0.01)
+        ws.send_json.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_push_event_matches_pattern(self, gateway: GatewayServer) -> None:
+        """Subscription pattern 'heartbeat.*' matches heartbeat events."""
+        ws = MagicMock()
+        ws.closed = False
+        ws.send_json = AsyncMock()
+        conn = ClientConnection(conn_id="c1", ws=ws, subscriptions={"heartbeat.*"})
+
+        event = GwennEvent(event_type="heartbeat.beat")
+        gateway._push_event(conn, event)
+        assert len(gateway._push_tasks) == 1
+        await asyncio.sleep(0.01)
+        ws.send_json.assert_awaited_once()
+
+    def test_push_event_no_match(self, gateway: GatewayServer) -> None:
+        """Non-matching patterns don't forward events."""
+        ws = MagicMock()
+        ws.closed = False
+        conn = ClientConnection(conn_id="c1", ws=ws, subscriptions={"affect.*"})
+
+        event = GwennEvent(event_type="heartbeat.beat")
+        gateway._push_event(conn, event)
+        assert len(gateway._push_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_push_event_multiple_patterns(self, gateway: GatewayServer) -> None:
+        """Multiple subscription patterns — event matches any."""
+        ws = MagicMock()
+        ws.closed = False
+        ws.send_json = AsyncMock()
+        conn = ClientConnection(
+            conn_id="c1", ws=ws,
+            subscriptions={"heartbeat.*", "affect.*"},
+        )
+
+        event = GwennEvent(event_type="affect.emotion.changed")
+        gateway._push_event(conn, event)
+        assert len(gateway._push_tasks) == 1
+        await asyncio.sleep(0.01)
+        ws.send_json.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Tool approval
+# ---------------------------------------------------------------------------
+
+
+class TestToolApproval:
+    def test_resolve_approval_no_pending(self, gateway: GatewayServer) -> None:
+        """Resolving non-existent approval returns False."""
+        assert gateway._resolve_approval("nonexistent", "allow", "c1") is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_approval_success(self, gateway: GatewayServer) -> None:
+        """Resolving a pending approval sets the future."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        gateway._pending_approvals["test123"] = future
+
+        result = gateway._resolve_approval("test123", "allow", "c1")
+        assert result is True
+        assert future.done()
+        assert future.result() == "allow"
+
+    @pytest.mark.asyncio
+    async def test_resolve_approval_already_done(self, gateway: GatewayServer) -> None:
+        """Resolving an already-resolved approval returns False."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        future.set_result("deny")
+        gateway._pending_approvals["test123"] = future
+
+        result = gateway._resolve_approval("test123", "allow", "c1")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_request_approval_no_approvers(self, gateway: GatewayServer) -> None:
+        """request_approval returns False when no approver-capable clients."""
+        result = await gateway.request_approval(
+            tool_name="shell", tool_input={"cmd": "ls"}, reason="test",
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_request_approval_approved(self, gateway: GatewayServer) -> None:
+        """request_approval returns True when client approves."""
+        ws = MagicMock()
+        ws.closed = False
+        conn = ClientConnection(
+            conn_id="c1", ws=ws, can_approve_tools=True,
+        )
+        gateway._connections["c1"] = conn
+
+        async def approve_later():
+            await asyncio.sleep(0.01)
+            # Resolve the pending approval
+            for aid, fut in list(gateway._pending_approvals.items()):
+                if not fut.done():
+                    gateway._resolve_approval(aid, "allow", "c1")
+
+        task = asyncio.create_task(approve_later())
+        result = await gateway.request_approval(
+            tool_name="shell", tool_input={}, reason="test", timeout=2.0,
+        )
+        await task
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_request_approval_denied(self, gateway: GatewayServer) -> None:
+        """request_approval returns False when client denies."""
+        ws = MagicMock()
+        ws.closed = False
+        conn = ClientConnection(
+            conn_id="c1", ws=ws, can_approve_tools=True,
+        )
+        gateway._connections["c1"] = conn
+
+        async def deny_later():
+            await asyncio.sleep(0.01)
+            for aid, fut in list(gateway._pending_approvals.items()):
+                if not fut.done():
+                    gateway._resolve_approval(aid, "deny", "c1")
+
+        task = asyncio.create_task(deny_later())
+        result = await gateway.request_approval(
+            tool_name="shell", tool_input={}, reason="test", timeout=2.0,
+        )
+        await task
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_request_approval_timeout(self, gateway: GatewayServer) -> None:
+        """request_approval returns False on timeout."""
+        ws = MagicMock()
+        ws.closed = False
+        conn = ClientConnection(
+            conn_id="c1", ws=ws, can_approve_tools=True,
+        )
+        gateway._connections["c1"] = conn
+
+        result = await gateway.request_approval(
+            tool_name="shell", tool_input={}, reason="test", timeout=0.05,
+        )
+        assert result is False
+        # Pending approval should be cleaned up
+        assert len(gateway._pending_approvals) == 0

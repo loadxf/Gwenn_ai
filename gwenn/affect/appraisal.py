@@ -78,8 +78,13 @@ class AppraisalEngine:
     Each check modifies different emotional dimensions.
     """
 
-    def __init__(self, config: AffectConfig):
+    def __init__(
+        self,
+        config: AffectConfig,
+        event_bus: Any | None = None,
+    ):
         self._config = config
+        self._event_bus = event_bus
         self._last_appraisal_time = time.time()
 
         # Appraisal rules: maps stimulus types to dimensional changes
@@ -250,7 +255,25 @@ class AppraisalEngine:
         )
 
         # Step 8: Reclassify
+        previous_emotion = new_state.current_emotion
         new_state.update_classification()
+
+        # Emit EmotionChangedEvent if the named emotion transitioned
+        if (
+            new_state.current_emotion != previous_emotion
+            and self._event_bus is not None
+        ):
+            try:
+                from gwenn.events import EmotionChangedEvent
+
+                self._event_bus.emit(EmotionChangedEvent(
+                    previous=previous_emotion.value,
+                    current=new_state.current_emotion.value,
+                    valence=new_state.dimensions.valence,
+                    trigger=event.stimulus_type.value,
+                ))
+            except Exception:
+                pass  # Event emission must never break appraisal
 
         logger.debug(
             "appraisal.complete",

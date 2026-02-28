@@ -341,6 +341,9 @@ class TestEventBusPush:
             client = WebSocketCliChannel(on_server_push=on_push)
             await client.connect(f"ws://127.0.0.1:{port}/ws")
             try:
+                # Subscribe to all events
+                await client._request("events.subscribe", {"types": ["*"]})
+
                 # Emit an event on the bus
                 event = HeartbeatBeatEvent(
                     beat_count=42, emotion="happy", arousal=0.5, phase="think",

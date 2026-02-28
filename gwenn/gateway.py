@@ -16,6 +16,7 @@ Routes:
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hmac
 import json
 import time
@@ -28,7 +29,7 @@ from aiohttp import WSMsgType, web
 
 from gwenn.events import EventBus, GwennEvent
 from gwenn.memory.session_store import SessionStore
-from gwenn.rpc import INVALID_REQUEST, PARSE_ERROR, RequestRouter, make_error, make_notification
+from gwenn.rpc import INVALID_REQUEST, PARSE_ERROR, RequestRouter, make_error, make_notification, make_response
 
 if TYPE_CHECKING:
     from gwenn.config import DaemonConfig
@@ -47,6 +48,7 @@ class ClientConnection:
     session_id: str = ""
     history: list[dict[str, Any]] = field(default_factory=list)
     can_approve_tools: bool = False
+    subscriptions: set[str] = field(default_factory=set)  # event type patterns
     started_at: float = field(default_factory=time.time)  # wall clock for session filenames
     last_activity: float = field(default_factory=time.monotonic)  # monotonic for idle detection
 
@@ -87,6 +89,9 @@ class GatewayServer:
 
         # Fire-and-forget push tasks (tracked to cancel on shutdown)
         self._push_tasks: set[asyncio.Task[None]] = set()
+
+        # Pending tool approvals: approval_id → asyncio.Future[str]
+        self._pending_approvals: dict[str, asyncio.Future[str]] = {}
 
         # aiohttp internals
         self._app: web.Application | None = None
@@ -308,16 +313,92 @@ class GatewayServer:
                         conn.authenticated = True
                         conn.client_type = params.get("client_type", "cli")
                         conn.session_id = params.get("session_id", "")
-                        conn.can_approve_tools = params.get(
-                            "can_approve_tools",
-                            conn.client_type == "cli",
+                        # Approval rights require verified auth token.
+                        # When no token configured, CLI clients get approval.
+                        # When token configured, only token-authenticated
+                        # CLI clients can approve.
+                        is_cli = conn.client_type == "cli"
+                        token_verified = not self._auth_token or (
+                            isinstance(params.get("auth_token"), str)
+                            and hmac.compare_digest(
+                                params.get("auth_token", ""),
+                                self._auth_token,
+                            )
                         )
+                        conn.can_approve_tools = is_cli and token_verified
                         auth_failures = 0
                         await ws.send_json({
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "result": {"status": "authenticated"},
                         })
+                        continue
+
+                    # Handle event subscriptions (per-connection state)
+                    if method == "events.subscribe":
+                        types = params.get("types", [])
+                        if not isinstance(types, list) or not types:
+                            await ws.send_json(make_error(
+                                req_id, INVALID_REQUEST,
+                                "types must be a non-empty list",
+                            ))
+                            continue
+                        # Validate and bound subscription patterns
+                        _MAX_SUBS = 100
+                        _MAX_PAT_LEN = 256
+                        valid = [
+                            str(t) for t in types
+                            if isinstance(t, str) and len(t) <= _MAX_PAT_LEN
+                        ]
+                        if len(conn.subscriptions) + len(valid) > _MAX_SUBS:
+                            valid = valid[:_MAX_SUBS - len(conn.subscriptions)]
+                        conn.subscriptions.update(valid)
+                        await ws.send_json(make_response(
+                            req_id,
+                            {"subscriptions": sorted(conn.subscriptions)},
+                        ))
+                        continue
+
+                    if method == "events.unsubscribe":
+                        types = params.get("types", [])
+                        if not isinstance(types, list) or not types:
+                            await ws.send_json(make_error(
+                                req_id, INVALID_REQUEST,
+                                "types must be a non-empty list",
+                            ))
+                            continue
+                        conn.subscriptions.difference_update(str(t) for t in types)
+                        await ws.send_json(make_response(
+                            req_id,
+                            {"subscriptions": sorted(conn.subscriptions)},
+                        ))
+                        continue
+
+                    # Handle tool approval (per-connection authorization)
+                    if method == "tool.approve":
+                        if not conn.can_approve_tools:
+                            await ws.send_json(make_error(
+                                req_id, INVALID_REQUEST,
+                                "client not authorized to approve tools",
+                            ))
+                            continue
+                        approval_id = params.get("approval_id", "")
+                        decision = params.get("decision", "")
+                        if not approval_id or decision not in (
+                            "allow", "deny",
+                        ):
+                            await ws.send_json(make_error(
+                                req_id, INVALID_REQUEST,
+                                "approval_id and decision (allow/deny) required",
+                            ))
+                            continue
+                        resolved = self._resolve_approval(
+                            approval_id, decision, conn.conn_id,
+                        )
+                        await ws.send_json(make_response(
+                            req_id,
+                            {"resolved": resolved, "approval_id": approval_id},
+                        ))
                         continue
 
                     # Dispatch to router
@@ -359,6 +440,18 @@ class GatewayServer:
                     conn.started_at,
                 )
             self._connections.pop(conn.conn_id, None)
+
+            # If this was the last approver, cancel pending approvals
+            if conn.can_approve_tools:
+                has_other_approver = any(
+                    c.can_approve_tools and not c.ws.closed
+                    for c in self._connections.values()
+                )
+                if not has_other_approver:
+                    for aid, fut in list(self._pending_approvals.items()):
+                        if not fut.done():
+                            fut.set_result("deny")
+
             if not ws.closed:
                 await ws.close()
             logger.info("gateway.ws_disconnected", conn_id=conn.conn_id)
@@ -391,18 +484,102 @@ class GatewayServer:
         return hmac.compare_digest(provided, self._auth_token)
 
     # ------------------------------------------------------------------
+    # Tool approval
+    # ------------------------------------------------------------------
+
+    def _resolve_approval(
+        self, approval_id: str, decision: str, source: str,
+    ) -> bool:
+        """Resolve a pending tool approval. Returns True if resolved."""
+        future = self._pending_approvals.get(approval_id)
+        if future is None or future.done():
+            return False
+        future.set_result(decision)
+        # Emit resolution event
+        from gwenn.events import ToolApprovalResolvedEvent
+
+        self._event_bus.emit(ToolApprovalResolvedEvent(
+            approval_id=approval_id,
+            decision=decision,
+            source=f"ws:{source}",
+        ))
+        return True
+
+    async def request_approval(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        reason: str,
+        timeout: float = 120.0,
+    ) -> bool:
+        """Request tool approval from connected WebSocket clients.
+
+        Emits a ToolApprovalRequiredEvent and waits for a client with
+        can_approve_tools to respond via tool.approve. Returns True if
+        approved, False if denied or timed out.
+        """
+        from gwenn.events import ToolApprovalRequiredEvent
+
+        approval_id = uuid.uuid4().hex[:12]
+        risk_tier = "medium"  # Default; could be parameterized
+
+        # Check if any approver-capable clients are connected
+        has_approver = any(
+            c.can_approve_tools and not c.ws.closed
+            for c in self._connections.values()
+        )
+        if not has_approver:
+            return False  # Caller should escalate to other channels
+
+        # Create future and register
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._pending_approvals[approval_id] = future
+
+        # Emit the approval request event
+        self._event_bus.emit(ToolApprovalRequiredEvent(
+            approval_id=approval_id,
+            tool_name=tool_name,
+            arguments=tool_input,
+            risk_tier=risk_tier,
+        ))
+
+        try:
+            decision = await asyncio.wait_for(future, timeout=timeout)
+            return decision == "allow"
+        except asyncio.TimeoutError:
+            # Emit timeout resolution
+            from gwenn.events import ToolApprovalResolvedEvent
+
+            self._event_bus.emit(ToolApprovalResolvedEvent(
+                approval_id=approval_id,
+                decision="timeout",
+                source="gateway",
+            ))
+            return False
+        finally:
+            self._pending_approvals.pop(approval_id, None)
+
+    # ------------------------------------------------------------------
     # Event push
     # ------------------------------------------------------------------
 
     def _push_event(self, conn: ClientConnection, event: GwennEvent) -> None:
         """Push an event to a connected client as a JSON-RPC notification.
 
+        Events are only forwarded if they match at least one of the client's
+        subscription patterns. Clients with no subscriptions receive nothing.
         Non-blocking — creates a tracked task for the async send.
         """
         if conn.ws.closed:
             return
+        if not conn.subscriptions:
+            return
+        event_type = event.event_type
+        if not any(fnmatch.fnmatch(event_type, pat) for pat in conn.subscriptions):
+            return
         notification = make_notification(
-            f"event.{event.event_type}",
+            f"event.{event_type}",
             event.model_dump(),
         )
         task = asyncio.create_task(self._safe_send(conn, notification))

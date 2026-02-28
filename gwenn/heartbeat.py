@@ -127,6 +127,10 @@ class Heartbeat:
         self._processed_subagent_ids: set[str] = set()
         self._max_processed_ids = 2000
 
+        # Interoceptive monitor (system self-awareness)
+        from gwenn.interoception import InteroceptiveMonitor
+        self._interoceptive_monitor = InteroceptiveMonitor()
+
         # Core-mode owned subsystems (populated in run())
         self._event_bus: EventBus | None = None
         self._gateway: GatewayServer | None = None
@@ -289,6 +293,10 @@ class Heartbeat:
 
         logger.info("heartbeat.agent_ready")
 
+        # Wire event bus into affect system for EmotionChangedEvent emission
+        if self._event_bus is not None:
+            self._agent.appraisal_engine._event_bus = self._event_bus
+
         # Now wire up the gateway with the live agent
         await self._wire_gateway()
 
@@ -384,22 +392,25 @@ class Heartbeat:
 
                 # Emit heartbeat event on the bus
                 if self._event_bus is not None:
-                    from gwenn.events import HeartbeatBeatEvent
+                    try:
+                        from gwenn.events import HeartbeatBeatEvent
 
-                    emotion = "neutral"
-                    arousal = 0.0
-                    if self._agent is not None:
-                        try:
-                            emotion = self._agent.affect_state.current_emotion.value
-                            arousal = self._agent.affect_state.dimensions.arousal
-                        except Exception:
-                            pass
-                    self._event_bus.emit(HeartbeatBeatEvent(
-                        beat_count=self._beat_count,
-                        emotion=emotion,
-                        arousal=arousal,
-                        phase="complete",
-                    ))
+                        emotion = "neutral"
+                        arousal = 0.0
+                        if self._agent is not None:
+                            try:
+                                emotion = self._agent.affect_state.current_emotion.value
+                                arousal = self._agent.affect_state.dimensions.arousal
+                            except Exception:
+                                pass
+                        self._event_bus.emit(HeartbeatBeatEvent(
+                            beat_count=self._beat_count,
+                            emotion=emotion,
+                            arousal=arousal,
+                            phase="complete",
+                        ))
+                    except Exception:
+                        pass  # Event emission must never break the heartbeat
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -680,6 +691,28 @@ class Heartbeat:
             except Exception:
                 pass
 
+        # Interoceptive snapshot — system self-awareness
+        self._interoceptive_monitor.record_beat(self._interval)
+        intero = self._interoceptive_monitor.snapshot(
+            active_connections=gateway_connections,
+        )
+
+        # Emit interoceptive snapshot event for subscribers
+        if self._event_bus is not None:
+            try:
+                from gwenn.events import InteroceptiveSnapshotEvent
+
+                self._event_bus.emit(InteroceptiveSnapshotEvent(
+                    fatigue=intero.fatigue,
+                    flow=intero.flow,
+                    overwhelm=intero.overwhelm,
+                    cpu_percent=intero.cpu_percent,
+                    memory_percent=intero.memory_percent,
+                    response_latency_ms=intero.response_latency_ms,
+                ))
+            except Exception:
+                pass  # Event emission must never break the heartbeat
+
         return {
             "timestamp": now,
             "beat_number": self._beat_count,
@@ -694,6 +727,11 @@ class Heartbeat:
             "resilience_status": self._agent.resilience.status,
             "beats_since_consolidation": self._beats_since_consolidation,
             "gateway_connections": gateway_connections,
+            "interoception": {
+                "fatigue": intero.fatigue,
+                "flow": intero.flow,
+                "overwhelm": intero.overwhelm,
+            },
         }
 
     def _orient(self, state: dict[str, Any]) -> ThinkingMode:
@@ -746,6 +784,13 @@ class Heartbeat:
         valence = state["valence"]
         idle = state["idle_duration"]
         is_active = state["is_user_active"]
+
+        # Interoceptive bias: high fatigue → lighter thinking modes
+        intero = state.get("interoception", {})
+        fatigue = intero.get("fatigue", 0.0)
+        if fatigue > 0.7:
+            return ThinkingMode.WANDER  # Conserve resources
+
         if arousal > 0.7:
             return ThinkingMode.REFLECT
         if valence < -0.2:
@@ -826,8 +871,31 @@ class Heartbeat:
                             mode=mode.value,
                             dimensions=[d.value for d in dims],
                         )
+                        # Broadcast moral concern for subscribers
+                        if self._event_bus is not None:
+                            from gwenn.events import MoralConcernEvent
+
+                            self._event_bus.emit(MoralConcernEvent(
+                                action=f"autonomous_{mode.value}_thought",
+                                concern_type="ethical_dimensions_detected",
+                                severity=min(1.0, len(dims) * 0.3),
+                                traditions_flagged=[d.value for d in dims],
+                            ))
                 except Exception:
                     pass
+
+            # Emit thought event for subscribers (importance heuristic: short=low)
+            if self._event_bus is not None:
+                from gwenn.events import HeartbeatThoughtEvent
+
+                importance = min(1.0, len(thought.strip()) / 500)
+                if importance >= 0.4:
+                    self._event_bus.emit(HeartbeatThoughtEvent(
+                        beat_count=self._beat_count,
+                        thought_summary=thought[:200],
+                        thinking_mode=mode.value,
+                        importance=round(importance, 2),
+                    ))
         return thought
 
     async def _integrate(self, mode: ThinkingMode, thought: Optional[str]) -> None:

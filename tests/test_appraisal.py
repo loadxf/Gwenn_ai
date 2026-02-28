@@ -1006,3 +1006,96 @@ class TestStimulusTypeEnum:
         assert isinstance(StimulusType.USER_MESSAGE, str)
         assert StimulusType.USER_MESSAGE == "user_message"
         assert StimulusType.TOOL_FAILURE == "tool_failure"
+
+
+# ---------------------------------------------------------------------------
+# EmotionChangedEvent emission (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+class TestEmotionChangedEventEmission:
+    """Verify the AppraisalEngine emits EmotionChangedEvent on transitions."""
+
+    @staticmethod
+    def _fast_config() -> AffectConfig:
+        """Config with zero momentum so stimuli apply immediately."""
+        return AffectConfig(momentum_decay=0.0, baseline_pull=0.0)
+
+    def test_event_emitted_on_emotion_change(self):
+        """When appraisal causes an emotion transition, event is emitted."""
+        from unittest.mock import MagicMock
+
+        bus = MagicMock()
+        engine = AppraisalEngine(self._fast_config(), event_bus=bus)
+        state = AffectiveState()  # starts neutral
+
+        # Apply strong stimulus repeatedly to guarantee transition
+        event = AppraisalEvent(
+            stimulus_type=StimulusType.CREATIVE_INSIGHT,
+            intensity=1.0,
+        )
+        for _ in range(10):
+            state = engine.appraise(event, state)
+
+        # Verify emotion actually changed and event was emitted
+        assert state.current_emotion.value != "neutral"
+        assert bus.emit.called
+        from gwenn.events import EmotionChangedEvent
+        emitted = bus.emit.call_args[0][0]
+        assert isinstance(emitted, EmotionChangedEvent)
+
+    def test_no_event_when_emotion_unchanged(self):
+        """No event emitted if the named emotion doesn't change."""
+        from unittest.mock import MagicMock
+
+        bus = MagicMock()
+        engine = AppraisalEngine(AffectConfig(), event_bus=bus)
+        state = AffectiveState()
+
+        # Single very mild stimulus — won't change emotion from neutral
+        event = AppraisalEvent(
+            stimulus_type=StimulusType.HEARTBEAT_IDLE,
+            intensity=0.01,
+        )
+        new_state = engine.appraise(event, state)
+        assert new_state.current_emotion == state.current_emotion
+        bus.emit.assert_not_called()
+
+    def test_no_crash_without_event_bus(self):
+        """AppraisalEngine works fine without an event_bus."""
+        engine = AppraisalEngine(self._fast_config())
+        state = AffectiveState()
+        event = AppraisalEvent(
+            stimulus_type=StimulusType.CREATIVE_INSIGHT,
+            intensity=1.0,
+        )
+        # Should not raise even if emotion changes
+        for _ in range(10):
+            state = engine.appraise(event, state)
+        assert state is not None
+
+    def test_event_contains_trigger(self):
+        """EmotionChangedEvent.trigger matches stimulus type."""
+        from unittest.mock import MagicMock
+
+        bus = MagicMock()
+        engine = AppraisalEngine(self._fast_config(), event_bus=bus)
+        state = AffectiveState()
+
+        event = AppraisalEvent(
+            stimulus_type=StimulusType.GOAL_BLOCKED,
+            intensity=1.0,
+        )
+        for _ in range(10):
+            state = engine.appraise(event, state)
+
+        assert bus.emit.called
+        from gwenn.events import EmotionChangedEvent
+        # Find the first EmotionChangedEvent in the calls
+        for call in bus.emit.call_args_list:
+            emitted = call[0][0]
+            if isinstance(emitted, EmotionChangedEvent):
+                assert emitted.trigger == "goal_blocked"
+                break
+        else:
+            pytest.fail("No EmotionChangedEvent found in emit calls")
