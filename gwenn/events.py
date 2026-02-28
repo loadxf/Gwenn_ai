@@ -379,6 +379,33 @@ class CheckpointRestoredEvent(GwennEvent):
 
 
 # ---------------------------------------------------------------------------
+# Self-Healing Events
+# ---------------------------------------------------------------------------
+
+
+class SelfHealEvent(GwennEvent):
+    """Emitted when a self-healing recovery action is taken."""
+
+    issue_id: str
+    action_id: str
+    category: str  # channel_crash, stuck_subagent, etc.
+    action_type: str  # restart_channel, cancel_stuck_subagent, etc.
+    component: str  # Which component was healed
+    success: bool | None = None  # None if not yet verified
+    detail: str = ""
+    diagnosis: str = ""  # What was detected
+    recovery: str = ""  # What was done
+
+
+class HealthCheckEvent(GwennEvent):
+    """Emitted after a health check cycle completes."""
+
+    issues_found: int
+    actions_taken: int
+    all_healthy: bool
+
+
+# ---------------------------------------------------------------------------
 # Swarm Visualization Events
 # ---------------------------------------------------------------------------
 
