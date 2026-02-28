@@ -69,7 +69,7 @@ def _make_mock_config(tmp_path: Path) -> MagicMock:
 def _make_mock_agent() -> MagicMock:
     """Build a MagicMock that quacks like SentientAgent."""
     agent = MagicMock()
-    agent._respond_lock = asyncio.Lock()
+    agent.respond_lock = asyncio.Lock()
     agent.respond = AsyncMock(return_value="test response")
     agent.affect_state.current_emotion.value = "curious"
     agent.safety.emergency_stop = MagicMock()

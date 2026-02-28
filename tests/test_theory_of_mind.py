@@ -455,3 +455,34 @@ class TestPersistence:
         assert restored_belief.source == "observed"
         assert restored_belief.formed_at == pytest.approx(formed, abs=0.01)
         assert restored_belief.last_confirmed == pytest.approx(confirmed, abs=0.01)
+
+
+# -- TheoryOfMind: decay_all_stale_beliefs ----------------------------------
+
+
+class TestDecayAllStaleBeliefs:
+    def test_empty_models_no_op(self):
+        tom = _fresh_tom()
+        # No user models — should not raise
+        tom.decay_all_stale_beliefs()
+
+    def test_decays_all_user_models(self):
+        tom = _fresh_tom()
+        alice = tom.get_or_create_user("alice")
+        bob = tom.get_or_create_user("bob")
+
+        # Give each a stale belief
+        import time as _time
+
+        stale_belief_a = _make_belief(confidence=0.9)
+        stale_belief_a.last_confirmed = _time.time() - 40 * 86400
+        alice.knowledge_beliefs["rust"] = stale_belief_a
+
+        stale_belief_b = _make_belief(confidence=0.8)
+        stale_belief_b.last_confirmed = _time.time() - 40 * 86400
+        bob.knowledge_beliefs["go"] = stale_belief_b
+
+        tom.decay_all_stale_beliefs()
+
+        assert alice.knowledge_beliefs["rust"].confidence < 0.9
+        assert bob.knowledge_beliefs["go"].confidence < 0.8

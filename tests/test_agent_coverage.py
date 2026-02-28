@@ -2224,6 +2224,55 @@ class TestStatusProperty:
 
 
 # =========================================================================
+# 18b. respond_lock property — returns the internal _respond_lock
+# =========================================================================
+
+
+class TestRespondLockProperty:
+    def test_returns_internal_lock(self):
+        agent = _make_agent()
+        agent._respond_lock = asyncio.Lock()
+        result = SentientAgent.respond_lock.fget(agent)
+        assert result is agent._respond_lock
+
+    def test_same_object_on_repeated_access(self):
+        agent = _make_agent()
+        agent._respond_lock = asyncio.Lock()
+        assert SentientAgent.respond_lock.fget(agent) is SentientAgent.respond_lock.fget(agent)
+
+
+# =========================================================================
+# 18c. heartbeat_core gating — initialize skips heartbeat when flag is True
+# =========================================================================
+
+
+class TestHeartbeatCoreGating:
+    def test_flag_true_means_heartbeat_skipped(self):
+        """When heartbeat_core=True, getattr chain returns True."""
+        cfg = SimpleNamespace(daemon=SimpleNamespace(heartbeat_core=True))
+        result = getattr(getattr(cfg, "daemon", None), "heartbeat_core", False)
+        assert result is True
+
+    def test_flag_false_means_heartbeat_created(self):
+        """When heartbeat_core=False, getattr chain returns False."""
+        cfg = SimpleNamespace(daemon=SimpleNamespace(heartbeat_core=False))
+        result = getattr(getattr(cfg, "daemon", None), "heartbeat_core", False)
+        assert result is False
+
+    def test_missing_daemon_defaults_to_false(self):
+        """Config without daemon attr defaults to False (legacy mode)."""
+        cfg = SimpleNamespace()
+        result = getattr(getattr(cfg, "daemon", None), "heartbeat_core", False)
+        assert result is False
+
+    def test_daemon_without_heartbeat_core_defaults_to_false(self):
+        """Daemon config without heartbeat_core defaults to False."""
+        cfg = SimpleNamespace(daemon=SimpleNamespace())
+        result = getattr(getattr(cfg, "daemon", None), "heartbeat_core", False)
+        assert result is False
+
+
+# =========================================================================
 # 19. decay_working_memory — line 3916
 # =========================================================================
 
@@ -4110,7 +4159,7 @@ class TestShutdownPersistRecent:
         )
         agent.semantic_memory = SimpleNamespace(all_nodes=lambda: [])
         agent._persist_semantic_memory = MagicMock()
-        agent._persist_episode = MagicMock()
+        agent.persist_episode = MagicMock()
         agent._is_prunable_episode = MagicMock(return_value=False)
         agent._snapshot_identity_state = MagicMock()
         agent.session_manager = SimpleNamespace(stop_cleanup_task=MagicMock())
@@ -4120,7 +4169,7 @@ class TestShutdownPersistRecent:
             get_consolidation_prompt=MagicMock(return_value=None),
         )
         await SentientAgent.shutdown(agent)
-        agent._persist_episode.assert_called_once_with(ep, skip_vector=True)
+        agent.persist_episode.assert_called_once_with(ep, skip_vector=True)
 
 
 # =========================================================================

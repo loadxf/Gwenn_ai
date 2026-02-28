@@ -87,7 +87,7 @@ def _make_agent_for_full_beat():
         metacognition=SimpleNamespace(resolve_concern=lambda s: False),
         ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
         interagent=SimpleNamespace(get_pending_messages=lambda: []),
-        _respond_lock=asyncio.Lock(),
+        respond_lock=asyncio.Lock(),
     )
 
 
@@ -171,7 +171,7 @@ async def test_integrate_persists_autonomous_thought_episode():
         affect_state=affect_state,
         episodic_memory=SimpleNamespace(encode=lambda ep: encoded.append(ep)),
         memory_store=memory_store,
-        _persist_episode=lambda ep: memory_store.save_episode(ep),
+        persist_episode=lambda ep: memory_store.save_episode(ep),
         process_appraisal=lambda event: appraisals.append(event),
         decay_working_memory=lambda: decayed.__setitem__("called", True),
         goal_system=_make_goal_system_stub(),
@@ -180,7 +180,7 @@ async def test_integrate_persists_autonomous_thought_episode():
         metacognition=SimpleNamespace(resolve_concern=lambda s: False),
         ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
         interagent=SimpleNamespace(get_pending_messages=lambda: []),
-        _respond_lock=asyncio.Lock(),
+        respond_lock=asyncio.Lock(),
     )
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 
@@ -207,7 +207,7 @@ async def test_integrate_calls_autonomous_skill_development_hook():
         affect_state=affect_state,
         episodic_memory=SimpleNamespace(encode=lambda ep: None),
         memory_store=SimpleNamespace(save_episode=lambda ep: None),
-        _persist_episode=lambda ep: None,
+        persist_episode=lambda ep: None,
         process_appraisal=lambda event: None,
         decay_working_memory=lambda: None,
         maybe_develop_skill_autonomously=_develop,
@@ -216,7 +216,7 @@ async def test_integrate_calls_autonomous_skill_development_hook():
         metacognition=SimpleNamespace(resolve_concern=lambda s: False),
         ethics=SimpleNamespace(detect_ethical_dimensions=lambda t: []),
         interagent=SimpleNamespace(get_pending_messages=lambda: []),
-        _respond_lock=asyncio.Lock(),
+        respond_lock=asyncio.Lock(),
     )
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 
@@ -273,7 +273,7 @@ async def test_consolidation_mode_does_not_stick_when_no_work():
         process_appraisal=lambda event: None,
         episodic_memory=SimpleNamespace(encode=lambda ep: None),
         memory_store=SimpleNamespace(save_episode=lambda ep: None),
-        _respond_lock=asyncio.Lock(),
+        respond_lock=asyncio.Lock(),
     )
 
     async def _consolidate_memories():
@@ -449,7 +449,7 @@ def _make_integrate_agent(**overrides):
         affect_state=affect_state,
         episodic_memory=SimpleNamespace(encode=lambda ep: None),
         memory_store=SimpleNamespace(save_episode=lambda ep: None),
-        _persist_episode=lambda ep: None,
+        persist_episode=lambda ep: None,
         process_appraisal=lambda event: None,
         decay_working_memory=lambda: None,
         maybe_develop_skill_autonomously=_noop_async,
@@ -461,7 +461,7 @@ def _make_integrate_agent(**overrides):
             get_ethical_context=lambda: "",
         ),
         interagent=SimpleNamespace(get_pending_messages=lambda: []),
-        _respond_lock=asyncio.Lock(),
+        respond_lock=asyncio.Lock(),
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -656,16 +656,12 @@ async def test_loop_circuit_breaker_exponential_backoff(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_beat_decays_theory_of_mind_every_10_beats():
-    """Lines 234-240: every 10th beat, decay_stale_beliefs is called."""
+    """Lines 234-240: every 10th beat, decay_all_stale_beliefs is called."""
     decay_calls = []
-
-    class _UserModel:
-        def decay_stale_beliefs(self):
-            decay_calls.append(True)
 
     agent = _make_agent_for_full_beat()
     agent.theory_of_mind = SimpleNamespace(
-        _user_models={"alice": _UserModel(), "gwenn": _UserModel()},
+        decay_all_stale_beliefs=lambda: decay_calls.append(True),
     )
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
 
@@ -674,17 +670,17 @@ async def test_beat_decays_theory_of_mind_every_10_beats():
     await heartbeat._beat()
 
     assert heartbeat._beat_count == 10
-    assert len(decay_calls) == 2  # one per user model
+    assert len(decay_calls) == 1  # called once via public API
 
 
 @pytest.mark.asyncio
 async def test_beat_tom_decay_exception_is_swallowed():
     """Lines 239-240: exceptions in ToM decay are silently caught."""
+    def _boom():
+        raise RuntimeError("boom")
+
     agent = _make_agent_for_full_beat()
-    # theory_of_mind attribute that raises when accessed
-    agent.theory_of_mind = SimpleNamespace(
-        _user_models=property(lambda self: (_ for _ in ()).throw(RuntimeError("boom"))),
-    )
+    agent.theory_of_mind = SimpleNamespace(decay_all_stale_beliefs=_boom)
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
     heartbeat._beat_count = 9
 
@@ -1265,7 +1261,7 @@ async def test_integrate_processes_subagent_results():
 
     agent = _make_integrate_agent(
         episodic_memory=SimpleNamespace(encode=lambda ep: encoded.append(ep)),
-        _persist_episode=lambda ep: persisted.append(ep),
+        persist_episode=lambda ep: persisted.append(ep),
     )
     agent.orchestrator = orchestrator
     heartbeat = Heartbeat(HeartbeatConfig(), agent)

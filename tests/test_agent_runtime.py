@@ -494,7 +494,7 @@ async def test_integrate_exchange_runs_metacognition_pass():
     encoded: list[object] = []
     persisted: list[object] = []
     agent.episodic_memory = SimpleNamespace(encode=lambda episode: encoded.append(episode))
-    agent._persist_episode = lambda episode: persisted.append(episode)
+    agent.persist_episode = lambda episode: persisted.append(episode)
     agent.theory_of_mind = SimpleNamespace(set_current_user=lambda _uid: None)
     agent.goal_system = SimpleNamespace(
         satisfy_need=lambda _need, _amount: None,
@@ -565,7 +565,7 @@ async def test_integrate_exchange_updates_tom_and_records_ethics():
         to_dict=lambda: {},
     )
     agent.episodic_memory = SimpleNamespace(encode=lambda _episode: None)
-    agent._persist_episode = lambda _episode: None
+    agent.persist_episode = lambda _episode: None
     agent.theory_of_mind = SimpleNamespace(set_current_user=lambda _uid: user_model)
     agent.goal_system = SimpleNamespace(
         satisfy_need=lambda _need, _amount: None,
@@ -631,7 +631,7 @@ def test_persist_episode_redacts_before_persist_when_enabled():
         embedding=None,
     )
 
-    SentientAgent._persist_episode(agent, episode)
+    SentientAgent.persist_episode(agent, episode)
     persisted = captured["episode"]
     assert "[REDACTED_EMAIL]" in persisted.content
     assert "alice@example.com" not in persisted.content

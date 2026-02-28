@@ -250,6 +250,15 @@ class TheoryOfMind:
             return self._user_models.get(self._current_user_id)
         return None
 
+    def decay_all_stale_beliefs(self) -> None:
+        """Decay belief confidence across all known user models.
+
+        Called by the heartbeat during periodic maintenance. Avoids
+        direct access to the private ``_user_models`` dict from outside.
+        """
+        for model in self._user_models.values():
+            model.decay_stale_beliefs()
+
     def generate_user_context(self, user_id: Optional[str] = None) -> str:
         """
         Generate a prompt fragment describing what we believe about the current user.

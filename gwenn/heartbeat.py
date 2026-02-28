@@ -233,11 +233,9 @@ class Heartbeat:
         # periods in daemon mode don't leave ancient inferences intact.
         if self._beat_count % 10 == 0:
             try:
-                tom = self._agent.theory_of_mind
-                for model in tom._user_models.values():
-                    model.decay_stale_beliefs()
+                self._agent.theory_of_mind.decay_all_stale_beliefs()
             except Exception:
-                pass
+                logger.debug("heartbeat.tom_decay_failed", exc_info=True)
 
         elapsed = time.monotonic() - beat_start
         logger.debug(
@@ -477,7 +475,7 @@ class Heartbeat:
                 stimulus_type=StimulusType.HEARTBEAT_IDLE,
                 intensity=0.2,
             )
-            async with self._agent._respond_lock:
+            async with self._agent.respond_lock:
                 self._agent.process_appraisal(event)
             return
 
@@ -538,7 +536,7 @@ class Heartbeat:
                 intensity=0.2,
             )
 
-        async with self._agent._respond_lock:
+        async with self._agent.respond_lock:
             self._agent.process_appraisal(event)
 
         # Satisfy the intrinsic need that this thinking mode addresses and
@@ -567,7 +565,7 @@ class Heartbeat:
             )
             self._agent.episodic_memory.encode(episode)
             # Persist immediately so autonomous cognition isn't lost on crashes.
-            self._agent._persist_episode(episode)
+            self._agent.persist_episode(episode)
 
             # Share significant thoughts with channel owners when proactive
             # messaging is enabled.  Only broadcast thoughts that are
@@ -595,7 +593,7 @@ class Heartbeat:
         try:
             pending = self._agent.interagent.get_pending_messages()
             for msg in pending:
-                async with self._agent._respond_lock:
+                async with self._agent.respond_lock:
                     self._agent.process_appraisal(
                         AppraisalEvent(
                             stimulus_type=StimulusType.SOCIAL_CONNECTION,
@@ -629,7 +627,7 @@ class Heartbeat:
                             tags=["subagent", result.task_id],
                         )
                         self._agent.episodic_memory.encode(ep)
-                        self._agent._persist_episode(ep)
+                        self._agent.persist_episode(ep)
 
                         # Route noteworthy results to originating chat/topic
                         if self._config.proactive_messages and len(result.result_text) > 200:

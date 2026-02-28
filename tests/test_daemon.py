@@ -559,7 +559,7 @@ class TestGwennDaemonDispatch:
             d._session_redactor.redact = lambda text: text
             d._session_store = SessionStore(d._sessions_dir)
             d._channel_task = None
-            d._agent_respond_lock = asyncio.Lock()
+            # _agent_respond_lock removed — daemon now uses agent.respond_lock
             return d
 
     async def test_ping(self, daemon) -> None:

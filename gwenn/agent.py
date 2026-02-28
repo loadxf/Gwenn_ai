@@ -285,6 +285,7 @@ class SentientAgent:
 
         # ---- Channel integration ----
         # Global lock used by heartbeat and daemon for quick state mutations.
+        # Exposed via the `respond_lock` property for heartbeat/router access.
         self._respond_lock: asyncio.Lock = asyncio.Lock()
         # Per-session locks so different conversations can run concurrently.
         self._session_respond_locks: dict[str, asyncio.Lock] = {}
@@ -614,8 +615,12 @@ class SentientAgent:
             )
             logger.info("agent.orchestrator_initialized")
 
-        # Create heartbeat (needs reference to fully initialized agent)
-        self.heartbeat = Heartbeat(self._config.heartbeat, self)
+        # Create heartbeat only when agent owns it (legacy mode).
+        # When heartbeat_core=True, heartbeat creates agent — not the other way around.
+        # Fallback is False so test configs (SimpleNamespace) get the legacy behavior.
+        heartbeat_core = getattr(getattr(self._config, "daemon", None), "heartbeat_core", False)
+        if not heartbeat_core:
+            self.heartbeat = Heartbeat(self._config.heartbeat, self)
 
         self._initialized = True
         logger.info("agent.initialized")
@@ -728,7 +733,8 @@ class SentientAgent:
         if not self._initialized:
             raise RuntimeError("Agent must be initialized before starting")
 
-        await self.heartbeat.start()
+        if self.heartbeat is not None:
+            await self.heartbeat.start()
         logger.info("agent.started", name=self.identity.name)
 
     async def shutdown(self) -> None:
@@ -775,7 +781,7 @@ class SentientAgent:
             for ep in episodes_to_persist:
                 if self._is_prunable_episode(ep):
                     continue
-                self._persist_episode(ep, skip_vector=True)
+                self.persist_episode(ep, skip_vector=True)
                 persisted_episodes.append(ep)
             self.memory_store.sync_episode_embeddings(persisted_episodes)
 
@@ -1592,7 +1598,7 @@ class SentientAgent:
         self.episodic_memory.encode(episode)
 
         # Also persist to disk
-        self._persist_episode(episode)
+        self.persist_episode(episode)
 
         # Update theory of mind — record this interaction and refresh beliefs.
         user_model = self.theory_of_mind.set_current_user(user_id)
@@ -2706,7 +2712,7 @@ class SentientAgent:
                     participants=["gwenn"],
                 )
                 self.episodic_memory.encode(episode)
-                self._persist_episode(episode)
+                self.persist_episode(episode)
                 return f"Remembered: {content[:80]}..."
 
             remember_tool.handler = handle_remember
@@ -2797,7 +2803,7 @@ class SentientAgent:
                     participants=["gwenn"],
                 )
                 self.episodic_memory.encode(episode)
-                self._persist_episode(episode)
+                self.persist_episode(episode)
 
                 # Also write/update GWENN_CONTEXT.md for persistence across restarts
                 persist_note = note
@@ -4186,7 +4192,7 @@ class SentientAgent:
             participants=[user_id, "gwenn"],
         )
         self.episodic_memory.encode(episode)
-        self._persist_episode(episode)
+        self.persist_episode(episode)
 
         self.identity.mark_onboarding_completed(clean_profile)
 
@@ -4360,7 +4366,7 @@ class SentientAgent:
         for episode_id in episode_ids:
             episode = self.episodic_memory.get_episode(episode_id)
             if episode is not None:
-                self._persist_episode(episode)
+                self.persist_episode(episode)
 
     @staticmethod
     def _is_prunable_episode(
@@ -4467,7 +4473,7 @@ class SentientAgent:
             embedding=episode.embedding,
         )
 
-    def _persist_episode(
+    def persist_episode(
         self,
         episode: Episode,
         *,
@@ -4529,7 +4535,7 @@ class SentientAgent:
         )
         self.episodic_memory.encode(episode)
         if self._initialized:
-            self._persist_episode(episode)
+            self.persist_episode(episode)
 
     def _redact_messages_for_api(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Redact content/text fields in a message list before API transmission."""
@@ -4558,6 +4564,14 @@ class SentientAgent:
             return value_copy
 
         return value
+
+    @property
+    def respond_lock(self) -> asyncio.Lock:
+        """Public accessor for the global respond lock.
+
+        Used by heartbeat and router for serialized state mutations.
+        """
+        return self._respond_lock
 
     @property
     def status(self) -> dict[str, Any]:

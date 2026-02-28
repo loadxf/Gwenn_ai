@@ -66,7 +66,7 @@ class GwennDaemon:
             max_count=config.daemon.session_max_count,
             max_messages=config.daemon.session_max_messages,
         )
-        # Respond-lock is on the agent itself (agent._respond_lock) so daemon
+        # Respond-lock is on the agent itself (agent.respond_lock) so daemon
         # and platform channels share the same serialisation lock.
 
     async def run(self) -> None:
@@ -365,7 +365,7 @@ class GwennDaemon:
                 text = msg.get("text", "")
                 if not text:
                     return {"type": "error", "req_id": req_id, "message": "empty text"}
-                async with self._agent._respond_lock:
+                async with self._agent.respond_lock:
                     response_text = await self._agent.respond(
                         text,
                         conversation_history=history,
