@@ -21,8 +21,8 @@ from pydantic import BaseModel, Field
 class SubagentPersona(BaseModel):
     """Persona assigned to a subagent for visible swarm communication."""
 
-    name: str
-    role: str
+    name: str = Field(..., max_length=64)
+    role: str = Field(..., max_length=512)
     style: str = "neutral"
     avatar_url: str | None = None
 

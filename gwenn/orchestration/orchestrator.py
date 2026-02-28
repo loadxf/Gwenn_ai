@@ -181,6 +181,10 @@ class Orchestrator:
         self._active_swarms[swarm_id] = swarm
         task_ids: list[str] = []
 
+        # Acquire bots from pool BEFORE spawning tasks so fast-completing
+        # tasks already have their visualization bots assigned (Phase 6).
+        await self._acquire_swarm_bots(swarm_id, swarm.agents)
+
         try:
             for agent_spec in swarm.agents:
                 # Inherit swarm timeout if agent doesn't specify
@@ -193,13 +197,14 @@ class Orchestrator:
             # Cancel any already-spawned agents on partial failure
             for tid in task_ids:
                 await self.cancel(tid)
+            # Release any bots acquired for this swarm
+            await self._release_swarm_bots(
+                swarm_id, [s.task_id for s in swarm.agents]
+            )
             self._active_swarms.pop(swarm_id, None)
             raise
 
         self._swarm_tasks[swarm_id] = task_ids
-
-        # Acquire bots from pool for swarm visualization (Phase 6).
-        await self._acquire_swarm_bots(swarm_id, swarm.agents)
 
         logger.info(
             "orchestration.spawn_swarm",
@@ -325,7 +330,10 @@ class Orchestrator:
         # Release swarm bots back to pool (Phase 6).
         await self._release_swarm_bots(swarm_id, task_ids)
 
-        # Clean up
+        # Clean up swarm-level and per-task tracking entries.
+        for tid in task_ids:
+            self._origin_sessions.pop(tid, None)
+            self._progress.pop(tid, None)
         self._active_swarms.pop(swarm_id, None)
         self._swarm_tasks.pop(swarm_id, None)
 
@@ -432,13 +440,6 @@ class Orchestrator:
                 )
             except asyncio.TimeoutError:
                 logger.warning("orchestrator.shutdown_timeout", remaining=len(self._active_tasks))
-
-        # Release all swarm bots.
-        if self._bot_pool is not None:
-            try:
-                await self._bot_pool.release_all()
-            except Exception:
-                logger.debug("orchestrator.bot_pool_release_error", exc_info=True)
 
         self._active_tasks.clear()
         self._progress.clear()

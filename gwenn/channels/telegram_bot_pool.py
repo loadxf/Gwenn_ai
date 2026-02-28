@@ -27,7 +27,7 @@ logger = structlog.get_logger(__name__)
 class TelegramBotSlot:
     """A pre-registered Telegram bot available for subagent assignment."""
 
-    bot_token: str
+    bot_token: str = field(repr=False)
     bot_id: int = 0
     bot_username: str = ""
     current_persona: SubagentPersona | None = None
@@ -74,8 +74,10 @@ class TelegramBotPool:
         Call once at startup. Populates bot_id and bot_username for
         each slot by calling getMe().
         """
-        if self._initialized:
-            return
+        async with self._lock:
+            if self._initialized:
+                return
+            self._initialized = True  # Set early to prevent re-entry
 
         for slot in self._slots:
             try:
@@ -92,10 +94,9 @@ class TelegramBotPool:
             except Exception as e:
                 logger.warning(
                     "bot_pool.slot_init_failed",
-                    token_prefix=slot.bot_token[:8],
+                    token_prefix=slot.bot_token[:4] + "...",
                     error=str(e),
                 )
-        self._initialized = True
 
     async def acquire(
         self,
@@ -213,6 +214,7 @@ class TelegramBotPool:
 
     async def release_all(self) -> None:
         """Release all active bots back to the pool."""
-        for slot in self._slots:
-            if slot.is_active:
-                await self.release(slot)
+        async with self._lock:
+            active_slots = [s for s in self._slots if s.is_active]
+        for slot in active_slots:
+            await self.release(slot)

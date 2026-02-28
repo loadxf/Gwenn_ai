@@ -308,15 +308,11 @@ class TestSendSwarmMessage:
 
 class TestOrchestratorShutdown:
     @pytest.mark.asyncio
-    async def test_shutdown_releases_bots(self) -> None:
-        mock_pool = AsyncMock()
-        mock_pool.release_all = AsyncMock()
-
+    async def test_shutdown_without_pool_no_crash(self) -> None:
+        """Shutdown works fine without a bot pool."""
         orch = Orchestrator(
             config=MockConfig(),
             runner=MockRunner(),
-            bot_pool=mock_pool,
         )
-
         await orch.shutdown()
-        mock_pool.release_all.assert_called_once()
+        # No error — clean shutdown
