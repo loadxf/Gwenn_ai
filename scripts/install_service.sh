@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # install_service.sh — Install Gwenn as a systemd user service
 #
+# DEPRECATED: Use 'gwenn install' instead. This script will be removed in a future version.
+#
 # Usage: bash scripts/install_service.sh [--dry-run] [--help]
 #
 # Installs the daemon service for the current user, enables it on boot,
 # and injects the absolute socket path into .env so the CLI works from
 # any directory.
+
+echo "WARNING: This script is deprecated. Use 'gwenn install' instead." >&2
+echo "" >&2
 
 set -euo pipefail
 

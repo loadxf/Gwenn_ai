@@ -1927,6 +1927,50 @@ def _run_show_status() -> None:
     asyncio.run(_status())
 
 
+def _run_service_install() -> None:
+    """Install Gwenn as a system service."""
+    from gwenn.service import get_service_manager
+
+    try:
+        mgr = get_service_manager()
+        mgr.install()
+        console.print("[green]Service installed. Start with: gwenn restart[/green]")
+    except NotImplementedError as e:
+        console.print(f"[red]{e}[/red]")
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+    except Exception as e:
+        console.print(f"[red]Install failed: {e}[/red]")
+
+
+def _run_service_uninstall() -> None:
+    """Uninstall the Gwenn system service."""
+    from gwenn.service import get_service_manager
+
+    try:
+        mgr = get_service_manager()
+        mgr.uninstall()
+        console.print("[green]Service uninstalled.[/green]")
+    except NotImplementedError as e:
+        console.print(f"[red]{e}[/red]")
+    except Exception as e:
+        console.print(f"[red]Uninstall failed: {e}[/red]")
+
+
+def _run_service_restart() -> None:
+    """Restart the Gwenn system service."""
+    from gwenn.service import get_service_manager
+
+    try:
+        mgr = get_service_manager()
+        mgr.restart()
+        console.print("[green]Service restarted.[/green]")
+    except NotImplementedError as e:
+        console.print(f"[red]{e}[/red]")
+    except Exception as e:
+        console.print(f"[red]Restart failed: {e}[/red]")
+
+
 def main():
     """Entry point for the gwenn command."""
     configure_logging()
@@ -1936,9 +1980,9 @@ def main():
     parser.add_argument(
         "subcommand",
         nargs="?",
-        choices=["daemon", "stop", "status"],
+        choices=["daemon", "stop", "status", "install", "uninstall", "restart"],
         default=None,
-        help="Subcommand: daemon (start), stop, status",
+        help="Subcommand: daemon (start), stop, status, install, uninstall, restart",
     )
     parser.add_argument(
         "--channel",
@@ -1959,6 +2003,12 @@ def main():
         _run_stop_daemon()
     elif args.subcommand == "status":
         _run_show_status()
+    elif args.subcommand == "install":
+        _run_service_install()
+    elif args.subcommand == "uninstall":
+        _run_service_uninstall()
+    elif args.subcommand == "restart":
+        _run_service_restart()
     else:
         session = GwennSession(
             channel_override=args.channel,

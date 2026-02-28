@@ -52,6 +52,9 @@ gwenn-daemon = "gwenn.daemon:run_daemon"
 where = ["."]
 include = ["gwenn", "gwenn.*"]
 
+[tool.setuptools.package-data]
+gwenn = ["templates/*"]
+
 [tool.setuptools.dynamic]
 version = {attr = "gwenn.__version__"}
 

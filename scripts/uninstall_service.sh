@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # uninstall_service.sh — Remove Gwenn systemd user service
 #
+# DEPRECATED: Use 'gwenn uninstall' instead. This script will be removed in a future version.
+#
 # Usage: bash scripts/uninstall_service.sh [--keep-env] [--help]
 #
 # Stops and disables the daemon service, removes the unit file, and
@@ -8,6 +10,9 @@
 #
 # Does NOT remove gwenn_data/ (contains sessions and memory).
 # Does NOT disable linger (other services may depend on it).
+
+echo "WARNING: This script is deprecated. Use 'gwenn uninstall' instead." >&2
+echo "" >&2
 
 set -euo pipefail
 
