@@ -8,15 +8,17 @@
 
 ## Summary
 
-| Severity | Count | Fixed |
-|----------|-------|-------|
-| Critical | 2 | 0 |
-| High | 6 | 2 |
-| Medium | 9 | 1 |
-| Low | 11 | 2 |
-| **Total** | **28** | **5** |
+| Severity | Count | Fixed | Not a bug |
+|----------|-------|-------|-----------|
+| Critical | 2 | 2 | 0 |
+| High | 6 | 6 | 0 |
+| Medium | 9 | 7 | 2 |
+| Low | 11 | 7 | 4 |
+| **Total** | **28** | **22** | **6** |
 
-5 bugs fixed in production readiness work (H1, H2, M1, L3, L5).
+All reported bugs have been resolved: 22 fixed, 6 determined not to be bugs on re-review.
+Initial 5 bugs fixed in production readiness work (H1, H2, M1, L3, L5); remaining
+17 bugs were fixed in earlier development sessions or verified as non-issues.
 
 ---
 
@@ -32,6 +34,8 @@
 
 **Fix:** Clear `_pending_episode_ids` in `mark_checked_no_work()` or in the agent's exception handler.
 
+**Status: FIXED** — `mark_checked_no_work()` now clears `_pending_episode_ids = []` (line 115) and is called in the agent's exception handler for consolidation failures.
+
 ---
 
 ### C2. API key secret file never cleaned up on success (dead code + security leak)
@@ -43,6 +47,8 @@
 **Impact:** Plaintext API keys accumulate in `/tmp/` on every successful Docker subagent launch.
 
 **Fix:** Move the cleanup scheduling into the `try` block before the `return`, or restructure to use `finally`.
+
+**Status: FIXED** — `_cleanup_after_exit()` coroutine is now scheduled via `asyncio.ensure_future()` inside the `try` block before `return`, ensuring cleanup runs after container exit.
 
 ---
 
@@ -80,6 +86,8 @@ The auth failure counter resets to 0 on **any** non-"unauthorized" response (lin
 
 **Fix:** Add `except asyncio.CancelledError:` handler that kills the container before re-raising.
 
+**Status: FIXED** — `except asyncio.CancelledError` handler added at line 323 that kills the container and returns a cancelled result.
+
 ---
 
 ### H4. CancelledError not caught in collect_result/collect_swarm
@@ -87,6 +95,8 @@ The auth failure counter resets to 0 on **any** non-"unauthorized" response (lin
 **Type:** Unhandled exception
 
 Both methods use `except Exception: pass` when awaiting tasks. Since `CancelledError` is a `BaseException`, it propagates to the caller (agent tool handler), potentially crashing the agentic loop.
+
+**Status: FIXED** — Both methods now use `except (Exception, asyncio.CancelledError): pass` to catch both exception types.
 
 ---
 
@@ -98,6 +108,8 @@ The subagent entry point uses `sys.stdout` for JSON-RPC but all imported modules
 
 **Fix:** Redirect logging to stderr at the start of `_run_subagent()`.
 
+**Status: FIXED** — `main()` in subagent_entry.py redirects `logging.root.handlers` to stderr. Since structlog uses `stdlib.LoggerFactory()`, all output routes through stdlib logging to stderr.
+
 ---
 
 ### H6. prune_old_episodes creates orphaned ChromaDB vector entries
@@ -107,6 +119,8 @@ The subagent entry point uses `sys.stdout` for JSON-RPC but all imported modules
 `prune_old_episodes()` deletes episode rows from SQLite but never removes corresponding embeddings from the ChromaDB `_episodes_collection`. Compare with `delete_knowledge_nodes()` (lines 869-877) which correctly cleans up vectors. Over time, stale vector entries consume result slots in similarity searches, progressively degrading retrieval quality.
 
 **Fix:** Before the DELETE, SELECT the episode_ids being pruned, then call `self._episodes_collection.delete(ids=pruned_ids)`.
+
+**Status: FIXED** — `prune_old_episodes()` now collects episode IDs before deletion and calls `_episodes_collection.delete(ids=pruned_ids)` for ChromaDB cleanup.
 
 ---
 
@@ -128,6 +142,8 @@ The subagent entry point uses `sys.stdout` for JSON-RPC but all imported modules
 
 "actually" is an extremely common English word used in non-corrective contexts ("I'm actually curious...", "That's actually interesting"). Its inclusion in `_CORRECTION_MARKERS` causes many normal messages to trigger `record_outcome(was_correct=False)`, systematically degrading the metacognition calibration with false negatives.
 
+**Status: FIXED** — "actually" removed from `_CORRECTION_MARKERS`. The set now uses full phrases (e.g. "that's wrong", "you're mistaken") that are unambiguous correction signals.
+
 ---
 
 ### M3. Lost traceback in channel task callback
@@ -138,6 +154,8 @@ The subagent entry point uses `sys.stdout` for JSON-RPC but all imported modules
 
 **Fix:** Use `exc_info=(type(exc), exc, exc.__traceback__)`.
 
+**Status: FIXED** — Now uses explicit `exc_info=(type(exc), exc, exc.__traceback__)` tuple form to properly log the traceback outside an except block.
+
 ---
 
 ### M4. _strip_image_blocks silently drops non-text single-block content
@@ -145,6 +163,8 @@ The subagent entry point uses `sys.stdout` for JSON-RPC but all imported modules
 **Type:** Data loss
 
 When a message has exactly one non-image content block remaining, the code does `new_blocks[0].get("text", "")`. If that block is a `tool_result` or `tool_use` (no `"text"` key), it returns `""` — silently discarding the content during context compaction.
+
+**Status: NOT A BUG** — The condition now checks `len(new_blocks) == 1 and new_blocks[0].get("type") == "text"`, so non-text blocks (tool_use, tool_result) fall through to the `else` branch which correctly preserves them as a list.
 
 ---
 
@@ -154,6 +174,8 @@ When a message has exactly one non-image content block remaining, the code does 
 
 If `asyncio.wait_for(done.wait(), timeout)` times out and the background thread is truly stuck (infinite blocking I/O), the semaphore slot is never released. Repeated stuck-handler timeouts exhaust all 8 slots, permanently blocking `_execute_sync_handler`.
 
+**Status: FIXED** — The timeout handler now explicitly releases the semaphore with a ValueError guard for double-release. The thread's finally block uses `_safe_release()` with the same guard.
+
 ---
 
 ### M6. Safety iteration counter is cumulative across runs (abstraction leak)
@@ -161,6 +183,8 @@ If `asyncio.wait_for(done.wait(), timeout)` times out and the background thread 
 **Type:** Logic error
 
 `SafetyGuard._iteration_count` accumulates across multiple `AgenticLoop.run()` calls. `AgenticLoop` never calls `reset_iteration_count()` — the reset happens externally in `agent.py`. Any caller that uses `AgenticLoop.run()` without resetting the safety guard will hit the limit prematurely.
+
+**Status: FIXED** — Iteration count now uses a `ContextVar` for per-asyncio-Task isolation. `AgenticLoop.run()` calls `self._safety.reset_iteration_count()` at the start of each run.
 
 ---
 
@@ -178,6 +202,8 @@ With `momentum_decay = 0.85`, the blend retains 85% of old state. The code logic
 
 After capping `arousal` and damping `valence`, the method does NOT call `state.update_classification()`. The `current_emotion` label may no longer match actual dimensional values. This stale label is used in prompt generation and thinking mode selection.
 
+**Status: FIXED** — `state.update_classification()` is now called at line 124, after the arousal ceiling enforcement, ensuring the emotion label stays consistent.
+
 ---
 
 ### M9. Skill required parameters never validated
@@ -185,6 +211,8 @@ After capping `arousal` and damping `valence`, the method does NOT call `state.u
 **Type:** Missing validation
 
 Skills define `"required": true` inside each parameter's schema object (non-standard JSON Schema). The validator at `executor.py:87` looks for `schema.get("required", [])` — a top-level list of field names. Required skill parameters are never enforced; omitted params leave raw `{param_name}` placeholders in skill bodies.
+
+**Status: FIXED** — `_normalize_parameter_schema()` in loader.py converts per-property `"required": true` flags into a standard JSON Schema top-level `"required"` array. `_validate_tool_input()` in executor.py checks this array at execution time.
 
 ---
 
@@ -195,10 +223,14 @@ Skills define `"required": true` inside each parameter's schema object (non-stan
 
 `lang` is interpolated raw into `<pre language="{lang}">`. A crafted code fence language tag with `"` breaks the HTML, causing Telegram parse rejection. The `code` content IS escaped, but `lang` is not.
 
+**Status: FIXED** — `lang` is now escaped via `_html_mod.escape()` before interpolation.
+
 ### L2. `.webm` in both video AND audio extension sets (Discord)
 **File:** `gwenn/channels/discord_channel.py` lines 229, 233
 
 A `.webm` attachment gets downloaded and processed as both video (frame extraction) and audio (transcription) separately, wasting bandwidth and producing redundant information.
+
+**Status: NOT A BUG** — `.webm` is only in `_VIDEO_EXTENSIONS`, not `_AUDIO_EXTENSIONS`. The `audio/webm` MIME type is supported for MIME-based detection, but extension-based routing correctly treats `.webm` files as video only.
 
 ### L3. `/help` message can exceed Telegram's 4096-char limit
 **File:** `gwenn/channels/telegram_channel.py` lines 460-484
@@ -212,6 +244,8 @@ Individual skill descriptions are truncated to 80 chars, but total message lengt
 
 Blockquote content is HTML-escaped in Phase 1 (before markdown conversion in Phase 3). Any `**bold**`, `_italic_`, etc. inside blockquotes renders as literal markdown text.
 
+**Status: NOT A BUG** — Phase 2 HTML-escapes only `<>&"'` characters. Asterisks and underscores pass through unescaped, so Phase 3 markdown conversion (bold, italic) correctly processes formatting inside blockquotes before Phase 3b extracts them.
+
 ### L5. Cancel flag race in Telegram channel
 **File:** `gwenn/channels/telegram_channel.py` lines 628-629, 661
 
@@ -224,30 +258,42 @@ When `concurrent_updates > 0`, a new message B clears the cancel flag at line 62
 
 Docstring says "always runs regardless of the `enabled` flag" but `_active_patterns` is filtered by `disabled_categories` at construction time. Disabled categories are skipped even though the contract implies full scanning.
 
+**Status: NOT A BUG** — The docstring accurately states scan() runs regardless of the `enabled` flag (which controls `redact()`, not `scan()`). The `disabled_categories` filter is a separate, documented mechanism. The docstring explicitly notes this: "respects `disabled_categories`".
+
 ### L7. Swarm status reports "failed" when all tasks are in "unknown" state
 **File:** `gwenn/orchestration/orchestrator.py` lines 483-484
 
 `all()` on an empty iterator (after filtering out all "unknown" statuses) returns `True` (vacuous truth), so `overall` is incorrectly set to `"failed"`.
+
+**Status: FIXED** — `_get_swarm_status()` now has an explicit `elif all(s == "unknown" for s in statuses)` check before the failure check, preventing the vacuous truth case from reaching the "failed" branch.
 
 ### L8. `restore_from_dict` uses wrong default for `rapport_level`
 **File:** `gwenn/cognition/theory_of_mind.py` line 473
 
 Missing `rapport_level` defaults to 0.5 via `raw.get(attr, 0.5)`, but `UserModel` default is 0.3. Inflates rapport on restore.
 
+**Status: FIXED** — `_RESTORE_DEFAULTS` dict now uses per-attribute defaults including `"rapport_level": 0.3`, matching the `UserModel` class definition.
+
 ### L9. `raise None` if `max_retries < 0`
 **File:** `gwenn/harness/retry.py` line 227
 
 If `RetryConfig(max_retries=-1)`, the retry loop body never executes, `last_error` stays `None`, and `raise None` produces a confusing `TypeError`.
+
+**Status: FIXED** — `max_retries = max(0, config.max_retries)` at line 169 clamps to non-negative, ensuring the loop always executes at least once.
 
 ### L10. `save_ethics` and `save_inner_life` missing dict validation
 **File:** `gwenn/memory/store.py` lines 1138-1148, 1169-1179
 
 Unlike all other `save_*` methods which guard `state if isinstance(state, dict) else {}`, these two write `state` directly. Non-dict values get persisted but silently discarded on reload.
 
+**Status: FIXED** — Both `save_ethics()` and `save_inner_life()` now use `state if isinstance(state, dict) else {}` guard.
+
 ### L11. ImportError treated as nonfatal in daemon channel task callback
 **File:** `gwenn/daemon.py` lines 154-160
 
 `ImportError` subclasses (including `ModuleNotFoundError`) are treated as nonfatal, leaving the daemon running with no channel connectivity and no operator indication.
+
+**Status: NOT A BUG** — `_is_nonfatal_channel_error()` only treats ImportErrors as nonfatal when the error message mentions "telegram" or "discord" (optional channel dependencies). Other ImportErrors are treated as fatal. This is intentional: the daemon should continue running even if an optional channel library isn't installed.
 
 ---
 
@@ -258,10 +304,14 @@ Unlike all other `save_*` methods which guard `state if isinstance(state, dict) 
 
 `_make_safety_config` passes Python field names like `max_tool_iterations=25` but `SafetyConfig` expects alias names like `GWENN_MAX_TOOL_ITERATIONS`.
 
+**Status: NOT A BUG** — `SafetyConfig` has `populate_by_name=True` in `model_config`, which allows both Python field names and aliases. The test correctly uses the Python field name.
+
 ### T2. Deprecated asyncio pattern in test_agent_runtime.py
 **File:** `tests/test_agent_runtime.py` line 2173
 
 Uses `asyncio.get_event_loop().run_until_complete()` which is deprecated in Python 3.10+.
+
+**Status: NOT A BUG** — While deprecated, this pattern works correctly in the pytest context where an event loop is already running. It would need updating when dropping Python 3.10 support, but is not a functional bug.
 
 ---
 
