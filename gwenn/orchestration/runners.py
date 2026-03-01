@@ -97,7 +97,10 @@ class InProcessSubagentRunner(SubagentRunnerBase):
             # Set filesystem access paths for this subagent task
             from gwenn.tools.filesystem_context import ALLOWED_FS_PATHS
 
-            ALLOWED_FS_PATHS.set(None)  # Unrestricted filesystem access
+            if spec.filesystem_access:
+                ALLOWED_FS_PATHS.set(tuple(Path(p).resolve() for p in spec.filesystem_access))
+            else:
+                ALLOWED_FS_PATHS.set(())  # No filesystem access if none granted
 
             # Build per-subagent safety guard with restricted budget
             # Disable require_approval_for since subagents can't prompt humans
@@ -255,7 +258,10 @@ class DockerSubagentRunner(SubagentRunnerBase):
             # Set filesystem access paths for proxied tool calls
             from gwenn.tools.filesystem_context import ALLOWED_FS_PATHS
 
-            ALLOWED_FS_PATHS.set(None)  # Unrestricted filesystem access
+            if spec.filesystem_access:
+                ALLOWED_FS_PATHS.set(tuple(Path(p).resolve() for p in spec.filesystem_access))
+            else:
+                ALLOWED_FS_PATHS.set(())  # No filesystem access if none granted
 
             # Launch container
             container_name, proc = await self._docker.run_container(spec, self._api_key)

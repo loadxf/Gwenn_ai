@@ -250,11 +250,24 @@ class SlackChannel(BaseChannel):
         )
 
         async with self._get_scope_lock(scope_key):
-            response = await self.handle_message(
-                user, text, session_scope_key=scope_key,
-            )
+            try:
+                response = await self.handle_message(
+                    user, text, session_scope_key=scope_key,
+                )
+            except Exception as exc:
+                logger.error("slack_channel.respond_error", error=str(exc), exc_info=True)
+                try:
+                    await say(
+                        text="I encountered an error processing your message. Please try again.",
+                        thread_ts=thread_ts or event.get("ts"),
+                    )
+                except Exception:
+                    pass
+                return
 
         reply_text = str(response)
+        if not reply_text or not reply_text.strip():
+            reply_text = "I processed your message but didn't generate a response. Could you try rephrasing?"
         # Reply in thread if this was a threaded message or channel message
         reply_thread_ts = thread_ts or event.get("ts")
         for chunk in _chunk_text(reply_text):

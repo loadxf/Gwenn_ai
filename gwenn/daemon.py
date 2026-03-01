@@ -360,6 +360,10 @@ class GwennDaemon:
             await self._send(writer, response)
 
             # Disconnect after repeated auth failures to prevent brute-force.
+            # Never reset the counter — a legitimate client should not fail
+            # auth repeatedly on a single connection.  Resetting on success
+            # allowed attackers to interleave valid requests to probe
+            # indefinitely.
             if response.get("message") == "unauthorized":
                 auth_failures += 1
                 if auth_failures >= self._MAX_AUTH_FAILURES:
@@ -368,8 +372,6 @@ class GwennDaemon:
                         failures=auth_failures,
                     )
                     break
-            elif msg_type == "chat" and response.get("type") != "error":
-                auth_failures = 0
 
             if msg_type == "stop":
                 break

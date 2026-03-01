@@ -162,6 +162,7 @@ class _StdioTransport(_BaseTransport):
         self._process = process
         self._request_id = 0
         self._io_lock = asyncio.Lock()
+        self._broken = False
         self._stderr_task: Optional[asyncio.Task] = None
         if self._process.stderr is not None:
             self._stderr_task = asyncio.create_task(self._drain_stderr())
@@ -249,6 +250,11 @@ class _StdioTransport(_BaseTransport):
         return parsed
 
     async def request(self, method: str, params: Optional[dict[str, Any]] = None) -> Any:
+        if self._broken:
+            raise RuntimeError(
+                f"MCP stdio transport for '{self._config.name}' is broken "
+                f"(previous timeout corrupted the stream). Restart the server."
+            )
         async with self._io_lock:
             self._request_id += 1
             request_id = self._request_id
@@ -269,6 +275,8 @@ class _StdioTransport(_BaseTransport):
                         timeout=max(0.1, float(self._config.timeout_seconds)),
                     )
                 except asyncio.TimeoutError as exc:
+                    # Stream is now corrupt — mark transport as broken
+                    self._broken = True
                     raise RuntimeError(
                         f"MCP stdio request '{method}' timed out after "
                         f"{self._config.timeout_seconds}s on server '{self._config.name}'."
@@ -347,6 +355,13 @@ class MCPClient:
                         f"Unsupported MCP transport '{config.transport}' for server '{config.name}'."
                     )
 
+                # Close any existing transport for this name (duplicate config)
+                existing = self._transports.get(config.name)
+                if existing is not None:
+                    try:
+                        await existing.close()
+                    except Exception:
+                        pass
                 self._transports[config.name] = transport
                 self._connected.add(config.name)
 

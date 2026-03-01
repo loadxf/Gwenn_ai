@@ -1290,7 +1290,7 @@ async def test_integrate_skips_already_processed_subagent():
     )
     agent.orchestrator = orchestrator
     heartbeat = Heartbeat(HeartbeatConfig(), agent)
-    heartbeat._processed_subagent_ids.add("task-dup")  # pre-mark as processed
+    heartbeat._processed_subagent_ids["task-dup"] = None  # pre-mark as processed
 
     await heartbeat._integrate(ThinkingMode.REFLECT, "R" * 80)
 
@@ -1316,7 +1316,7 @@ async def test_integrate_subagent_prunes_processed_ids():
     # Fill the set beyond max so adding one more triggers pruning
     heartbeat._max_processed_ids = 5
     for i in range(6):
-        heartbeat._processed_subagent_ids.add(f"old-{i}")
+        heartbeat._processed_subagent_ids[f"old-{i}"] = None
 
     before = len(heartbeat._processed_subagent_ids)
     assert before == 6

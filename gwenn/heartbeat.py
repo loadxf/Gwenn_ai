@@ -124,7 +124,7 @@ class Heartbeat:
 
         # Track already-processed subagent results to avoid duplicates.
         # Bounded to prevent unbounded growth over long runtimes.
-        self._processed_subagent_ids: set[str] = set()
+        self._processed_subagent_ids: dict[str, None] = {}
         self._max_processed_ids = 2000
 
         # Interoceptive monitor (system self-awareness)
@@ -283,6 +283,10 @@ class Heartbeat:
             ),
         )
 
+        from gwenn.privacy.redaction import PIIRedactor
+        _gw_redactor = PIIRedactor(
+            enabled=getattr(self._full_config.daemon, "redact_session_content", False)
+        )
         self._gateway = GatewayServer(
             config=self._full_config.daemon,
             router=self._router,
@@ -291,6 +295,7 @@ class Heartbeat:
             auth_token=(self._full_config.daemon.auth_token or "").strip() or None,
             shutdown_callback=self._request_shutdown,
             heartbeat=self,
+            redactor=_gw_redactor,
         )
 
         host = self._full_config.daemon.gateway_host
@@ -330,6 +335,7 @@ class Heartbeat:
                         self._agent, checkpoint
                     )
                     self._beat_count = checkpoint.beat_count
+                    self._checkpoint_manager.set_last_checkpoint_beat(checkpoint.beat_count)
                     if self._event_bus is not None:
                         import time as _time
                         from gwenn.events import CheckpointRestoredEvent
@@ -1137,12 +1143,10 @@ class Heartbeat:
                 for result in completed:
                     if result.task_id in self._processed_subagent_ids:
                         continue
-                    self._processed_subagent_ids.add(result.task_id)
-                    # Prune oldest entries if set exceeds bound
-                    if len(self._processed_subagent_ids) > self._max_processed_ids:
-                        excess = len(self._processed_subagent_ids) - self._max_processed_ids
-                        to_remove = list(self._processed_subagent_ids)[:excess]
-                        self._processed_subagent_ids -= set(to_remove)
+                    self._processed_subagent_ids[result.task_id] = None
+                    # Prune oldest entries if dict exceeds bound
+                    while len(self._processed_subagent_ids) > self._max_processed_ids:
+                        self._processed_subagent_ids.pop(next(iter(self._processed_subagent_ids)))
                     if result.status == "completed" and result.result_text:
                         from gwenn.memory.episodic import Episode as _Ep
 

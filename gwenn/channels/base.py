@@ -291,6 +291,17 @@ class BaseChannel(ABC):
             self._agent._session_respond_locks = locks  # type: ignore[attr-defined]
         if session_id not in locks:
             locks[session_id] = asyncio.Lock()
+            # Evict oldest unlocked entries to prevent unbounded growth
+            _MAX_SESSION_LOCKS = 512
+            while len(locks) > _MAX_SESSION_LOCKS:
+                evicted = False
+                for key in list(locks):
+                    if not locks[key].locked():
+                        del locks[key]
+                        evicted = True
+                        break
+                if not evicted:
+                    break
         return locks[session_id]
 
     async def handle_message(

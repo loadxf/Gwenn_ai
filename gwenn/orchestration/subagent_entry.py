@@ -163,6 +163,17 @@ async def main() -> None:
     handler.setLevel(logging.DEBUG)
     logging.root.handlers = [handler]
 
+    # Also redirect structlog output to stderr so that any module using
+    # structlog.get_logger() does not pollute the JSON-RPC stdout channel.
+    # Without this, structlog's default PrintLogger writes to stdout, bypassing
+    # the stdlib handler above and corrupting the JSON-RPC protocol.
+    import structlog as _structlog
+    _structlog.configure(
+        wrapper_class=_structlog.stdlib.BoundLogger,
+        logger_factory=_structlog.stdlib.LoggerFactory(),
+    )
+
+
     # Read the initial subagent/run request
     line = sys.stdin.readline()
     if not line:

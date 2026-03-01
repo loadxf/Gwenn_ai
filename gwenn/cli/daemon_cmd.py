@@ -24,6 +24,10 @@ def daemon_cmd(channel: str | None) -> None:
     from gwenn.heartbeat import Heartbeat
 
     config = GwennConfig()
+    if channel and channel != "all":
+        config.channel.cli_enabled = channel == "cli"
+        config.channel.telegram_enabled = channel == "telegram"
+        config.channel.discord_enabled = channel == "discord"
     hb = Heartbeat(config)
 
     import asyncio

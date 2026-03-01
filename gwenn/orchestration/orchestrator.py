@@ -254,7 +254,10 @@ class Orchestrator:
             task = self._active_tasks[task_id]
             try:
                 await task
-            except (Exception, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelled():
+                    raise
+            except Exception:
                 pass
             # Yield so the done-callback can populate _completed_results
             await asyncio.sleep(0)
@@ -285,7 +288,10 @@ class Orchestrator:
             if tid in self._active_tasks:
                 try:
                     await self._active_tasks[tid]
-                except (Exception, asyncio.CancelledError):
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelled():
+                        raise
+                except Exception:
                     pass
         # Yield so done-callbacks can populate _completed_results
         await asyncio.sleep(0)
@@ -304,7 +310,9 @@ class Orchestrator:
 
         # Determine overall status
         statuses = [r.status for r in individual]
-        if all(s == "completed" for s in statuses):
+        if not statuses:
+            overall = "failed"
+        elif all(s == "completed" for s in statuses):
             overall = "completed"
         elif all(s in {"failed", "timeout", "cancelled"} for s in statuses):
             overall = "failed"
@@ -635,6 +643,7 @@ class Orchestrator:
             oldest_key = next(iter(self._completed_results))
             del self._completed_results[oldest_key]
             self._origin_sessions.pop(oldest_key, None)
+            self._progress.pop(oldest_key, None)
 
         # Update progress
         progress = self._progress.get(task_id)

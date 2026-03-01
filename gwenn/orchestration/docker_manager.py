@@ -59,6 +59,7 @@ class DockerManager:
             # Resolve relative to the package root, not the working directory.
             self._project_root = Path(__file__).resolve().parent.parent.parent
         self._available: Optional[bool] = None
+        self._cleanup_tasks: set[asyncio.Task] = set()
 
     async def check_available(self) -> bool:
         """Check if Docker is available on this system."""
@@ -143,11 +144,10 @@ class DockerManager:
         """
         container_name = f"gwenn-sub-{spec.task_id}"
 
-        # Create temporary secret file for API key with restricted permissions
-        secret_path = os.path.join(
-            tempfile.gettempdir(), f"gwenn_secret_{spec.task_id}.key"
-        )
-        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        # Create temporary secret file for API key with restricted permissions.
+        # Use mkstemp for an unpredictable filename instead of a guessable
+        # path based on task_id.
+        fd, secret_path = tempfile.mkstemp(prefix="gwenn_secret_", suffix=".key")
         try:
             with os.fdopen(fd, "w") as secret_file:
                 secret_file.write(api_key)
@@ -200,13 +200,17 @@ class DockerManager:
                 network=self._network,
             )
 
-            # Schedule cleanup after container process completes
+            # Schedule cleanup after container process completes.
+            # Store the task reference so exceptions are not silently lost
+            # and the task can be cancelled during shutdown.
             async def _cleanup_after_exit() -> None:
                 try:
                     await proc.wait()
                 finally:
                     self._cleanup_secret(secret_path)
-            asyncio.ensure_future(_cleanup_after_exit())
+            task = asyncio.ensure_future(_cleanup_after_exit())
+            self._cleanup_tasks.add(task)
+            task.add_done_callback(self._cleanup_tasks.discard)
 
             return container_name, proc
 
@@ -295,6 +299,12 @@ class DockerManager:
 
     async def cleanup_all(self) -> None:
         """Kill all subagent containers owned by this process."""
+        # Cancel secret-cleanup tasks so they don't race with container kills.
+        for task in list(self._cleanup_tasks):
+            task.cancel()
+        if self._cleanup_tasks:
+            await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
+            self._cleanup_tasks.clear()
         try:
             proc = await asyncio.create_subprocess_exec(
                 "docker",

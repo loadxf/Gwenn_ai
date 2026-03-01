@@ -68,6 +68,7 @@ class KnowledgeNode:
         """Slowly decay confidence for unused knowledge."""
         elapsed_hours = (time.time() - self.last_updated) / 3600
         self.confidence = max(0.05, self.confidence - rate * elapsed_hours)
+        self.last_updated = time.time()
 
 
 @dataclass

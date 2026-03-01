@@ -73,6 +73,7 @@ class GatewayServer:
         auth_token: str | None = None,
         shutdown_callback: Callable[[str], None] | None = None,
         heartbeat: Any = None,
+        redactor: Any = None,
     ) -> None:
         self._config = config
         self._router = router
@@ -81,13 +82,13 @@ class GatewayServer:
         self._auth_token = (auth_token or "").strip() or None
         self._shutdown_callback = shutdown_callback
         self._heartbeat = heartbeat
+        self._redactor = redactor
 
         self._max_connections = max(1, config.max_connections)
         self._connection_timeout = max(1.0, config.connection_timeout)
 
         # Active connection tracking
         self._connections: dict[str, ClientConnection] = {}
-        self._connection_count = 0
 
         # Fire-and-forget push tasks (tracked to cancel on shutdown)
         self._push_tasks: set[asyncio.Task[None]] = set()
@@ -284,7 +285,6 @@ class GatewayServer:
             await ws.close()
             return ws
 
-        self._connection_count += 1
         conn = ClientConnection(
             conn_id=uuid.uuid4().hex[:12],
             ws=ws,
@@ -472,9 +472,13 @@ class GatewayServer:
             self._event_bus.unsubscribe(sub_id)
             # Save session on disconnect
             if conn.history:
+                text_filter = None
+                if self._redactor and getattr(self._redactor, "enabled", False):
+                    text_filter = self._redactor.redact
                 self._session_store.save_session(
                     conn.history,
                     conn.started_at,
+                    text_filter=text_filter,
                 )
             self._connections.pop(conn.conn_id, None)
 

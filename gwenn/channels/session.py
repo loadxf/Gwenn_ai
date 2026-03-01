@@ -103,7 +103,7 @@ class SessionManager:
             if isinstance(msg, dict) and msg.get("role") == "user":
                 # A tool_result content is not a new turn
                 content = msg.get("content")
-                if isinstance(content, list) and all(
+                if isinstance(content, list) and content and all(
                     isinstance(b, dict) and b.get("type") == "tool_result"
                     for b in content
                 ):

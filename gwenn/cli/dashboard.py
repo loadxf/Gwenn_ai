@@ -96,7 +96,7 @@ async def dashboard_cmd(ctx: click.Context, interval: int) -> None:
         with Live(
             Panel(render_dashboard(), title="Gwenn Dashboard"),
             console=console,
-            refresh_per_second=max(1, 1000 // interval),
+            refresh_per_second=max(1, 1000 // max(1, interval)),
         ) as live:
             update_task = asyncio.create_task(
                 _update_state(conn, state, live, render_dashboard, interval)

@@ -98,7 +98,7 @@ class WorkingMemory:
     """
 
     def __init__(self, max_slots: int = 7):
-        self._max_slots = max_slots
+        self._max_slots = max(1, max_slots)
         self._items: dict[str, WorkingMemoryItem] = {}
         self._eviction_callback = None  # Optional callback when items are evicted
         self._next_id = 0

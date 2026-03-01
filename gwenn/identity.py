@@ -443,10 +443,11 @@ class Identity:
             domain=domain,
             significance=significance,
         ))
-        # Keep only the 100 most significant growth moments
+        # Keep only the 100 most significant growth moments, preserving temporal order
         if len(self.growth_moments) > 100:
             self.growth_moments.sort(key=lambda g: -g.significance)
             self.growth_moments = self.growth_moments[:100]
+            self.growth_moments.sort(key=lambda g: g.timestamp)
         self._save()
         logger.info("identity.growth_recorded", domain=domain, description=description[:80])
 
@@ -531,7 +532,7 @@ class Identity:
                 }
                 for g in self.growth_moments[-100:]  # save last 100 (matches record_growth trim)
             ],
-            "narrative_fragments": self.narrative_fragments[-20:],
+            "narrative_fragments": self.narrative_fragments[-30:],
             "milestones": [
                 {
                     "name": m.name,

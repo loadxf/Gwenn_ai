@@ -763,8 +763,8 @@ class TestDispatchLoop:
         for call in d._send.await_args_list:
             assert call.args[1]["message"] == "unauthorized"
 
-    async def test_successful_chat_resets_auth_failures(self, tmp_path: Path) -> None:
-        """Successful chat should reset auth failure counter."""
+    async def test_auth_failures_accumulate_across_successes(self, tmp_path: Path) -> None:
+        """Auth failure counter must never reset — prevents brute-force interleaving."""
         d = _make_daemon(tmp_path)
         d._auth_token = "secret"
         d._send = AsyncMock()
@@ -773,9 +773,9 @@ class TestDispatchLoop:
             # Two auth failures
             json.dumps({"type": "ping", "req_id": "r1"}).encode() + b"\n",
             json.dumps({"type": "ping", "req_id": "r2"}).encode() + b"\n",
-            # Successful chat resets counter
+            # Successful chat — counter stays at 2
             json.dumps({"type": "chat", "text": "hello", "auth_token": "secret", "req_id": "r3"}).encode() + b"\n",
-            # Two more auth failures — should NOT hit max (3) since counter was reset
+            # One more auth failure — counter hits 3 (MAX), connection dropped
             json.dumps({"type": "ping", "req_id": "r4"}).encode() + b"\n",
             json.dumps({"type": "ping", "req_id": "r5"}).encode() + b"\n",
             b"",  # disconnect
@@ -793,8 +793,8 @@ class TestDispatchLoop:
         writer = MagicMock()
 
         await d._dispatch_loop(reader, writer, [])
-        # We should have processed all 5 messages (2 fail + 1 success + 2 fail)
-        assert d._send.await_count == 5
+        # Only 4 messages processed: 2 fail + 1 success + 1 fail (hits max)
+        assert d._send.await_count == 4
 
     async def test_stop_message_breaks_loop(self, tmp_path: Path) -> None:
         """A 'stop' message type should break the dispatch loop."""

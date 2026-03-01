@@ -153,7 +153,7 @@ class ToolProxyServer:
                 # Return to orchestrator for handling
                 return data
 
-            elif "result" in data and method is None:
+            elif data.get("result") is not None and method is None:
                 # Final result from the subagent
                 return data
 

@@ -46,7 +46,7 @@ class RedactionResult:
 PII_PATTERNS: list[tuple[str, re.Pattern, str]] = [
     (
         "email",
-        re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
+        re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'),
         "[REDACTED_EMAIL]",
     ),
     (
@@ -169,7 +169,11 @@ class PIIRedactor:
 
     def scan(self, text: str) -> RedactionResult:
         """
-        Scan text for PII without modifying it. Returns detection results.
+        Scan text for PII and return detection results.
+
+        The input *text* is not mutated, but the returned
+        :class:`RedactionResult` includes a ``redacted_length`` field
+        computed from an internal redacted copy.
 
         Note: scan() runs regardless of the ``enabled`` flag, but respects
         ``disabled_categories`` — patterns in disabled categories are not checked.
@@ -184,11 +188,10 @@ class PIIRedactor:
         redacted = text
 
         for name, pattern, replacement in self._active_patterns:
-            matches = pattern.findall(text)
-            if matches:
-                redactions += len(matches)
+            redacted, count = pattern.subn(replacement, redacted)
+            if count:
+                redactions += count
                 categories.append(name)
-                redacted = pattern.sub(replacement, redacted)
 
         return RedactionResult(
             original_length=len(text),

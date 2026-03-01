@@ -3543,13 +3543,18 @@ class SentientAgent:
                         stderr=asyncio.subprocess.PIPE,
                         cwd=cwd,
                     )
-                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        proc.communicate(), timeout=timeout
-                    )
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-                    return f"Command timed out after {timeout}s.\nCommand: {command}"
+                    try:
+                        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                            proc.communicate(), timeout=timeout
+                        )
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                        return f"Command timed out after {timeout}s.\nCommand: {command}"
+                    except BaseException:
+                        proc.kill()
+                        await proc.wait()
+                        raise
                 except OSError as exc:
                     return f"Failed to execute command: {exc}"
 
@@ -3788,6 +3793,8 @@ class SentientAgent:
                 # Cap at 100k chars
                 if len(content) > 100_000:
                     content = content[:100_000] + "\n... [truncated at 100 000 chars]"
+                if not selected:
+                    return f"# {resolved}  (no content at offset {offset}; file has {total} lines)"
                 return (
                     f"# {resolved}  (lines {offset}–{offset + len(selected) - 1}"
                     f" of {total})\n{content}"

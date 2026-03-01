@@ -330,9 +330,14 @@ class TelegramChannel(BaseChannel):
                 return False
             thread_id = int(thread_id_str)
             for chunk in format_for_telegram(text):
-                await self._app.bot.send_message(
-                    chat_id=chat_id, text=chunk,
-                    message_thread_id=thread_id, parse_mode=TELEGRAM_PARSE_MODE)
+                try:
+                    await self._app.bot.send_message(
+                        chat_id=chat_id, text=chunk,
+                        message_thread_id=thread_id, parse_mode=TELEGRAM_PARSE_MODE)
+                except Exception:
+                    await self._app.bot.send_message(
+                        chat_id=chat_id, text=strip_html_tags(chunk),
+                        message_thread_id=thread_id)
             return True
         elif scope.startswith("chat:"):
             chat_id_str = scope[len("chat:"):]

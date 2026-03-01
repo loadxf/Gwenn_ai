@@ -104,9 +104,16 @@ class RequestRouter:
                 return self._session_locks[session_id]
             lock = asyncio.Lock()
             self._session_locks[session_id] = lock
-            # Evict oldest if over capacity
+            # Evict oldest unlocked entry if over capacity
             while len(self._session_locks) > self._max_session_locks:
-                self._session_locks.popitem(last=False)
+                evicted = False
+                for key in list(self._session_locks):
+                    if not self._session_locks[key].locked():
+                        del self._session_locks[key]
+                        evicted = True
+                        break
+                if not evicted:
+                    break  # All locks held; allow temporary overshoot
             return lock
         return self._respond_lock
 

@@ -551,12 +551,23 @@ class DiscordChannel(BaseChannel):
                         )
                         return
 
+                    # Guard against empty responses
+                    response_text = str(response)
+                    if not response_text or not response_text.strip():
+                        await message.reply(
+                            "I processed your message but didn't generate a response. "
+                            "Could you try rephrasing?",
+                            mention_author=False,
+                            allowed_mentions=no_mentions,
+                        )
+                        return
+
                     # Send chunks inside the typing() context so the indicator
                     # stays active until the last chunk is delivered.
                     # Only the first chunk is a reply (anchors the context);
                     # subsequent chunks are plain channel sends to avoid a
                     # wall of reply arrows pointing at the original message.
-                    chunks = format_for_discord(str(response))
+                    chunks = format_for_discord(response_text)
                     try:
                         for i, chunk in enumerate(chunks):
                             if i == 0:

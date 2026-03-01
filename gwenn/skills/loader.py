@@ -199,9 +199,10 @@ def render_skill_body(body: str, params: dict[str, Any]) -> str:
             encoded = json.dumps(str(value), ensure_ascii=False)
             return encoded[1:-1]
 
-    result = body
-    for key, value in params.items():
-        result = result.replace(f"{{{key}}}", _safe_value(value))
+    import re as _re
+    safe_params = {k: _safe_value(v) for k, v in params.items()}
+    _pattern = _re.compile(r"\{(" + "|".join(_re.escape(k) for k in safe_params) + r")\}")
+    result = _pattern.sub(lambda m: safe_params[m.group(1)], body)
 
     if params:
         result = _INJECTION_PREAMBLE + result

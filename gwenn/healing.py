@@ -203,7 +203,7 @@ class SelfHealingEngine:
                 self._recent_actions.append(action)
                 self._action_timestamps.append(time.monotonic())
                 # Set cooldown
-                self._cooldowns[cooldown_key] = now_mono + self._config.cooldown_seconds
+                self._cooldowns[cooldown_key] = time.monotonic() + self._config.cooldown_seconds
 
                 self._event_bus.emit(SelfHealEvent(
                     issue_id=issue.issue_id,
@@ -332,7 +332,7 @@ class SelfHealingEngine:
             if callable(unreg):
                 unreg(crashed)
         except Exception:
-            pass
+            logger.warning("healing.channel_unregister_failed", component=component, exc_info=True)
 
         # Re-build and start the channel
         try:

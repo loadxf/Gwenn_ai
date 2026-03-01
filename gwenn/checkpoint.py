@@ -65,6 +65,10 @@ class CheckpointManager:
         self._interval_beats = max(1, interval_beats)
         self._last_checkpoint_beat: int = 0
 
+    def set_last_checkpoint_beat(self, beat: int) -> None:
+        """Update baseline beat count (e.g. after restoring a checkpoint)."""
+        self._last_checkpoint_beat = beat
+
     def should_checkpoint(self, beat_count: int) -> bool:
         """Return True if enough beats have passed since last checkpoint."""
         return (beat_count - self._last_checkpoint_beat) >= self._interval_beats
@@ -374,12 +378,15 @@ class CheckpointManager:
             for key in ("valence", "arousal", "dominance", "certainty", "goal_congruence"):
                 if key in baseline:
                     setattr(affect.baseline, key, clamp(baseline[key]))
-        # Restore momentum
+        # Restore momentum (scalar float in current schema)
         momentum = data.get("momentum")
-        if momentum and hasattr(affect, "momentum"):
-            for key in ("valence", "arousal", "dominance"):
-                if key in momentum:
-                    setattr(affect.momentum, key, clamp(momentum[key]))
+        if momentum is not None and hasattr(affect, "momentum"):
+            if isinstance(momentum, (int, float)):
+                affect.momentum = float(momentum)
+            elif isinstance(momentum, dict):
+                for key in ("valence", "arousal", "dominance"):
+                    if key in momentum:
+                        setattr(affect.momentum, key, clamp(momentum[key]))
         # Re-classify emotion after restoring dimensions
         if hasattr(affect, "update_classification"):
             affect.update_classification()

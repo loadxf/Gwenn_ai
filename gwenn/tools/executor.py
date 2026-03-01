@@ -344,6 +344,7 @@ class ToolExecutor:
         loop = asyncio.get_running_loop()
         done = asyncio.Event()
         result_box: dict[str, Any] = {}
+        released = threading.Event()
 
         def _invoke() -> None:
             try:
@@ -351,16 +352,20 @@ class ToolExecutor:
             except Exception as exc:  # pragma: no cover - surfaced to caller
                 result_box["error"] = exc
             finally:
+                if not released.is_set():
+                    released.set()
+                    try:
+                        loop.call_soon_threadsafe(_safe_release, self._sync_slot)
+                    except RuntimeError:  # pragma: no cover – shutdown race
+                        # Loop may already be closed if shutdown races tool completion.
+                        try:
+                            self._sync_slot.release()
+                        except ValueError:
+                            pass
                 try:
                     loop.call_soon_threadsafe(done.set)
-                    loop.call_soon_threadsafe(_safe_release, self._sync_slot)
                 except RuntimeError:  # pragma: no cover – shutdown race
-                    # Loop may already be closed if shutdown races tool completion.
-                    try:
-                        self._sync_slot.release()
-                    except ValueError:
-                        # Already released; ignore.
-                        pass
+                    pass
 
         try:
             thread = threading.Thread(target=_invoke, daemon=True)
@@ -373,12 +378,14 @@ class ToolExecutor:
             await asyncio.wait_for(done.wait(), timeout=effective_timeout)
         except asyncio.TimeoutError:
             # Release the semaphore since the stuck thread may never do so.
-            # If the thread eventually completes, its finally block will call
-            # release() again; guard against ValueError from double-release.
-            try:
-                self._sync_slot.release()
-            except ValueError:  # pragma: no cover – thread may have already released
-                pass
+            # Use the released flag to prevent double-release if the thread
+            # eventually completes.
+            if not released.is_set():
+                released.set()
+                try:
+                    self._sync_slot.release()
+                except ValueError:  # pragma: no cover
+                    pass
             raise RuntimeError(
                 f"Synchronous tool handler timed out after {effective_timeout}s"
             ) from None

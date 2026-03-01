@@ -79,24 +79,24 @@ class TelegramBotPool:
                 return
             self._initialized = True  # Set early to prevent re-entry
 
-        for slot in self._slots:
-            try:
-                bot = Bot(token=slot.bot_token)
-                async with bot:
-                    me = await bot.get_me()
-                    slot.bot_id = me.id
-                    slot.bot_username = me.username or ""
-                logger.info(
-                    "bot_pool.slot_initialized",
-                    bot_id=slot.bot_id,
-                    username=slot.bot_username,
-                )
-            except Exception as e:
-                logger.warning(
-                    "bot_pool.slot_init_failed",
-                    token_prefix=slot.bot_token[:4] + "...",
-                    error=str(e),
-                )
+            for slot in self._slots:
+                try:
+                    bot = Bot(token=slot.bot_token)
+                    async with bot:
+                        me = await bot.get_me()
+                        slot.bot_id = me.id
+                        slot.bot_username = me.username or ""
+                    logger.info(
+                        "bot_pool.slot_initialized",
+                        bot_id=slot.bot_id,
+                        username=slot.bot_username,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "bot_pool.slot_init_failed",
+                        token_prefix=slot.bot_token[:4] + "...",
+                        error=str(e),
+                    )
 
     async def acquire(
         self,
@@ -123,7 +123,14 @@ class TelegramBotPool:
             slot.current_task_id = task_id
 
         # Set persona via Telegram API (outside lock to avoid holding it)
-        await self._apply_persona(slot, persona)
+        try:
+            await self._apply_persona(slot, persona)
+        except BaseException:
+            async with self._lock:
+                slot.is_active = False
+                slot.current_persona = None
+                slot.current_task_id = None
+            raise
 
         logger.info(
             "bot_pool.acquired",
