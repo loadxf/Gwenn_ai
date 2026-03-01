@@ -273,7 +273,7 @@ Each server object supports:
 |----------|---------|-------------|
 | `GWENN_DAEMON_SOCKET` | `./gwenn_data/gwenn.sock` | Unix socket path |
 | `GWENN_DAEMON_PID_FILE` | `./gwenn_data/gwenn.pid` | PID file path |
-| `GWENN_DAEMON_AUTH_TOKEN` | *(empty)* | Shared auth token (recommended) |
+| `GWENN_DAEMON_AUTH_TOKEN` | *(auto-generated)* | Shared auth token. If empty, a random token is generated at startup and logged. |
 | *(uses CLI/TELEGRAM/DISCORD_ENABLED)* | | Channels managed by daemon |
 | `GWENN_DAEMON_MAX_CONNECTIONS` | `10` | Max concurrent connections |
 | `GWENN_DAEMON_CONNECTION_TIMEOUT` | `300.0` | Connection timeout (seconds) |

@@ -76,6 +76,16 @@ details. Key components:
   prevents cascading failures; resets on success.
 - **Thread-safe logging** — PII redaction in log fields uses a `lru_cache`
   singleton shared across entry points (main + daemon).
+- **CI security scanning** — GitHub Actions runs `bandit` on every push/PR;
+  pre-commit hooks run bandit locally before each commit.
+- **Startup secrets protection** — `.env` file permissions are checked on
+  startup; group/world-readable permissions trigger a warning and automatic
+  tightening to `0o600`.
+- **Mandatory daemon auth** — If no `GWENN_DAEMON_AUTH_TOKEN` is configured,
+  a random 32-byte token is auto-generated and logged at startup.
+- **Docker deployment hardening** — Main application Dockerfile runs as
+  non-root user `gwenn` with healthcheck; `docker-compose.yml` uses restart
+  policy and named volumes.
 
 ## Scope
 

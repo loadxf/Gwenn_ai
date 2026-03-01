@@ -254,7 +254,7 @@ Skills are markdown-defined capabilities that extend what Gwenn can do. Each
 skill is a `.md` file with JSON frontmatter (parameters, description, metadata)
 and a step-by-step instruction body.
 
-- **26 skills** ship by default (weather, news, code explanation, reminders,
+- **28 skills** ship by default (weather, news, code explanation, reminders,
   and 20+ autonomous introspection/honesty skills)
 - **Hot-loadable**: create new skills at runtime -- no restart needed
 - **User-invocable vs autonomous**: skills tagged `user_command` appear in
@@ -329,6 +329,20 @@ conversation persistence, and optional auth:
 GWENN_DAEMON_AUTH_TOKEN=your-secret-token  # recommended
 ```
 
+If `GWENN_DAEMON_AUTH_TOKEN` is empty, a random token is auto-generated at
+startup and logged so CLI clients can connect securely by default.
+
+### Docker deployment
+
+Run Gwenn in a container for reproducible deployment:
+
+```bash
+docker compose up -d
+```
+
+The Dockerfile uses a multi-stage build with `uv`, runs as non-root user `gwenn`,
+and includes a healthcheck. See `Dockerfile` and `docker-compose.yml` for details.
+
 See [Daemon](docs/features.md#daemon) for full security settings.
 
 ## Validation
@@ -339,6 +353,9 @@ ruff check gwenn tests
 ```
 
 Current baseline: `3116 passed`, Ruff clean, 100% coverage.
+
+CI runs automatically on push/PR via GitHub Actions (`.github/workflows/ci.yml`):
+lint (ruff), tests (Python 3.11/3.12 matrix), and security scanning (bandit).
 
 ## Tech stack
 
@@ -352,6 +369,8 @@ Python 3.11+, async everywhere. The main dependencies:
 - **structlog** -- structured logging with PII redaction
 - **rich** -- terminal UI
 - **ruff** for linting, **pytest** + **pytest-asyncio** for tests
+- **bandit** — security scanning (pre-commit + CI)
+- **Docker** — containerized deployment option
 
 ## Project layout
 
@@ -427,6 +446,8 @@ Gwenn_ai/
 │   ├── api/
 │   │   └── claude.py               # Claude API wrapper with retry
 │   │
+│   ├── metrics.py                   # lightweight in-process metrics
+│   │
 │   ├── media/
 │   │   ├── audio.py                # Groq Whisper voice transcription
 │   │   └── video.py                # video frame extraction (OpenCV)
@@ -450,6 +471,11 @@ Gwenn_ai/
 ├── gwenn_skills/                   # user-facing skill definitions (.md files)
 ├── pyproject.toml
 ├── .env.example
+├── Dockerfile                      # multi-stage Docker build (uv, non-root)
+├── docker-compose.yml              # compose config with healthcheck & volumes
+├── .pre-commit-config.yaml         # ruff + bandit + pre-commit-hooks
+├── .github/workflows/ci.yml       # CI: lint, test (3.11/3.12), security scan
+├── BUG_REPORT.md                   # comprehensive code review bug report
 ├── PLAN.md
 ├── SECURITY.md
 ├── LICENSE                         # MPL-2.0
@@ -552,7 +578,7 @@ skills run during heartbeat cycles for self-monitoring and introspection.
 **Phase 5: Advanced Capabilities and Ecosystem**
 - [X] Subagent orchestration with parallel running capabilities (swarm)
 - [X] Subagent autospawn from Gwenn; heartbeat-driven autonomous task delegation
-- [ ] Docker and Apple container support for sandboxing (option to require for Gwenn and/or all subagents)
+- [p] Docker and Apple container support for sandboxing (option to require for Gwenn and/or all subagents)
 - [ ] Add additional provider support (OpenAI, Grok, Gemini, OpenRouter, vLLM, Local, etc.)
 - [ ] OpenCode Agents SDK and similar
 - [X] Image uploading and understanding

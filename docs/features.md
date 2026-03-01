@@ -203,7 +203,7 @@ One to three natural sentences.
 - **`autonomous`** -- skill is designed to run during heartbeat cycles for
   self-monitoring, introspection, or maintenance tasks.
 
-### Built-in skills (26 total)
+### Built-in skills (28 total)
 
 **User-invocable** (tagged `user_command`):
 - `get_weather` -- fetch weather for any location
@@ -849,3 +849,44 @@ Owners can run setup via slash command:
 /setup name:Alice role:thinking partner interests:programming style:casual boundaries:none
 /setup skip:true
 ```
+
+---
+
+## Metrics
+
+Gwenn includes a lightweight in-process metrics module (`gwenn/metrics.py`) that
+tracks counters, gauges, and histograms for key operations:
+
+- **API calls**: total count, latency, token usage, error rate, rate limits
+- **Responses**: total count, latency, truncation count
+- **Heartbeat**: beat count, latency, current interval
+
+Access metrics via the daemon protocol (`metrics` message type) which returns a
+JSON snapshot including uptime, all counters, gauges, and histogram summaries.
+
+---
+
+## Docker Deployment
+
+Run Gwenn in a container for reproducible deployment:
+
+```bash
+# Build and start
+docker compose up -d
+
+# View logs
+docker compose logs -f gwenn
+
+# Stop
+docker compose down
+```
+
+The `Dockerfile` uses a multi-stage build with `uv` for fast dependency
+installation, runs as a non-root `gwenn` user, and includes a healthcheck
+that pings the daemon socket. The `docker-compose.yml` mounts a named volume
+for persistent data and loads environment from `.env`.
+
+### Configuration
+
+Mount your `.env` file or pass environment variables via `docker-compose.yml`.
+The `gwenn_data` volume persists memory, sessions, and identity across restarts.

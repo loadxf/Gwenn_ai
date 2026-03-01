@@ -8,13 +8,15 @@
 
 ## Summary
 
-| Severity | Count |
-|----------|-------|
-| Critical | 2 |
-| High | 6 |
-| Medium | 9 |
-| Low | 11 |
-| **Total** | **28** |
+| Severity | Count | Fixed |
+|----------|-------|-------|
+| Critical | 2 | 0 |
+| High | 6 | 2 |
+| Medium | 9 | 1 |
+| Low | 11 | 2 |
+| **Total** | **28** | **5** |
+
+5 bugs fixed in production readiness work (H1, H2, M1, L3, L5).
 
 ---
 
@@ -54,6 +56,8 @@
 
 **Impact:** Inconsistent reads of `affect_state` and other shared state during response generation.
 
+**Status: FIXED** — `_respond_lock` now serializes heartbeat appraisals against `respond()`. Sync `_on_tool_result` callback checks `locked()` to skip appraisal under contention.
+
 ---
 
 ### H2. Auth brute-force protection bypassable
@@ -63,6 +67,8 @@
 The auth failure counter resets to 0 on **any** non-"unauthorized" response (line 340-341). If an attacker alternates bad auth tokens with malformed requests that trigger `{"type": "error", "message": "internal error"}`, the counter resets between each auth attempt, defeating the 3-attempt brute-force protection.
 
 **Fix:** Only reset `auth_failures` on **successful** authentication, not on any non-unauthorized response.
+
+**Status: FIXED** — Auth failure counter only resets on successful (non-error) responses.
 
 ---
 
@@ -111,6 +117,8 @@ The subagent entry point uses `sys.stdout` for JSON-RPC but all imported modules
 **Type:** Configuration bug
 
 `configure_logging()` is called at module level, executing when `daemon.py` imports from `main.py`. The `_logging_configured` guard prevents the daemon from reconfiguring logging later. Result: daemon logs use `ConsoleRenderer(colors=True)` with ANSI escape codes instead of structured file-friendly logging.
+
+**Status: FIXED** — `configure_logging()` now accepts `daemon=True` kwarg for JSON output; daemon calls it explicitly.
 
 ---
 
@@ -197,6 +205,8 @@ A `.webm` attachment gets downloaded and processed as both video (frame extracti
 
 Individual skill descriptions are truncated to 80 chars, but total message length is never checked. With 40+ skills, the message exceeds Telegram's limit, causing `BadRequest`.
 
+**Status: FIXED** — `/help` now splits into multiple messages at newline boundaries to stay under 4096 chars.
+
 ### L4. Markdown inside blockquotes silently discarded
 **File:** `gwenn/channels/formatting.py` lines 95-104
 
@@ -206,6 +216,8 @@ Blockquote content is HTML-escaped in Phase 1 (before markdown conversion in Pha
 **File:** `gwenn/channels/telegram_channel.py` lines 628-629, 661
 
 When `concurrent_updates > 0`, a new message B clears the cancel flag at line 629 (before acquiring the lock), consuming a cancel that was meant for the still-processing message A.
+
+**Status: FIXED** — Removed premature cancel flag clear before lock acquisition.
 
 ### L6. `scan()` docstring contradicts behavior
 **File:** `gwenn/privacy/redaction.py` lines 170-192

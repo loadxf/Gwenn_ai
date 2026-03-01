@@ -3,7 +3,7 @@
 This plan addresses all findings from `deep-research.md` — bugs, missing wiring,
 architectural gaps, and recommended improvements — organized by priority.
 
-**Last updated:** 2026-02-24
+**Last updated:** 2026-03-01
 
 ---
 
@@ -357,8 +357,8 @@ contribution). No framework exists for this.
 | 7.2 | Identity coherence tests | Low | Medium | Open |
 | 7.3 | Memory quality benchmarks | Low | Medium | Open |
 
-**Completed:** 14/19 items (74%). Remaining items are lower priority or depend on
-architectural decisions (affect persistence, provenance tracking, ablation framework).
+**Completed:** 14/19 original items (74%) + 11 production readiness items. Remaining
+original items are lower priority or depend on architectural decisions.
 
 ---
 
@@ -385,3 +385,26 @@ Phase 4 (Safety) — depends on Phase 1
   4.2 Provenance tracking ──────> depends on 2.1
   4.3 PII redaction ─────────────> standalone
 ```
+
+---
+
+## Production Readiness Remediation (2026-03-01)
+
+Additional work performed to address the production readiness assessment:
+
+### Blockers (Phase 1)
+- **CI/CD pipeline** — `.github/workflows/ci.yml` with lint, test (3.11/3.12 matrix), and security scan jobs — DONE
+- **H1 race condition** — `_respond_lock` serializes heartbeat appraisals against `respond()` in `gwenn/agent.py` — DONE
+- **.env permissions** — Startup check in `gwenn/config.py` warns and tightens to 0o600 — DONE
+
+### High Priority (Phase 2)
+- **M1 daemon logging** — `configure_logging(daemon=True)` for JSON output — DONE
+- **H2 auth brute-force** — Counter only resets on non-error responses — DONE
+- **Metrics** — `gwenn/metrics.py` with counters/gauges/histograms, instrumented in `agent.py`, `heartbeat.py`, `api/claude.py` — DONE
+- **Pre-commit hooks** — `.pre-commit-config.yaml` (ruff + bandit + pre-commit-hooks) — DONE
+- **Docker** — `Dockerfile` + `docker-compose.yml` for main application — DONE
+- **Daemon auth by default** — Auto-generates random token if none configured — DONE
+
+### Improvements (Phase 3)
+- **L3 /help message splitting** — Splits into multiple messages for Telegram 4096-char limit — DONE
+- **L5 cancel flag race** — Removed premature cancel flag clear in Telegram channel — DONE
