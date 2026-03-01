@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gwenn.main import GwennSession
+from gwenn.cli.repl import GwennSession
 
 
 @pytest.mark.asyncio
@@ -34,7 +34,7 @@ async def test_startup_onboarding_runs_for_non_cli_when_interactive(monkeypatch)
         return next(answers)
 
     session._prompt_startup_input = _fake_prompt
-    monkeypatch.setattr("gwenn.main.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("gwenn.cli.repl.sys.stdin.isatty", lambda: True)
 
     await session._run_first_startup_onboarding_if_needed(False)
 
@@ -54,7 +54,7 @@ async def test_startup_onboarding_skipped_when_non_interactive(monkeypatch):
         apply_startup_onboarding=MagicMock(),
     )
     session._agent = agent
-    monkeypatch.setattr("gwenn.main.sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("gwenn.cli.repl.sys.stdin.isatty", lambda: False)
 
     await session._run_first_startup_onboarding_if_needed(False)
 
@@ -64,7 +64,7 @@ async def test_startup_onboarding_skipped_when_non_interactive(monkeypatch):
 def test_sigint_requires_quick_double_press(monkeypatch):
     session = GwennSession()
     timeline = iter([10.0, 10.5])
-    monkeypatch.setattr("gwenn.main.time.monotonic", lambda: next(timeline))
+    monkeypatch.setattr("gwenn.cli.repl.time.monotonic", lambda: next(timeline))
 
     session._handle_sigint()
     assert not session._shutdown_event.is_set()
@@ -76,7 +76,7 @@ def test_sigint_requires_quick_double_press(monkeypatch):
 def test_sigint_window_expires_and_requires_new_double_press(monkeypatch):
     session = GwennSession()
     timeline = iter([10.0, 12.0, 12.4])
-    monkeypatch.setattr("gwenn.main.time.monotonic", lambda: next(timeline))
+    monkeypatch.setattr("gwenn.cli.repl.time.monotonic", lambda: next(timeline))
 
     session._handle_sigint()
     session._handle_sigint()
@@ -140,7 +140,7 @@ def test_slash_command_completer_returns_indexed_matches(monkeypatch):
             return 0
 
     fake_readline = _FakeReadline()
-    monkeypatch.setattr("gwenn.main.readline", fake_readline)
+    monkeypatch.setattr("gwenn.cli.repl.readline", fake_readline)
     session = GwennSession()
 
     assert session._slash_command_completer("/st", 0) == "/status"
@@ -186,7 +186,7 @@ async def test_read_input_fallback_path_supports_multiple_calls(monkeypatch):
     def _raise_oserror() -> int:
         raise OSError("stdin fileno unavailable")
 
-    monkeypatch.setattr("gwenn.main.sys.stdin.fileno", _raise_oserror)
+    monkeypatch.setattr("gwenn.cli.repl.sys.stdin.fileno", _raise_oserror)
     reads = iter(["hello", None])
     monkeypatch.setattr("builtins.input", lambda *_a, **_kw: next(reads))
 
@@ -294,9 +294,9 @@ async def test_shutdown_uses_spinner_status_for_agent_shutdown(monkeypatch):
             return False
 
     status_mock = MagicMock(return_value=_StatusCtx())
-    monkeypatch.setattr("gwenn.main.console.status", status_mock)
-    monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-    monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("gwenn.cli.repl.console.status", status_mock)
+    monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+    monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
 
     await session._shutdown()
 
@@ -313,8 +313,8 @@ def test_restore_terminal_state_applies_saved_attrs(monkeypatch):
         TCSADRAIN=1,
         tcsetattr=MagicMock(),
     )
-    monkeypatch.setattr("gwenn.main._termios", fake_termios)
-    monkeypatch.setattr("gwenn.main.sys.stdin.fileno", lambda: 7)
+    monkeypatch.setattr("gwenn.cli.repl._termios", fake_termios)
+    monkeypatch.setattr("gwenn.cli.repl.sys.stdin.fileno", lambda: 7)
     session._stdin_term_attrs = ["saved"]
 
     session._restore_terminal_state()
@@ -384,7 +384,7 @@ async def test_run_channels_prints_import_error_instead_of_raising(monkeypatch):
 
     session = GwennSession(channel_override="telegram")
     print_mock = MagicMock()
-    monkeypatch.setattr("gwenn.main.console.print", print_mock)
+    monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
     monkeypatch.setattr(
         "gwenn.channels.startup.build_channels",
         lambda _agent, channel_list: (SessionManager(), [MagicMock()]),
@@ -417,7 +417,7 @@ async def test_run_channels_prints_friendly_invalid_token_message(monkeypatch):
 
     session = GwennSession(channel_override="telegram")
     print_mock = MagicMock()
-    monkeypatch.setattr("gwenn.main.console.print", print_mock)
+    monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
     monkeypatch.setattr(
         "gwenn.channels.startup.build_channels",
         lambda _agent, channel_list: (SessionManager(), [MagicMock()]),

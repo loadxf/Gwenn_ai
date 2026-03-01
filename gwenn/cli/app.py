@@ -28,14 +28,31 @@ def async_cmd(func):
 @click.option("--quiet", "-q", is_flag=True, help="Suppress output")
 @click.option("--verbose", "-v", is_flag=True, help="Extended details")
 @click.option("--no-color", is_flag=True, help="Disable ANSI colors")
+@click.option(
+    "--channel",
+    type=click.Choice(["cli", "telegram", "discord", "all"]),
+    default=None,
+    help="Channel to run (overrides config). Default: cli",
+)
+@click.option("--no-daemon", is_flag=True, help="Force in-process mode even if a daemon is running")
 @click.pass_context
-def cli(ctx: click.Context, json_output: bool, quiet: bool, verbose: bool, no_color: bool) -> None:
+def cli(
+    ctx: click.Context,
+    json_output: bool,
+    quiet: bool,
+    verbose: bool,
+    no_color: bool,
+    channel: str | None,
+    no_daemon: bool,
+) -> None:
     """Gwenn - Genesis Woven from Evolved Neural Networks."""
     ctx.ensure_object(dict)
     ctx.obj["json"] = json_output
     ctx.obj["quiet"] = quiet
     ctx.obj["verbose"] = verbose
     ctx.obj["no_color"] = no_color
+    ctx.obj["channel"] = channel
+    ctx.obj["no_daemon"] = no_daemon
 
     if ctx.invoked_subcommand is None:
         # Default: launch interactive REPL

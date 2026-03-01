@@ -2813,7 +2813,7 @@ class TestSessionStopLiveBeforeOnboarding:
     @pytest.mark.asyncio
     async def test_run_stops_live_before_onboarding(self):
         """Cover lines 432-434: startup_live.stop() before onboarding."""
-        from gwenn.main import GwennSession
+        from gwenn.cli.repl import GwennSession
 
         session = object.__new__(GwennSession)
         session._agent = None
@@ -2842,10 +2842,10 @@ class TestSessionStopLiveBeforeOnboarding:
         mock_agent.status = {"name": "Gwenn"}
         mock_agent._conversation_history = []
 
-        with patch("gwenn.main.GwennConfig", return_value=mock_config), \
-             patch("gwenn.main.SentientAgent", return_value=mock_agent), \
-             patch("gwenn.main.sys") as mock_sys, \
-             patch("gwenn.main.Live") as MockLive, \
+        with patch("gwenn.cli.repl.GwennConfig", return_value=mock_config), \
+             patch("gwenn.cli.repl.SentientAgent", return_value=mock_agent), \
+             patch("gwenn.cli.repl.sys") as mock_sys, \
+             patch("gwenn.cli.repl.Live") as MockLive, \
              patch.object(GwennSession, "_build_startup_state", return_value={"steps": []}), \
              patch.object(GwennSession, "_render_startup_panel", return_value="panel"), \
              patch.object(GwennSession, "_set_startup_step"), \
@@ -2876,7 +2876,7 @@ class TestSessionReraiseChannelError:
     @pytest.mark.asyncio
     async def test_run_channels_reraises_fatal_error(self):
         """Cover line 1427: non-nonfatal error re-raised from _run_channels."""
-        from gwenn.main import GwennSession
+        from gwenn.cli.repl import GwennSession
 
         session = object.__new__(GwennSession)
         session._shutdown_event = asyncio.Event()

@@ -24,8 +24,8 @@ import pytest
 
 def _make_session(**kwargs):
     """Create a GwennSession with terminal capture disabled."""
-    with patch("gwenn.main._termios", None):
-        from gwenn.main import GwennSession
+    with patch("gwenn.cli.repl._termios", None):
+        from gwenn.cli.repl import GwennSession
         return GwennSession(**kwargs)
 
 
@@ -201,34 +201,34 @@ class TestLogging:
 
 class TestModuleHelpers:
     def test_is_nonfatal_channel_start_error_import_error(self):
-        from gwenn.main import _is_nonfatal_channel_start_error
+        from gwenn.cli.repl import _is_nonfatal_channel_start_error
         assert _is_nonfatal_channel_start_error(ImportError("missing")) is True
 
     def test_is_nonfatal_channel_start_error_invalid_token(self):
-        from gwenn.main import _is_nonfatal_channel_start_error
+        from gwenn.cli.repl import _is_nonfatal_channel_start_error
         InvalidToken = type("InvalidToken", (Exception,), {"__module__": "telegram.error"})
         exc = InvalidToken("bad token")
         assert _is_nonfatal_channel_start_error(exc) is True
 
     def test_is_nonfatal_channel_start_error_login_failure(self):
-        from gwenn.main import _is_nonfatal_channel_start_error
+        from gwenn.cli.repl import _is_nonfatal_channel_start_error
         LoginFailure = type("LoginFailure", (Exception,), {"__module__": "discord.errors"})
         exc = LoginFailure("bad creds")
         assert _is_nonfatal_channel_start_error(exc) is True
 
     def test_is_nonfatal_channel_start_error_generic(self):
-        from gwenn.main import _is_nonfatal_channel_start_error
+        from gwenn.cli.repl import _is_nonfatal_channel_start_error
         assert _is_nonfatal_channel_start_error(RuntimeError("boom")) is False
 
     def test_redact_channel_error(self):
-        from gwenn.main import _redact_channel_error
+        from gwenn.cli.repl import _redact_channel_error
         msg = "Token 123456789:ABCDEFghijklmnopqrstuvwxyz was rejected"
         result = _redact_channel_error(msg)
         assert "[REDACTED_TELEGRAM_TOKEN]" in result
         assert "123456789:" not in result
 
     def test_redact_channel_error_none(self):
-        from gwenn.main import _redact_channel_error
+        from gwenn.cli.repl import _redact_channel_error
         assert _redact_channel_error("") == ""
 
 
@@ -346,17 +346,17 @@ class TestRunLifecycle:
     @pytest.mark.asyncio
     async def test_run_config_error_exits(self, monkeypatch):
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.GwennConfig", MagicMock(side_effect=RuntimeError("no key")))
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", MagicMock(side_effect=RuntimeError("no key")))
         with pytest.raises(SystemExit):
             await session.run()
 
     @pytest.mark.asyncio
     async def test_run_config_error_non_tty(self, monkeypatch):
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("gwenn.main.GwennConfig", MagicMock(side_effect=RuntimeError("no key")))
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", MagicMock(side_effect=RuntimeError("no key")))
         with pytest.raises(SystemExit):
             await session.run()
 
@@ -364,11 +364,11 @@ class TestRunLifecycle:
     async def test_run_agent_init_error_exits(self, monkeypatch):
         from gwenn.api.claude import CognitiveEngineInitError
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: _fake_config())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: _fake_config())
         monkeypatch.setattr(
-            "gwenn.main.SentientAgent",
+            "gwenn.cli.repl.SentientAgent",
             MagicMock(side_effect=CognitiveEngineInitError("bad model")),
         )
         with pytest.raises(SystemExit):
@@ -378,11 +378,11 @@ class TestRunLifecycle:
     async def test_run_agent_init_error_non_tty(self, monkeypatch):
         from gwenn.api.claude import CognitiveEngineInitError
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: _fake_config())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: _fake_config())
         monkeypatch.setattr(
-            "gwenn.main.SentientAgent",
+            "gwenn.cli.repl.SentientAgent",
             MagicMock(side_effect=CognitiveEngineInitError("bad model")),
         )
         with pytest.raises(SystemExit):
@@ -391,38 +391,38 @@ class TestRunLifecycle:
     @pytest.mark.asyncio
     async def test_run_memory_init_error_reraises(self, monkeypatch):
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
         agent.initialize = AsyncMock(side_effect=RuntimeError("memory fail"))
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         with pytest.raises(RuntimeError, match="memory fail"):
             await session.run()
 
     @pytest.mark.asyncio
     async def test_run_heartbeat_error_reraises(self, monkeypatch):
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
         agent.start = AsyncMock(side_effect=RuntimeError("heartbeat fail"))
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         with pytest.raises(RuntimeError, match="heartbeat fail"):
             await session.run()
 
     @pytest.mark.asyncio
     async def test_run_cli_mode_full_lifecycle(self, monkeypatch):
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         session._interaction_loop = AsyncMock()
         session._shutdown = AsyncMock()
         await session.run()
@@ -432,12 +432,12 @@ class TestRunLifecycle:
     @pytest.mark.asyncio
     async def test_run_channel_mode_full_lifecycle(self, monkeypatch):
         session = _make_session(use_daemon=False, channel_override="telegram")
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         session._run_channels = AsyncMock()
         session._shutdown = AsyncMock()
         await session.run()
@@ -447,12 +447,12 @@ class TestRunLifecycle:
     @pytest.mark.asyncio
     async def test_run_cli_non_tty_no_startup_panel(self, monkeypatch):
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         session._interaction_loop = AsyncMock()
         session._shutdown = AsyncMock()
         await session.run()
@@ -461,12 +461,12 @@ class TestRunLifecycle:
     @pytest.mark.asyncio
     async def test_run_channel_non_tty_no_startup_panel(self, monkeypatch):
         session = _make_session(use_daemon=False, channel_override="telegram")
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         session._run_channels = AsyncMock()
         session._shutdown = AsyncMock()
         await session.run()
@@ -476,12 +476,12 @@ class TestRunLifecycle:
     async def test_run_signal_handlers_not_implemented(self, monkeypatch):
         """Platform that doesn't support add_signal_handler (e.g. Windows)."""
         session = _make_session(use_daemon=False)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         session._interaction_loop = AsyncMock()
         session._shutdown = AsyncMock()
 
@@ -511,7 +511,7 @@ class TestConnectDaemonChannel:
     @pytest.mark.asyncio
     async def test_websocket_succeeds(self, monkeypatch):
         """When gateway_enabled and WS connects, return WebSocketCliChannel."""
-        from gwenn.main import _connect_daemon_channel
+        from gwenn.cli.repl import _connect_daemon_channel
 
         fake_ws_channel = AsyncMock()
         fake_ws_channel.connect = AsyncMock()
@@ -535,7 +535,7 @@ class TestConnectDaemonChannel:
     async def test_websocket_fails_falls_back_to_socket(self, monkeypatch):
         """When WS fails but socket exists, fall back to CliChannel."""
         from gwenn.channels.cli_channel import DaemonNotRunningError
-        from gwenn.main import _connect_daemon_channel
+        from gwenn.cli.repl import _connect_daemon_channel
 
         fake_ws_channel = AsyncMock()
         fake_ws_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("ws down"))
@@ -565,7 +565,7 @@ class TestConnectDaemonChannel:
     async def test_both_transports_fail(self, monkeypatch):
         """When both WS and socket fail, raise DaemonNotRunningError."""
         from gwenn.channels.cli_channel import DaemonNotRunningError
-        from gwenn.main import _connect_daemon_channel
+        from gwenn.cli.repl import _connect_daemon_channel
 
         fake_ws_channel = AsyncMock()
         fake_ws_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("ws down"))
@@ -587,7 +587,7 @@ class TestConnectDaemonChannel:
     @pytest.mark.asyncio
     async def test_gateway_disabled_tries_socket_only(self, monkeypatch):
         """When gateway_enabled=False, skip WS and try socket directly."""
-        from gwenn.main import _connect_daemon_channel
+        from gwenn.cli.repl import _connect_daemon_channel
 
         fake_socket_channel = AsyncMock()
         fake_socket_channel.connect = AsyncMock()
@@ -616,7 +616,7 @@ class TestConnectDaemonChannel:
     async def test_both_disabled_raises(self, monkeypatch):
         """When both transports disabled, raise DaemonNotRunningError."""
         from gwenn.channels.cli_channel import DaemonNotRunningError
-        from gwenn.main import _connect_daemon_channel
+        from gwenn.cli.repl import _connect_daemon_channel
 
         config = _fake_config()
         config.daemon.gateway_enabled = False
@@ -630,7 +630,7 @@ class TestConnectDaemonChannel:
     async def test_socket_connect_refused(self, monkeypatch):
         """When socket exists but connect is refused, propagate error."""
         from gwenn.channels.cli_channel import DaemonNotRunningError
-        from gwenn.main import _connect_daemon_channel
+        from gwenn.cli.repl import _connect_daemon_channel
 
         fake_ws_channel = AsyncMock()
         fake_ws_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("ws down"))
@@ -659,7 +659,7 @@ class TestConnectDaemonChannel:
     @pytest.mark.asyncio
     async def test_ws_non_daemon_error_falls_back_to_socket(self, monkeypatch):
         """Non-DaemonNotRunningError from WS (e.g. auth failure) still falls back."""
-        from gwenn.main import _connect_daemon_channel
+        from gwenn.cli.repl import _connect_daemon_channel
 
         fake_ws_channel = AsyncMock()
         fake_ws_channel.connect = AsyncMock(side_effect=RuntimeError("auth failed"))
@@ -689,7 +689,7 @@ class TestConnectDaemonChannel:
     async def test_ws_only_mode_fails(self, monkeypatch):
         """Gateway enabled, legacy disabled, WS fails → raises."""
         from gwenn.channels.cli_channel import DaemonNotRunningError
-        from gwenn.main import _connect_daemon_channel
+        from gwenn.cli.repl import _connect_daemon_channel
 
         fake_ws_channel = AsyncMock()
         fake_ws_channel.connect = AsyncMock(side_effect=DaemonNotRunningError("ws down"))
@@ -719,9 +719,9 @@ class TestDaemonCli:
 
         session = _make_session(use_daemon=True)
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         monkeypatch.setattr(
-            "gwenn.main._connect_daemon_channel",
+            "gwenn.cli.repl._connect_daemon_channel",
             AsyncMock(side_effect=DaemonNotRunningError("unreachable")),
         )
         result = await session._try_daemon_cli()
@@ -730,7 +730,7 @@ class TestDaemonCli:
     @pytest.mark.asyncio
     async def test_try_daemon_cli_config_error(self, monkeypatch):
         session = _make_session(use_daemon=True)
-        monkeypatch.setattr("gwenn.main.GwennConfig", MagicMock(side_effect=RuntimeError("err")))
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", MagicMock(side_effect=RuntimeError("err")))
         result = await session._try_daemon_cli()
         assert result is False
 
@@ -743,11 +743,11 @@ class TestDaemonCli:
             claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console", MagicMock())
         monkeypatch.setattr(
-            "gwenn.main._connect_daemon_channel",
+            "gwenn.cli.repl._connect_daemon_channel",
             AsyncMock(side_effect=DaemonNotRunningError("not running")),
         )
 
@@ -761,14 +761,14 @@ class TestDaemonCli:
             claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("gwenn.main.console", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("gwenn.cli.repl.console", MagicMock())
 
         fake_channel = AsyncMock()
         fake_channel.disconnect = AsyncMock()
         monkeypatch.setattr(
-            "gwenn.main._connect_daemon_channel",
+            "gwenn.cli.repl._connect_daemon_channel",
             AsyncMock(return_value=fake_channel),
         )
 
@@ -788,14 +788,14 @@ class TestDaemonCli:
             claude=SimpleNamespace(model="test", max_tokens=4096, thinking_budget=1024, thinking_effort="high", request_timeout_seconds=30.0, retry_max_retries=3),
             memory=SimpleNamespace(data_dir="/tmp/d", episodic_db_path="/tmp/db", retrieval_mode="hybrid"),
         )
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console", MagicMock())
 
         fake_channel = AsyncMock()
         fake_channel.disconnect = AsyncMock()
         monkeypatch.setattr(
-            "gwenn.main._connect_daemon_channel",
+            "gwenn.cli.repl._connect_daemon_channel",
             AsyncMock(return_value=fake_channel),
         )
 
@@ -815,7 +815,7 @@ class TestDaemonInteractionLoop:
     async def test_daemon_loop_exit_on_none_input(self, monkeypatch):
         session = _make_session()
         session._read_input = AsyncMock(return_value=None)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         await session._daemon_interaction_loop(channel)
 
@@ -824,7 +824,7 @@ class TestDaemonInteractionLoop:
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["/exit", None])
         session._handle_daemon_command = AsyncMock(return_value="exit")
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         await session._daemon_interaction_loop(channel)
         session._handle_daemon_command.assert_awaited_once()
@@ -834,7 +834,7 @@ class TestDaemonInteractionLoop:
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["/status", None])
         session._handle_daemon_command = AsyncMock(return_value="disconnect")
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         await session._daemon_interaction_loop(channel)
 
@@ -843,7 +843,7 @@ class TestDaemonInteractionLoop:
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["/help", None])
         session._handle_daemon_command = AsyncMock(return_value="handled")
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         await session._daemon_interaction_loop(channel)
 
@@ -852,7 +852,7 @@ class TestDaemonInteractionLoop:
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["quit"])
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         channel = AsyncMock()
         await session._daemon_interaction_loop(channel)
         assert any("Bye" in str(c) for c in print_mock.call_args_list)
@@ -861,7 +861,7 @@ class TestDaemonInteractionLoop:
     async def test_daemon_loop_empty_input_continues(self, monkeypatch):
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["", "  ", None])
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         await session._daemon_interaction_loop(channel)
 
@@ -870,8 +870,8 @@ class TestDaemonInteractionLoop:
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["hello", None])
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))))
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))))
         channel = AsyncMock()
         channel.chat = AsyncMock(return_value={"type": "response", "emotion": "happy", "text": "Hi there!"})
         await session._daemon_interaction_loop(channel)
@@ -881,8 +881,8 @@ class TestDaemonInteractionLoop:
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["hello", None])
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))))
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))))
         channel = AsyncMock()
         channel.chat = AsyncMock(return_value={"type": "error", "message": "API down"})
         await session._daemon_interaction_loop(channel)
@@ -892,8 +892,8 @@ class TestDaemonInteractionLoop:
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["hello", None])
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))))
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))))
         channel = AsyncMock()
         channel.chat = AsyncMock(side_effect=ConnectionResetError("lost"))
         await session._daemon_interaction_loop(channel)
@@ -903,8 +903,8 @@ class TestDaemonInteractionLoop:
         session = _make_session()
         session._read_input = AsyncMock(side_effect=["hello", None])
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))))
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))))
         channel = AsyncMock()
         channel.chat = AsyncMock(side_effect=ValueError("transient"))
         await session._daemon_interaction_loop(channel)
@@ -927,8 +927,8 @@ class TestOnboarding:
         agent = _fake_agent()
         agent.identity.should_run_startup_onboarding.return_value = True
         session._agent = agent
-        monkeypatch.setattr("gwenn.main.sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         session._prompt_startup_input = AsyncMock(return_value="")
         await session._run_first_startup_onboarding_if_needed(True)
         agent.apply_startup_onboarding.assert_not_called()
@@ -957,13 +957,13 @@ class TestOnboarding:
 
 class TestReadlineConfig:
     def test_configure_readline_no_readline(self, monkeypatch):
-        monkeypatch.setattr("gwenn.main.readline", None)
+        monkeypatch.setattr("gwenn.cli.repl.readline", None)
         session = _make_session()
         # Should not raise
         session._configure_readline_completion()
 
     def test_slash_command_completer_no_readline(self, monkeypatch):
-        monkeypatch.setattr("gwenn.main.readline", None)
+        monkeypatch.setattr("gwenn.cli.repl.readline", None)
         session = _make_session()
         assert session._slash_command_completer("/st", 0) is None
 
@@ -972,7 +972,7 @@ class TestReadlineConfig:
         fake_rl.parse_and_bind = MagicMock(side_effect=Exception("fail"))
         fake_rl.get_completer_delims = MagicMock(side_effect=Exception("fail"))
         fake_rl.set_completer = MagicMock(side_effect=Exception("fail"))
-        monkeypatch.setattr("gwenn.main.readline", fake_rl)
+        monkeypatch.setattr("gwenn.cli.repl.readline", fake_rl)
         session = _make_session()
         session._configure_readline_completion()
 
@@ -980,7 +980,7 @@ class TestReadlineConfig:
         fake_rl = MagicMock()
         fake_rl.get_line_buffer = MagicMock(side_effect=Exception("fail"))
         fake_rl.get_begidx = MagicMock(return_value=0)
-        monkeypatch.setattr("gwenn.main.readline", fake_rl)
+        monkeypatch.setattr("gwenn.cli.repl.readline", fake_rl)
         session = _make_session()
         result = session._slash_command_completer("/st", 0)
         # Should still return matches from empty line buffer
@@ -990,7 +990,7 @@ class TestReadlineConfig:
         fake_rl = MagicMock()
         fake_rl.get_line_buffer = MagicMock(return_value="/st")
         fake_rl.get_begidx = MagicMock(side_effect=Exception("fail"))
-        monkeypatch.setattr("gwenn.main.readline", fake_rl)
+        monkeypatch.setattr("gwenn.cli.repl.readline", fake_rl)
         session = _make_session()
         result = session._slash_command_completer("/st", 0)
         assert result is not None
@@ -999,7 +999,7 @@ class TestReadlineConfig:
         fake_rl = MagicMock()
         fake_rl.get_line_buffer = MagicMock(return_value="hello")
         fake_rl.get_begidx = MagicMock(return_value=0)
-        monkeypatch.setattr("gwenn.main.readline", fake_rl)
+        monkeypatch.setattr("gwenn.cli.repl.readline", fake_rl)
         session = _make_session()
         result = session._slash_command_completer("h", 0)
         assert result is None
@@ -1011,7 +1011,7 @@ class TestReadlineConfig:
         fake_rl.get_completer_delims = MagicMock(return_value=" \t\n")
         fake_rl.set_completer_delims = MagicMock()
         fake_rl.set_completer = MagicMock()
-        monkeypatch.setattr("gwenn.main.readline", fake_rl)
+        monkeypatch.setattr("gwenn.cli.repl.readline", fake_rl)
         session = _make_session()
         session._configure_readline_completion()
         fake_rl.set_completer_delims.assert_not_called()
@@ -1026,42 +1026,42 @@ class TestDisplayCommands:
     def test_set_output_style_show_current(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._set_output_style("")
         assert any("balanced" in str(c) for c in print_mock.call_args_list)
 
     def test_set_output_style_invalid(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._set_output_style("fancy")
         assert any("Invalid" in str(c) for c in print_mock.call_args_list)
 
     def test_set_output_style_valid(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._set_output_style("brief")
         assert session._output_style == "brief"
 
     def test_print_help(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._print_help()
         assert print_mock.called
 
     def test_render_status_panel_empty(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._render_status_panel({})
         assert any("No status" in str(c) for c in print_mock.call_args_list)
 
     def test_render_status_panel_with_data(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._render_status_panel(
             {"name": "Gwenn", "emotion": "happy", "valence": 0.6, "arousal": 0.3,
              "total_interactions": 5, "uptime_seconds": 100.0},
@@ -1072,14 +1072,14 @@ class TestDisplayCommands:
     def test_render_heartbeat_panel_empty(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._render_heartbeat_panel({})
         assert any("unavailable" in str(c) for c in print_mock.call_args_list)
 
     def test_render_heartbeat_panel_with_circuit_open(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._render_heartbeat_panel({
             "running": True, "beat_count": 10, "current_interval": 30,
             "beats_since_consolidation": 2, "circuit_open": True, "circuit_recovery_in": 15.0,
@@ -1090,7 +1090,7 @@ class TestDisplayCommands:
         session = _make_session()
         session._config = None
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_model()
         assert any("not loaded" in str(c) for c in print_mock.call_args_list)
 
@@ -1098,7 +1098,7 @@ class TestDisplayCommands:
         session = _make_session()
         session._config = _fake_config()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_model()
         assert print_mock.called
 
@@ -1106,7 +1106,7 @@ class TestDisplayCommands:
         session = _make_session()
         session._config = None
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_config()
         assert any("not loaded" in str(c) for c in print_mock.call_args_list)
 
@@ -1114,7 +1114,7 @@ class TestDisplayCommands:
         session = _make_session()
         session._config = _fake_config()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_config()
         assert print_mock.called
 
@@ -1122,21 +1122,21 @@ class TestDisplayCommands:
         session = _make_session()
         session._agent = None
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_agents()
         assert any("not initialized" in str(c) for c in print_mock.call_args_list)
 
     def test_show_agents_empty(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_agents(interagent_status={"known_agents": {}})
         assert any("No known" in str(c) for c in print_mock.call_args_list)
 
     def test_show_agents_with_data(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_agents(interagent_status={
             "known_agents": {
                 "a1": {"name": "Alice", "relationship": "friend", "messages": 10},
@@ -1148,7 +1148,7 @@ class TestDisplayCommands:
     def test_show_agents_non_dict_status(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_agents(interagent_status="not a dict")
         assert any("No known" in str(c) for c in print_mock.call_args_list)
 
@@ -1156,21 +1156,21 @@ class TestDisplayCommands:
         session = _make_session()
         session._agent = None
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_skills()
         assert any("not initialized" in str(c) for c in print_mock.call_args_list)
 
     def test_show_skills_empty(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_skills(skills=[])
         assert any("No skills" in str(c) for c in print_mock.call_args_list)
 
     def test_show_skills_with_data(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_skills(skills=[
             {"name": "search", "category": "tool"},
             {"name": "code", "category": "skill"},
@@ -1185,7 +1185,7 @@ class TestDisplayCommands:
         ])
         session._agent = agent
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_skills()
         assert print_mock.called
 
@@ -1193,7 +1193,7 @@ class TestDisplayCommands:
         session = _make_session()
         session._agent = None
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_stats()
         assert any("not initialized" in str(c) for c in print_mock.call_args_list)
 
@@ -1201,7 +1201,7 @@ class TestDisplayCommands:
         session = _make_session()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_stats()
         assert print_mock.called
 
@@ -1209,7 +1209,7 @@ class TestDisplayCommands:
         session = _make_session()
         session._agent = None
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_stats(
             status={"total_interactions": 3, "uptime_seconds": 60.0, "engine_telemetry": {}},
             active_connections=2,
@@ -1229,7 +1229,7 @@ class TestDisplayCommands:
         agent.memory_store = _BrokenMemStore()
         session._agent = agent
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_stats()
         assert print_mock.called
 
@@ -1238,7 +1238,7 @@ class TestDisplayCommands:
         session._agent = None
         session._config = None
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_mcp()
         assert print_mock.called
 
@@ -1251,14 +1251,14 @@ class TestDisplayCommands:
             {"name": "server1"}, {"name": "server2"}
         ])
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_mcp()
         assert print_mock.called
 
     def test_show_mcp_with_provided_data(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_mcp(
             mcp_stats={"connected_servers": 2, "discovered_tools": 10},
             configured_servers=[{"name": "s1"}],
@@ -1283,7 +1283,7 @@ class TestResumeInprocess:
         session._config = _fake_config()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
 
         class FakeStore:
             def __init__(self, *a, **kw): pass
@@ -1299,7 +1299,7 @@ class TestResumeInprocess:
         session._config = _fake_config()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
 
         class FakeStore:
             def __init__(self, *a, **kw): pass
@@ -1317,7 +1317,7 @@ class TestResumeInprocess:
         session._config = _fake_config()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
 
         class FakeStore:
             def __init__(self, *a, **kw): pass
@@ -1338,7 +1338,7 @@ class TestResumeInprocess:
         session._config = _fake_config()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
 
         class FakeStore:
             def __init__(self, *a, **kw): pass
@@ -1360,7 +1360,7 @@ class TestResumeInprocess:
         session._config = _fake_config()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
 
         class FakeStore:
             def __init__(self, *a, **kw): pass
@@ -1378,7 +1378,7 @@ class TestResumeInprocess:
         session._config = _fake_config()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
 
         class FakeStore:
             def __init__(self, *a, **kw): pass
@@ -1400,7 +1400,7 @@ class TestResumeDaemon:
     @pytest.mark.asyncio
     async def test_resume_daemon_connection_lost(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.list_sessions = AsyncMock(side_effect=ConnectionResetError("lost"))
         result = await session._handle_resume_daemon(channel)
@@ -1409,7 +1409,7 @@ class TestResumeDaemon:
     @pytest.mark.asyncio
     async def test_resume_daemon_no_sessions(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         monkeypatch.setattr("gwenn.memory.session_store._format_session_time", lambda t: "now")
         channel = AsyncMock()
         channel.list_sessions = AsyncMock(return_value=[])
@@ -1419,7 +1419,7 @@ class TestResumeDaemon:
     @pytest.mark.asyncio
     async def test_resume_daemon_cancel(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         monkeypatch.setattr("gwenn.memory.session_store._format_session_time", lambda t: "now")
         channel = AsyncMock()
         channel.list_sessions = AsyncMock(return_value=[
@@ -1432,7 +1432,7 @@ class TestResumeDaemon:
     @pytest.mark.asyncio
     async def test_resume_daemon_valid(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         monkeypatch.setattr("gwenn.memory.session_store._format_session_time", lambda t: "now")
         channel = AsyncMock()
         channel.list_sessions = AsyncMock(return_value=[
@@ -1446,7 +1446,7 @@ class TestResumeDaemon:
     @pytest.mark.asyncio
     async def test_resume_daemon_load_connection_lost(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         monkeypatch.setattr("gwenn.memory.session_store._format_session_time", lambda t: "now")
         channel = AsyncMock()
         channel.list_sessions = AsyncMock(return_value=[
@@ -1460,7 +1460,7 @@ class TestResumeDaemon:
     @pytest.mark.asyncio
     async def test_resume_daemon_invalid_choice(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         monkeypatch.setattr("gwenn.memory.session_store._format_session_time", lambda t: "now")
         channel = AsyncMock()
         channel.list_sessions = AsyncMock(return_value=[
@@ -1479,14 +1479,14 @@ class TestInprocessCommand:
     @pytest.mark.asyncio
     async def test_exit(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_inprocess_command(("/exit", ""))
         assert result == "exit"
 
     @pytest.mark.asyncio
     async def test_help(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_inprocess_command(("/help", ""))
         assert result == "handled"
 
@@ -1517,7 +1517,7 @@ class TestInprocessCommand:
     async def test_new(self, monkeypatch):
         session = _make_session()
         session._agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_inprocess_command(("/new", ""))
         assert result == "handled"
         session._agent.load_conversation_history.assert_called_once_with([])
@@ -1526,7 +1526,7 @@ class TestInprocessCommand:
     async def test_new_no_agent(self, monkeypatch):
         session = _make_session()
         session._agent = None
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_inprocess_command(("/new", ""))
         assert result == "handled"
 
@@ -1554,7 +1554,7 @@ class TestInprocessCommand:
     @pytest.mark.asyncio
     async def test_plan_no_arg(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_inprocess_command(("/plan", ""))
         assert result == "handled"
 
@@ -1562,7 +1562,7 @@ class TestInprocessCommand:
     async def test_plan_no_agent(self, monkeypatch):
         session = _make_session()
         session._agent = None
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_inprocess_command(("/plan", "build a feature"))
         assert result == "handled"
 
@@ -1570,8 +1570,8 @@ class TestInprocessCommand:
     async def test_plan_with_agent(self, monkeypatch):
         session = _make_session()
         session._agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         result = await session._handle_inprocess_command(("/plan", "build a feature"))
@@ -1609,7 +1609,7 @@ class TestInprocessCommand:
     async def test_unknown(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         result = await session._handle_inprocess_command(("/foobar", ""))
         assert result == "handled"
         assert any("Unknown" in str(c) for c in print_mock.call_args_list)
@@ -1623,14 +1623,14 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_exit(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_daemon_command(("/exit", ""), AsyncMock())
         assert result == "exit"
 
     @pytest.mark.asyncio
     async def test_help(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_daemon_command(("/help", ""), AsyncMock())
         assert result == "handled"
 
@@ -1638,7 +1638,7 @@ class TestDaemonCommand:
     async def test_status_success(self, monkeypatch):
         session = _make_session()
         session._render_status_panel = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_status = AsyncMock(return_value={"status": {"name": "G"}, "active_connections": 1})
         result = await session._handle_daemon_command(("/status", ""), channel)
@@ -1648,7 +1648,7 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_status_connection_lost(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_status = AsyncMock(side_effect=ConnectionResetError("lost"))
         result = await session._handle_daemon_command(("/status", ""), channel)
@@ -1658,7 +1658,7 @@ class TestDaemonCommand:
     async def test_heartbeat_success(self, monkeypatch):
         session = _make_session()
         session._render_heartbeat_panel = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_heartbeat_status = AsyncMock(return_value={"status": {}})
         result = await session._handle_daemon_command(("/heartbeat", ""), channel)
@@ -1667,7 +1667,7 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_heartbeat_connection_lost(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_heartbeat_status = AsyncMock(side_effect=BrokenPipeError("lost"))
         result = await session._handle_daemon_command(("/heartbeat", ""), channel)
@@ -1683,7 +1683,7 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_new_success(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.reset_session = AsyncMock(return_value=5)
         result = await session._handle_daemon_command(("/new", ""), channel)
@@ -1692,7 +1692,7 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_new_connection_lost(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.reset_session = AsyncMock(side_effect=TimeoutError("lost"))
         result = await session._handle_daemon_command(("/new", ""), channel)
@@ -1722,15 +1722,15 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_plan_no_arg(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         result = await session._handle_daemon_command(("/plan", ""), AsyncMock())
         assert result == "handled"
 
     @pytest.mark.asyncio
     async def test_plan_success(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         channel = AsyncMock()
@@ -1741,8 +1741,8 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_plan_connection_lost(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         channel = AsyncMock()
@@ -1753,8 +1753,8 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_plan_error_response(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         channel = AsyncMock()
@@ -1766,7 +1766,7 @@ class TestDaemonCommand:
     async def test_agents_command(self, monkeypatch):
         session = _make_session()
         session._show_agents = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_runtime_info = AsyncMock(return_value={
             "status": {"interagent": {}}, "skills": [], "active_connections": 1, "tools": {}, "mcp": {},
@@ -1778,7 +1778,7 @@ class TestDaemonCommand:
     async def test_skills_command(self, monkeypatch):
         session = _make_session()
         session._show_skills = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_runtime_info = AsyncMock(return_value={
             "status": {}, "skills": [{"name": "s"}], "active_connections": 0, "tools": {}, "mcp": {},
@@ -1790,7 +1790,7 @@ class TestDaemonCommand:
     async def test_stats_command(self, monkeypatch):
         session = _make_session()
         session._show_stats = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_runtime_info = AsyncMock(return_value={
             "status": {}, "skills": [], "active_connections": 2, "tools": {"registered": 3, "enabled": 2}, "mcp": {},
@@ -1802,7 +1802,7 @@ class TestDaemonCommand:
     async def test_mcp_command(self, monkeypatch):
         session = _make_session()
         session._show_mcp = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_runtime_info = AsyncMock(return_value={
             "status": {}, "skills": [], "active_connections": 0, "tools": {},
@@ -1814,7 +1814,7 @@ class TestDaemonCommand:
     @pytest.mark.asyncio
     async def test_runtime_info_connection_lost(self, monkeypatch):
         session = _make_session()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         channel = AsyncMock()
         channel.get_runtime_info = AsyncMock(side_effect=ConnectionAbortedError("lost"))
         result = await session._handle_daemon_command(("/agents", ""), channel)
@@ -1824,7 +1824,7 @@ class TestDaemonCommand:
     async def test_unknown_command(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         result = await session._handle_daemon_command(("/foobar", ""), AsyncMock())
         assert result == "handled"
 
@@ -1839,7 +1839,7 @@ class TestInteractionLoop:
         session = _make_session()
         session._agent = _fake_agent()
         session._read_input = AsyncMock(return_value=None)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         await session._interaction_loop()
 
     @pytest.mark.asyncio
@@ -1848,7 +1848,7 @@ class TestInteractionLoop:
         session._agent = _fake_agent()
         session._read_input = AsyncMock(side_effect=["/exit"])
         session._handle_inprocess_command = AsyncMock(return_value="exit")
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         await session._interaction_loop()
 
     @pytest.mark.asyncio
@@ -1857,7 +1857,7 @@ class TestInteractionLoop:
         session._agent = _fake_agent()
         session._read_input = AsyncMock(side_effect=["/help", None])
         session._handle_inprocess_command = AsyncMock(return_value="handled")
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         await session._interaction_loop()
 
     @pytest.mark.asyncio
@@ -1866,7 +1866,7 @@ class TestInteractionLoop:
         session._agent = _fake_agent()
         for alias in ("quit", "exit", "bye"):
             session._read_input = AsyncMock(side_effect=[alias])
-            monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+            monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
             await session._interaction_loop()
 
     @pytest.mark.asyncio
@@ -1874,7 +1874,7 @@ class TestInteractionLoop:
         session = _make_session()
         session._agent = _fake_agent()
         session._read_input = AsyncMock(side_effect=["", "  ", None])
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         await session._interaction_loop()
 
     @pytest.mark.asyncio
@@ -1882,8 +1882,8 @@ class TestInteractionLoop:
         session = _make_session()
         session._agent = _fake_agent()
         session._read_input = AsyncMock(side_effect=["hello", None])
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         await session._interaction_loop()
@@ -1894,7 +1894,7 @@ class TestInteractionLoop:
         session = _make_session()
         session._agent = _fake_agent()
         session._read_input = AsyncMock(side_effect=EOFError())
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         await session._interaction_loop()
 
     @pytest.mark.asyncio
@@ -1910,7 +1910,7 @@ class TestInteractionLoop:
             return None
         session._read_input = _read
         session._handle_sigint = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         await session._interaction_loop()
 
     @pytest.mark.asyncio
@@ -1928,7 +1928,7 @@ class TestInteractionLoop:
         def _sigint():
             session._shutdown_event.set()
         session._handle_sigint = _sigint
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         await session._interaction_loop()
 
     @pytest.mark.asyncio
@@ -1944,8 +1944,8 @@ class TestInteractionLoop:
             )
         )
         session._read_input = AsyncMock(side_effect=["hello", None])
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         await session._interaction_loop()
@@ -1959,8 +1959,8 @@ class TestInteractionLoop:
             side_effect=anthropic.APIConnectionError(request=MagicMock())
         )
         session._read_input = AsyncMock(side_effect=["hello", None])
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         await session._interaction_loop()
@@ -1978,8 +1978,8 @@ class TestInteractionLoop:
             )
         )
         session._read_input = AsyncMock(side_effect=["hello", None])
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         await session._interaction_loop()
@@ -1990,8 +1990,8 @@ class TestInteractionLoop:
         session._agent = _fake_agent()
         session._agent.respond = AsyncMock(side_effect=RuntimeError("boom"))
         session._read_input = AsyncMock(side_effect=["hello", None])
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         await session._interaction_loop()
@@ -2001,7 +2001,7 @@ class TestInteractionLoop:
         session = _make_session()
         session._agent = _fake_agent()
         session._shutdown_event.set()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         await session._interaction_loop()
 
 
@@ -2014,7 +2014,7 @@ class TestRunChannels:
     async def test_no_channels_started(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         monkeypatch.setattr(
             "gwenn.channels.startup.build_channels",
             lambda agent, channel_list: (MagicMock(), []),
@@ -2026,7 +2026,7 @@ class TestRunChannels:
     async def test_discord_login_failure(self, monkeypatch):
         session = _make_session()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         monkeypatch.setattr(
             "gwenn.channels.startup.build_channels",
             lambda agent, channel_list: (MagicMock(), [MagicMock()]),
@@ -2078,28 +2078,28 @@ class TestInputHandling:
         assert result == "helloworld"
 
     def test_read_line_blocking_eof(self, monkeypatch):
-        from gwenn.main import GwennSession
+        from gwenn.cli.repl import GwennSession
         monkeypatch.setattr("builtins.input", MagicMock(side_effect=EOFError()))
         result = GwennSession._read_line_blocking("prompt: ")
         assert result is None
 
     def test_read_line_blocking_success(self, monkeypatch):
-        from gwenn.main import GwennSession
+        from gwenn.cli.repl import GwennSession
         monkeypatch.setattr("builtins.input", MagicMock(return_value="hello"))
         result = GwennSession._read_line_blocking("prompt: ")
         assert result == "hello"
 
     def test_make_input_prompt_no_color(self):
-        from gwenn.main import GwennSession
+        from gwenn.cli.repl import GwennSession
         result = GwennSession._make_input_prompt("You", ": ")
         assert result == "You: "
 
     def test_sanitize_terminal_input_empty(self):
-        from gwenn.main import GwennSession
+        from gwenn.cli.repl import GwennSession
         assert GwennSession._sanitize_terminal_input("") == ""
 
     def test_sanitize_terminal_input_carriage_return(self):
-        from gwenn.main import GwennSession
+        from gwenn.cli.repl import GwennSession
         assert GwennSession._sanitize_terminal_input("hello\rworld") == "helloworld"
 
     @pytest.mark.asyncio
@@ -2126,7 +2126,7 @@ class TestSignalHandling:
     def test_handle_sigint_already_shutdown(self, monkeypatch):
         session = _make_session()
         session._shutdown_event.set()
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         session._handle_sigint()
         # Should just return without changing state further
 
@@ -2145,8 +2145,8 @@ class TestShutdown:
         session._config = _fake_config()
         session._config.daemon.redact_session_content = True
         session._session_started_at = time.time()
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
 
         class FakeStore:
             def __init__(self, *a, **kw): pass
@@ -2167,8 +2167,8 @@ class TestShutdown:
         session._config = _fake_config()
         session._config.daemon.redact_session_content = True
         session._session_started_at = time.time()
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
 
         saved_filter = {}
         class FakeStore:
@@ -2186,9 +2186,9 @@ class TestShutdown:
         session = _make_session()
         session._agent = None
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
-        monkeypatch.setattr("gwenn.main.console.status", MagicMock(
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.status", MagicMock(
             return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock(return_value=False))
         ))
         session._restore_terminal_state = MagicMock()
@@ -2199,18 +2199,18 @@ class TestShutdown:
     def test_capture_terminal_state_with_termios(self, monkeypatch):
         session = _make_session()
         fake_termios = SimpleNamespace(tcgetattr=MagicMock(return_value=["saved"]))
-        monkeypatch.setattr("gwenn.main._termios", fake_termios)
-        monkeypatch.setattr("gwenn.main.sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.sys.stdin.fileno", lambda: 0)
+        monkeypatch.setattr("gwenn.cli.repl._termios", fake_termios)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdin.fileno", lambda: 0)
         session._capture_terminal_state()
         assert session._stdin_term_attrs == ["saved"]
 
     def test_capture_terminal_state_error(self, monkeypatch):
         session = _make_session()
         fake_termios = SimpleNamespace(tcgetattr=MagicMock(side_effect=OSError("fail")))
-        monkeypatch.setattr("gwenn.main._termios", fake_termios)
-        monkeypatch.setattr("gwenn.main.sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("gwenn.main.sys.stdin.fileno", lambda: 0)
+        monkeypatch.setattr("gwenn.cli.repl._termios", fake_termios)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdin.fileno", lambda: 0)
         session._capture_terminal_state()
         assert session._stdin_term_attrs is None
 
@@ -2220,8 +2220,8 @@ class TestShutdown:
             TCSADRAIN=1,
             tcsetattr=MagicMock(side_effect=OSError("fail")),
         )
-        monkeypatch.setattr("gwenn.main._termios", fake_termios)
-        monkeypatch.setattr("gwenn.main.sys.stdin.fileno", lambda: 0)
+        monkeypatch.setattr("gwenn.cli.repl._termios", fake_termios)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdin.fileno", lambda: 0)
         session._stdin_term_attrs = ["saved"]
         session._restore_terminal_state()  # Should not raise
 
@@ -2234,27 +2234,27 @@ class TestDisplayHelpers:
     def test_display_status_no_agent(self, monkeypatch):
         session = _make_session()
         session._agent = None
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         session._display_status()  # Should not raise
 
     def test_display_status_with_agent(self, monkeypatch):
         session = _make_session()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._display_status()
         assert print_mock.called
 
     def test_display_heartbeat_no_agent(self, monkeypatch):
         session = _make_session()
         session._agent = None
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         session._display_heartbeat()
 
     def test_display_heartbeat_no_heartbeat(self, monkeypatch):
         session = _make_session()
         session._agent = _fake_agent(heartbeat=None)
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
+        monkeypatch.setattr("gwenn.cli.repl.console.print", MagicMock())
         session._display_heartbeat()
 
     def test_display_heartbeat_with_circuit_open(self, monkeypatch):
@@ -2264,7 +2264,7 @@ class TestDisplayHelpers:
         agent.heartbeat.status["circuit_recovery_in"] = 10.0
         session._agent = agent
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._display_heartbeat()
         assert print_mock.called
 
@@ -2272,7 +2272,7 @@ class TestDisplayHelpers:
         session = _make_session()
         session._agent = _fake_agent()
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._display_heartbeat()
         assert print_mock.called
 
@@ -2475,70 +2475,64 @@ class TestSubcommandHelpers:
 # ===========================================================================
 
 class TestMainEntryPoint:
-    def test_main_daemon_subcommand(self, monkeypatch):
+    def test_main_calls_cli(self, monkeypatch):
+        """main() configures logging and delegates to the click CLI."""
         from gwenn.main import main
-        monkeypatch.setattr("sys.argv", ["gwenn", "daemon"])
-        mock_daemon = MagicMock()
-        monkeypatch.setattr("gwenn.main._run_daemon_foreground", mock_daemon)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
+        mock_cli = MagicMock()
+        monkeypatch.setattr("gwenn.cli.app.cli", mock_cli)
         main()
-        mock_daemon.assert_called_once()
+        mock_cli.assert_called_once_with(standalone_mode=False)
 
-    def test_main_stop_subcommand(self, monkeypatch):
+    def test_main_configures_logging(self, monkeypatch):
+        """main() always configures logging before calling cli."""
         from gwenn.main import main
-        monkeypatch.setattr("sys.argv", ["gwenn", "stop"])
-        mock_stop = MagicMock()
-        monkeypatch.setattr("gwenn.main._run_stop_daemon", mock_stop)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
+        mock_cli = MagicMock()
+        monkeypatch.setattr("gwenn.cli.app.cli", mock_cli)
         main()
-        mock_stop.assert_called_once()
+        import gwenn.main as m
+        assert m._logging_configured is True
 
-    def test_main_status_subcommand(self, monkeypatch):
-        from gwenn.main import main
-        monkeypatch.setattr("sys.argv", ["gwenn", "status"])
-        mock_status = MagicMock()
-        monkeypatch.setattr("gwenn.main._run_show_status", mock_status)
-        monkeypatch.setattr("gwenn.main._logging_configured", False)
-        main()
-        mock_status.assert_called_once()
-
-    def test_main_default_runs_session(self, monkeypatch):
+    def test_main_default_runs_repl(self, monkeypatch):
+        """main() with no subcommand launches the interactive REPL via click CLI."""
         from gwenn.main import main
         monkeypatch.setattr("sys.argv", ["gwenn"])
-        mock_run = MagicMock()
-        monkeypatch.setattr("asyncio.run", mock_run)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
-        monkeypatch.setattr("gwenn.main._termios", None)
+        mock_repl = MagicMock()
+        monkeypatch.setattr("gwenn.cli.repl.run_repl", mock_repl)
         main()
-        mock_run.assert_called_once()
+        mock_repl.assert_called_once()
 
     def test_main_with_channel_flag(self, monkeypatch):
+        """main() passes --channel through click CLI to run_repl."""
         from gwenn.main import main
         monkeypatch.setattr("sys.argv", ["gwenn", "--channel", "telegram"])
-        mock_run = MagicMock()
-        monkeypatch.setattr("asyncio.run", mock_run)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
-        monkeypatch.setattr("gwenn.main._termios", None)
+        mock_repl = MagicMock()
+        monkeypatch.setattr("gwenn.cli.repl.run_repl", mock_repl)
         main()
-        mock_run.assert_called_once()
+        mock_repl.assert_called_once()
+        ctx_obj = mock_repl.call_args[0][0]
+        assert ctx_obj["channel"] == "telegram"
 
     def test_main_no_daemon_flag(self, monkeypatch):
+        """main() passes --no-daemon through click CLI to run_repl."""
         from gwenn.main import main
         monkeypatch.setattr("sys.argv", ["gwenn", "--no-daemon"])
-        mock_run = MagicMock()
-        monkeypatch.setattr("asyncio.run", mock_run)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
-        monkeypatch.setattr("gwenn.main._termios", None)
+        mock_repl = MagicMock()
+        monkeypatch.setattr("gwenn.cli.repl.run_repl", mock_repl)
         main()
-        mock_run.assert_called_once()
+        mock_repl.assert_called_once()
+        ctx_obj = mock_repl.call_args[0][0]
+        assert ctx_obj["no_daemon"] is True
 
     def test_main_keyboard_interrupt(self, monkeypatch):
         from gwenn.main import main
-        monkeypatch.setattr("sys.argv", ["gwenn"])
-        monkeypatch.setattr("asyncio.run", MagicMock(side_effect=KeyboardInterrupt()))
-        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
         monkeypatch.setattr("gwenn.main._logging_configured", False)
-        monkeypatch.setattr("gwenn.main._termios", None)
+        monkeypatch.setattr("gwenn.cli.app.cli", MagicMock(side_effect=KeyboardInterrupt()))
+        monkeypatch.setattr("gwenn.main.console.print", MagicMock())
         main()  # Should not raise
 
 
@@ -2579,13 +2573,13 @@ class TestRemainingGaps:
             call_count[0] += 1
             # Return False for initial Live panel check, True for the rest
             return call_count[0] > 1
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", _isatty)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", _isatty)
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         session._interaction_loop = AsyncMock()
         session._shutdown = AsyncMock()
         await session.run()
@@ -2601,13 +2595,13 @@ class TestRemainingGaps:
         def _isatty():
             call_count[0] += 1
             return call_count[0] > 1
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", _isatty)
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", _isatty)
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         session._run_channels = AsyncMock()
         session._shutdown = AsyncMock()
         await session.run()
@@ -2623,7 +2617,7 @@ class TestRemainingGaps:
         }})
         session._agent = agent
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         session._show_agents()  # No interagent_status param - uses agent's
         assert print_mock.called
 
@@ -2640,15 +2634,13 @@ class TestRemainingGaps:
         assert result == "ok"
 
     def test_main_guard_line(self, monkeypatch):
-        """Cover line 1841: if __name__ == '__main__': main()."""
-        # We can't import main.py as __main__ directly, but we can
-        # verify the guard exists and call main() directly.
+        """Cover if __name__ == '__main__': main()."""
         from gwenn.main import main
-        monkeypatch.setattr("sys.argv", ["gwenn"])
-        monkeypatch.setattr("asyncio.run", MagicMock())
         monkeypatch.setattr("gwenn.main._logging_configured", False)
-        monkeypatch.setattr("gwenn.main._termios", None)
+        mock_cli = MagicMock()
+        monkeypatch.setattr("gwenn.cli.app.cli", mock_cli)
         main()
+        mock_cli.assert_called_once_with(standalone_mode=False)
 
     @pytest.mark.asyncio
     async def test_run_non_tty_display_status_fallback(self, monkeypatch):
@@ -2658,13 +2650,13 @@ class TestRemainingGaps:
         # We need startup_state to be None (non-tty at first check)
         # but isatty to be True when reaching the elif
         isatty_returns = iter([False, True, True, True, True, True, True, True, True, True])
-        monkeypatch.setattr("gwenn.main.sys.stdout.isatty", lambda: next(isatty_returns, True))
+        monkeypatch.setattr("gwenn.cli.repl.sys.stdout.isatty", lambda: next(isatty_returns, True))
         print_mock = MagicMock()
-        monkeypatch.setattr("gwenn.main.console.print", print_mock)
+        monkeypatch.setattr("gwenn.cli.repl.console.print", print_mock)
         config = _fake_config()
-        monkeypatch.setattr("gwenn.main.GwennConfig", lambda: config)
+        monkeypatch.setattr("gwenn.cli.repl.GwennConfig", lambda: config)
         agent = _fake_agent()
-        monkeypatch.setattr("gwenn.main.SentientAgent", lambda c: agent)
+        monkeypatch.setattr("gwenn.cli.repl.SentientAgent", lambda c: agent)
         session._interaction_loop = AsyncMock()
         session._shutdown = AsyncMock()
         session._display_status = MagicMock()
@@ -2714,7 +2706,7 @@ class TestRunBlockingCallLoopClosed:
         monkeypatch.setattr(loop, "call_soon_threadsafe", _raising_call_soon)
 
         # Patch asyncio.Event in the main module to return our pre-set event
-        monkeypatch.setattr("gwenn.main.asyncio.Event", _PreSetEvent)
+        monkeypatch.setattr("gwenn.cli.repl.asyncio.Event", _PreSetEvent)
 
         result = await session._run_blocking_call(lambda: 42)
         assert result == 42

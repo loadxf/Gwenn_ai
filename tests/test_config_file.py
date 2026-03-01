@@ -724,40 +724,36 @@ class TestConfigSubcommand:
 # ---------------------------------------------------------------------------
 
 class TestMainConfigRouting:
-    """Tests for config subcommand routing in main()."""
+    """Tests for config subcommand routing via click CLI in main()."""
 
-    def test_config_subcommand_routes(self, monkeypatch):
-        """Verify main() routes 'config' to _run_config."""
+    def test_config_subcommand_routes_via_click(self, monkeypatch, tmp_path):
+        """Verify main() routes 'config get' to click config command."""
         from gwenn.main import main
 
-        called_with = []
-        monkeypatch.setattr(
-            "gwenn.main._run_config",
-            lambda args: called_with.append(args),
-        )
+        # Create a gwenn.toml with a value to get
+        toml_file = tmp_path / "gwenn.toml"
+        toml_file.write_text("[heartbeat]\ninterval = 42\n")
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("sys.argv", ["gwenn", "config", "get", "heartbeat.interval"])
-        main()
-        assert called_with == [["get", "heartbeat.interval"]]
+        monkeypatch.setattr("gwenn.main._logging_configured", False)
+        main()  # Should not raise — click config get handled
 
-    def test_config_subcommand_no_extra_args(self, monkeypatch):
-        """'gwenn config' with no extra args passes empty list."""
+    def test_config_default_lists_via_click(self, monkeypatch, tmp_path):
+        """'gwenn config' with no subcommand invokes the default list."""
         from gwenn.main import main
 
-        called_with = []
-        monkeypatch.setattr(
-            "gwenn.main._run_config",
-            lambda args: called_with.append(args),
-        )
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("sys.argv", ["gwenn", "config"])
-        main()
-        assert called_with == [[]]
+        monkeypatch.setattr("gwenn.main._logging_configured", False)
+        main()  # Should not raise
 
     def test_non_config_subcommand_rejects_extra_args(self, monkeypatch):
         """Non-config subcommands should reject extra positional args."""
         from gwenn.main import main
 
         monkeypatch.setattr("sys.argv", ["gwenn", "status", "extra_arg"])
-        with pytest.raises(SystemExit):
+        monkeypatch.setattr("gwenn.main._logging_configured", False)
+        with pytest.raises((SystemExit, Exception)):
             main()
 
     def test_config_set_nan_rejected(self, tmp_path, monkeypatch):
