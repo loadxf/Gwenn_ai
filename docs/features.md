@@ -19,6 +19,13 @@ configuration, commands, and practical examples.
 - [Output Style](#output-style)
 - [Safety & Tool Policy](#safety--tool-policy)
 - [Privacy & PII Redaction](#privacy--pii-redaction)
+- [Self-Healing Engine](#self-healing-engine)
+- [Checkpoint/Restore](#checkpointrestore)
+- [Gateway](#gateway)
+- [Event System](#event-system)
+- [Interoception](#interoception)
+- [TOML Configuration](#toml-configuration)
+- [CLI Commands](#cli-commands)
 - [Onboarding](#onboarding)
 
 ---
@@ -533,8 +540,8 @@ Use `/heartbeat` in the CLI to see:
 
 ## Channels
 
-Gwenn runs on three platforms: CLI, Telegram, and Discord. Each channel manages
-its own session lifecycle and message formatting.
+Gwenn runs on four platforms: CLI, Telegram, Discord, and Slack. Each channel
+manages its own session lifecycle and message formatting.
 
 ### Running channels
 
@@ -542,6 +549,7 @@ its own session lifecycle and message formatting.
 gwenn                      # CLI only (default)
 gwenn --channel telegram   # Telegram only
 gwenn --channel discord    # Discord only
+gwenn --channel slack      # Slack only
 gwenn --channel all        # All channels simultaneously
 ```
 
@@ -550,6 +558,7 @@ Or set the defaults in `.env`:
 CLI_ENABLED=true           # Enable CLI terminal
 TELEGRAM_ENABLED=false     # Enable Telegram bot
 DISCORD_ENABLED=false      # Enable Discord bot
+SLACK_ENABLED=false        # Enable Slack bot
 ```
 
 The daemon uses the same flags to determine which channels to start.
@@ -629,6 +638,27 @@ DISCORD_MAX_HISTORY_LENGTH=50
 DISCORD_SESSION_TTL=3600.0
 DISCORD_SESSION_SCOPE=per_thread  # per_user | per_chat | per_thread
 DISCORD_SYNC_GUILD_ID=            # For instant dev sync
+```
+
+### Slack
+
+**Setup**: create a Slack app with Socket Mode enabled, obtain a bot token
+(`xoxb-...`) and an app-level token (`xapp-...`), then set:
+
+```bash
+SLACK_ENABLED=true
+GWENN_SLACK_BOT_TOKEN=xoxb-your-bot-token
+GWENN_SLACK_APP_TOKEN=xapp-your-app-token
+GWENN_SLACK_ALLOWED_USER_IDS=[]     # Empty = public, or ["U012ABC", "U345DEF"]
+GWENN_SLACK_OWNER_USER_IDS=[]       # Controls proactive messages
+```
+
+**Session management** (same pattern as Telegram/Discord):
+```bash
+GWENN_SLACK_MAX_HISTORY_LENGTH=50
+GWENN_SLACK_SESSION_TTL=3600.0          # 1 hour
+GWENN_SLACK_SESSION_SCOPE=per_thread    # per_user | per_chat | per_thread
+GWENN_SLACK_USER_LOCK_CACHE_SIZE=512
 ```
 
 ### CLI
@@ -817,6 +847,259 @@ GWENN_DAEMON_REDACT_SESSION_CONTENT=True
 
 Note: basic log field truncation is always active, regardless of the
 `GWENN_REDACTION_ENABLED` setting.
+
+---
+
+## Self-Healing Engine
+
+The self-healing engine provides autonomous runtime recovery without human
+intervention. It continuously monitors system health and applies corrective
+actions when problems are detected.
+
+### Health checks
+
+| Check | Trigger | Description |
+|-------|---------|-------------|
+| Stuck heartbeat | Beat interval exceeds `stuck_multiplier * max_interval` | Heartbeat loop is frozen or blocked |
+| High memory | Usage exceeds `memory_threshold` % | Memory leak or unbounded growth |
+| Error rate spike | Errors per minute exceed `error_rate_threshold` | Cascading failures or bad input loop |
+| Channel failure | Channel reports unhealthy status | Adapter crash or disconnection |
+
+### Tier 1 actions
+
+When a health check triggers, the engine applies the least-disruptive fix:
+
+- **Restart failed channels** -- reconnect dropped Telegram/Discord/Slack adapters
+- **Clear caches** -- flush working memory overflow and stale session data
+- **Force garbage collection** -- reclaim leaked memory
+- **Reset circuit breakers** -- unblock stuck heartbeat or consolidation loops
+
+### Configuration
+
+```bash
+GWENN_SELF_HEALING_ENABLED=true           # Master switch
+GWENN_SELF_HEALING_COOLDOWN=300           # Cooldown between actions (seconds)
+GWENN_SELF_HEALING_MAX_ACTIONS_HOUR=20    # Rate limit
+GWENN_SELF_HEALING_CHANNEL_RESTART=true   # Allow channel restart
+GWENN_SELF_HEALING_STUCK_MULTIPLIER=2.0   # Stuck-heartbeat detection multiplier
+GWENN_SELF_HEALING_MEMORY_THRESHOLD=85.0  # Memory % trigger
+GWENN_SELF_HEALING_ERROR_RATE_THRESHOLD=5.0  # Errors/min trigger
+```
+
+---
+
+## Checkpoint/Restore
+
+Periodic cognitive state snapshots for crash recovery. Gwenn saves her internal
+state at regular intervals so she can resume where she left off after a restart
+or crash.
+
+### What is saved
+
+- Emotional state (all five affect dimensions)
+- Working memory contents
+- Identity model (self-concept, preferences, personality)
+- Conversation context metadata
+
+### How it works
+
+1. Every `GWENN_CHECKPOINT_INTERVAL_BEATS` heartbeats, Gwenn writes a snapshot
+   to `GWENN_DATA_DIR/checkpoints/`
+2. Old checkpoints are pruned to keep at most `GWENN_CHECKPOINT_MAX_COUNT`
+3. On startup, Gwenn loads the latest valid checkpoint and restores state
+4. Invalid or corrupted checkpoints are skipped automatically
+
+### Configuration
+
+```bash
+GWENN_CHECKPOINT_ENABLED=true          # Master switch
+GWENN_CHECKPOINT_INTERVAL_BEATS=50     # Heartbeats between snapshots
+GWENN_CHECKPOINT_MAX_COUNT=10          # Max stored checkpoints
+```
+
+---
+
+## Gateway
+
+WebSocket + HTTP server for external integrations and the dashboard. Built on
+aiohttp, the gateway exposes a JSON-RPC 2.0 interface for programmatic access
+to Gwenn's capabilities.
+
+### Endpoints
+
+| Endpoint | Protocol | Description |
+|----------|----------|-------------|
+| `/ws` | WebSocket | Bidirectional JSON-RPC 2.0 channel |
+| `/rpc` | HTTP POST | Stateless JSON-RPC 2.0 requests |
+| `/dashboard` | HTTP GET | Live health status and metrics |
+
+### JSON-RPC 2.0
+
+The gateway uses standard JSON-RPC 2.0 request/response format. Clients can
+send messages, check status, and invoke tools through the RPC interface.
+
+### Configuration
+
+```bash
+GWENN_GATEWAY_ENABLED=true        # Master switch
+GWENN_GATEWAY_HOST=127.0.0.1      # Bind address
+GWENN_GATEWAY_PORT=18900          # Port
+GWENN_LEGACY_SOCKET_ENABLED=true  # Keep Unix socket alongside gateway
+GWENN_MCP_SERVER_ENABLED=false    # Expose MCP server endpoint
+GWENN_A2A_ENABLED=false           # Enable agent-to-agent protocol
+GWENN_HEARTBEAT_CORE=true         # Run heartbeat in gateway process
+```
+
+### Dashboard
+
+Start the dashboard with:
+
+```bash
+gwenn dashboard
+```
+
+Or access it at `http://127.0.0.1:18900/dashboard` when the gateway is running.
+
+---
+
+## Event System
+
+The event bus is Gwenn's inter-component nervous system -- a pub/sub backbone
+that lets subsystems communicate without tight coupling.
+
+### Event types
+
+| Category | Examples |
+|----------|---------|
+| Heartbeat | beat started, beat completed, circuit breaker state changes |
+| Channel | message received, message sent, channel connected/disconnected |
+| Tool | tool invoked, tool completed, tool error |
+| Memory | episode stored, consolidation started/completed |
+| Affect | emotional state changed, distress threshold reached |
+
+### How it works
+
+1. Components subscribe to event types they care about
+2. When an event occurs, the publisher pushes it to the event bus
+3. All subscribers for that event type receive the event asynchronously
+4. Events include a timestamp, source component, and payload
+
+### Usage in code
+
+```python
+from gwenn.events import event_bus
+
+# Subscribe
+event_bus.subscribe("heartbeat.beat_completed", my_handler)
+
+# Publish
+await event_bus.publish("heartbeat.beat_completed", {"beat_number": 42})
+```
+
+---
+
+## Interoception
+
+Interoception is Gwenn's system self-awareness module -- it maps raw system
+metrics into affect dimensions, giving her a felt sense of her own operational
+state.
+
+### Monitored metrics
+
+| Metric | Affect mapping |
+|--------|---------------|
+| CPU load | High CPU → increased arousal, reduced dominance |
+| Memory usage | High memory → reduced certainty, triggers self-healing |
+| Response latency | High latency → reduced goal congruence |
+| Error rates | Sustained errors → reduced valence, increased arousal |
+
+### How it integrates
+
+- Interoception readings feed into the emotional appraisal engine alongside
+  external events (messages, interactions)
+- Extreme readings trigger self-healing actions via the healing engine
+- Moderate readings subtly influence Gwenn's mood and behavior
+
+---
+
+## TOML Configuration
+
+Gwenn supports an optional `gwenn.toml` configuration file that supplements
+(and can override) `.env` settings. This is useful for structured configuration
+that is easier to read and edit than flat environment variables.
+
+### Getting started
+
+```bash
+gwenn config init              # Generate a template gwenn.toml
+```
+
+### Managing configuration
+
+```bash
+gwenn config get agent.model   # Read a dotted key
+gwenn config set agent.model claude-opus-4-6   # Set a value
+gwenn config unset agent.model # Remove a key
+gwenn config list              # Show all configuration
+gwenn config validate          # Check for errors
+```
+
+### Precedence
+
+1. Environment variables (`.env`) take highest priority
+2. `gwenn.toml` values are used as defaults when env vars are unset
+3. Built-in defaults from `config.py` are the final fallback
+
+---
+
+## CLI Commands
+
+Gwenn has two types of commands: REPL slash commands (typed inside the
+interactive session) and CLI subcommands (run from the shell).
+
+### REPL slash commands
+
+These are used inside the interactive CLI session (type `/help` to see all):
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all available commands |
+| `/status` | Cognitive state: mood, uptime, interaction count |
+| `/heartbeat` | Heartbeat telemetry: running state, beat count, interval |
+| `/resume` | Restore a previous conversation session |
+| `/new` | Start a fresh conversation (clear history) |
+| `/model` | Active model, max tokens, thinking budget |
+| `/config` | Key runtime config |
+| `/output-style [balanced\|brief\|detailed]` | Show or set response verbosity |
+| `/plan <task>` | Ask Gwenn for a focused execution plan |
+| `/agents` | List inter-agent connections |
+| `/skills` | List loaded skills |
+| `/stats` | Runtime telemetry |
+| `/mcp` | MCP status |
+| `/exit` | Close the CLI session |
+
+### CLI subcommands
+
+These are run from the shell (e.g., `gwenn doctor`):
+
+| Command | Description |
+|---------|-------------|
+| `gwenn daemon` | Start daemon in foreground |
+| `gwenn stop` | Stop running daemon |
+| `gwenn status` | Show daemon/agent status |
+| `gwenn doctor` | Run system diagnostics (config, dependencies, connectivity) |
+| `gwenn dashboard` | Start dashboard endpoint |
+| `gwenn agents list` | List subagent connections |
+| `gwenn channels list` | List active channels |
+| `gwenn config init` | Generate template `gwenn.toml` |
+| `gwenn config get <key>` | Read a config value |
+| `gwenn config set <key> <value>` | Set a config value |
+| `gwenn config unset <key>` | Remove a config key |
+| `gwenn config validate` | Validate `gwenn.toml` |
+| `gwenn config list` | Show all configuration |
+| `gwenn install` | Install as system service |
+| `gwenn uninstall` | Remove system service |
+| `gwenn restart` | Restart system service |
 
 ---
 

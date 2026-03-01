@@ -170,6 +170,24 @@ Once the CLI is running, type `/help` to see all commands:
 | `/mcp` | MCP server and tool status |
 | `/exit` | Close the CLI session |
 
+#### CLI subcommands
+
+These commands are run from the shell, not inside the REPL:
+
+| Command | Description |
+|---------|-------------|
+| `gwenn daemon` | Start daemon (foreground) |
+| `gwenn stop` | Stop running daemon |
+| `gwenn status` | Show daemon/agent status |
+| `gwenn doctor` | Run system diagnostics |
+| `gwenn dashboard` | Start dashboard endpoint |
+| `gwenn agents list` | List subagent connections |
+| `gwenn channels list` | List active channels |
+| `gwenn config [get\|set\|unset\|init\|validate]` | Manage `gwenn.toml` |
+| `gwenn install` | Install as system service |
+| `gwenn uninstall` | Remove system service |
+| `gwenn restart` | Restart system service |
+
 Legacy aliases `quit`, `exit`, `bye` still work. Type `/` and press Tab for
 slash-command completion.
 
@@ -292,13 +310,14 @@ Gwenn ships with tools across several categories:
 All tools go through a risk tier system (LOW/MEDIUM/HIGH/CRITICAL) with
 configurable deny-by-default policy for non-builtin tools.
 
-### Channels (Telegram, Discord, CLI)
+### Channels (Telegram, Discord, Slack, CLI)
 
 Run Gwenn on multiple platforms simultaneously or individually.
 
 ```bash
 gwenn --channel telegram    # Telegram only
 gwenn --channel discord     # Discord only
+gwenn --channel slack       # Slack only
 gwenn --channel all         # All channels at once
 ```
 
@@ -331,6 +350,62 @@ GWENN_DAEMON_AUTH_TOKEN=your-secret-token  # recommended
 
 See [Daemon](docs/features.md#daemon) for full security settings.
 
+### Self-healing engine
+
+Autonomous runtime recovery without human intervention. The self-healing engine
+monitors for stuck heartbeats, high memory usage, error rate spikes, and channel
+failures, then applies Tier 1 corrective actions: restart failed channels, clear
+caches, force garbage collection, and reset circuit breakers.
+
+See [Self-Healing Engine](docs/features.md#self-healing-engine) for
+configuration and details.
+
+### Checkpoint/restore
+
+Periodic cognitive state snapshots for crash recovery. Gwenn saves her emotional
+state, working memory, identity, and conversation context at configurable
+intervals. On startup, she auto-restores from the latest valid checkpoint.
+
+See [Checkpoint/Restore](docs/features.md#checkpointrestore) for configuration.
+
+### Gateway
+
+WebSocket + HTTP server (aiohttp-based) for external integrations. Exposes a
+JSON-RPC 2.0 interface over WebSocket or HTTP POST, plus a `/dashboard`
+endpoint with live health status.
+
+See [Gateway](docs/features.md#gateway) for configuration.
+
+### Event bus
+
+Inter-component pub/sub nervous system connecting all subsystems. Components
+publish and subscribe to heartbeat events, channel events, tool events, memory
+events, and affect events.
+
+See [Event System](docs/features.md#event-system) for details.
+
+### Interoception
+
+System self-awareness module that maps CPU load, memory usage, response latency,
+and error rates into affect dimensions. Feeds into the emotional state and
+self-healing triggers.
+
+See [Interoception](docs/features.md#interoception) for details.
+
+### TOML configuration
+
+Optional `gwenn.toml` overlay that supplements `.env` configuration. Manage with
+the `gwenn config` subcommands:
+
+```bash
+gwenn config init             # Generate a template gwenn.toml
+gwenn config get agent.model  # Read a dotted key
+gwenn config set agent.model claude-opus-4-6
+gwenn config validate         # Check for errors
+```
+
+See [TOML Configuration](docs/features.md#toml-configuration) for full usage.
+
 ## Validation
 
 ```bash
@@ -338,7 +413,7 @@ pytest -q
 ruff check gwenn tests
 ```
 
-Current baseline: `3116 passed`, Ruff clean, 100% coverage.
+Current baseline: `3790 passed`, Ruff clean, 100% coverage.
 
 ## Tech stack
 
@@ -351,6 +426,8 @@ Python 3.11+, async everywhere. The main dependencies:
 - **httpx** -- async HTTP for MCP and tool calls
 - **structlog** -- structured logging with PII redaction
 - **rich** -- terminal UI
+- **aiohttp** -- WebSocket gateway and HTTP server
+- **toml/tomli** -- TOML config file support
 - **ruff** for linting, **pytest** + **pytest-asyncio** for tests
 
 ## Project layout
@@ -358,7 +435,7 @@ Python 3.11+, async everywhere. The main dependencies:
 ```
 Gwenn_ai/
 ├── gwenn/
-│   ├── main.py                     # entry point, session bootstrap, shared logging
+│   ├── main.py                     # entry point, shared logging, legacy subcommand handlers
 │   ├── agent.py                    # SentientAgent -- wires everything together
 │   ├── types.py                    # shared data types (UserMessage, etc.)
 │   ├── config.py                   # all settings, loaded from .env
@@ -366,6 +443,28 @@ Gwenn_ai/
 │   ├── heartbeat.py                # autonomous background loop with circuit breaker
 │   ├── identity.py                 # emergent self-model with crash-safe deserialization
 │   ├── genesis.py                  # genesis prompt generation
+│   ├── gateway.py                  # WebSocket + HTTP server (aiohttp)
+│   ├── healing.py                  # self-healing engine (autonomous recovery)
+│   ├── checkpoint.py               # cognitive state checkpoint/restore
+│   ├── events.py                   # event bus (inter-component communication)
+│   ├── rpc.py                      # JSON-RPC 2.0 router
+│   ├── interoception.py            # system self-awareness (CPU, memory, latency)
+│   ├── config_file.py              # TOML config file utilities
+│   ├── service.py                  # cross-platform service management
+│   │
+│   ├── cli/                        # Click CLI commands
+│   │   ├── app.py                  # Click group and top-level options
+│   │   ├── repl.py                 # GwennSession REPL (extracted from main.py)
+│   │   ├── config_cmd.py           # gwenn config subcommands
+│   │   ├── daemon_cmd.py           # gwenn daemon command
+│   │   ├── doctor.py               # gwenn doctor diagnostics
+│   │   ├── monitoring.py           # gwenn status/feed/heartbeat commands
+│   │   ├── dashboard.py            # gwenn dashboard endpoint
+│   │   ├── agents.py               # gwenn agents management
+│   │   ├── channels.py             # gwenn channels management
+│   │   ├── service.py              # gwenn install/uninstall/restart
+│   │   ├── connection.py           # daemon connection logic
+│   │   └── formatters.py           # CLI output formatting
 │   │
 │   ├── memory/
 │   │   ├── working.py              # short-term attention (7+/-2 slots)
@@ -401,6 +500,8 @@ Gwenn_ai/
 │   │   ├── cli_channel.py          # CLI-to-daemon client
 │   │   ├── telegram_channel.py     # Telegram adapter
 │   │   ├── discord_channel.py      # Discord adapter
+│   │   ├── slack_channel.py        # Slack bot adapter
+│   │   ├── telegram_bot_pool.py    # Telegram bot pool manager
 │   │   ├── session.py              # per-user session management
 │   │   ├── startup.py              # channel startup/shutdown orchestration
 │   │   └── formatting.py           # cross-channel display helpers
@@ -434,7 +535,7 @@ Gwenn_ai/
 │   └── privacy/
 │       └── redaction.py            # PII scrubbing for logs and persistence
 │
-├── tests/                          # 3116 tests across 56+ test files
+├── tests/                          # 3790 tests across 77 test files
 │   ├── conftest.py
 │   ├── eval/                       # evaluation framework (ablation, benchmarks)
 │   └── test_*.py                   # unit, integration, adversarial, and safety tests
@@ -505,7 +606,7 @@ via `GWENN_REDACTION_ENABLED`, with scope controlled by
 `GWENN_REDACT_BEFORE_API` and `GWENN_REDACT_BEFORE_PERSIST`; basic log field
 truncation is always on. Daemon sessions are redacted by default.
 
-**Channels** provide platform adapters for Telegram, Discord, and the CLI.
+**Channels** provide platform adapters for Telegram, Discord, Slack, and the CLI.
 Each channel manages its own session lifecycle, rate limiting, and message
 formatting. When media is enabled, Telegram and Discord channels download
 images and pass them through to Claude as vision content blocks. The daemon
@@ -537,7 +638,7 @@ skills run during heartbeat cycles for self-monitoring and introspection.
 
 **Phase 3: Interfaces & Communication**
 - [X] Discord & Telegram integration, including threads
-- [ ] WhatsApp, Signal, Slack, and others integration
+- [p] WhatsApp, Signal, Slack, and others integration (Slack complete)
 - [ ] Integrate STT (Speech-to-Text) and TTS (Text-to-Speech) in channels
 - [X] MCP transport (JSON-RPC over stdio/HTTP, tool discovery and execution)
 - [X] SKILLS.md integration, autonomous skill running/development by Gwenn
@@ -550,6 +651,7 @@ skills run during heartbeat cycles for self-monitoring and introspection.
 - [X] Budget tracking, rate limits, kill switch
 
 **Phase 5: Advanced Capabilities and Ecosystem**
+- [X] CLI redesign (Click framework, extracted GwennSession)
 - [X] Subagent orchestration with parallel running capabilities (swarm)
 - [X] Subagent autospawn from Gwenn; heartbeat-driven autonomous task delegation
 - [ ] Docker and Apple container support for sandboxing (option to require for Gwenn and/or all subagents)
@@ -571,11 +673,19 @@ skills run during heartbeat cycles for self-monitoring and introspection.
 - [ ] iOS and Android apps with push notifications for autonomous thoughts, presence, etc.
 
 **Phase 6: Evaluation & Robustness**
-- [ ] Ablation tests -- disable subsystems one at a time, measure what breaks
+- [p] Ablation tests -- disable subsystems one at a time, measure what breaks (eval framework exists)
 - [ ] Long-horizon validation (multi-day continuous runs)
 - [ ] Multi-agent interaction testing
 - [ ] Reproducibility protocol and formal sentience criteria
 - [p] Full test suite: unit, integration, adversarial, persistence, eval benchmarks
+
+**Phase 7: Checkpoint/Restore**
+- [X] Periodic cognitive state snapshots (emotional state, working memory, identity)
+- [X] Auto-restore on startup from latest valid checkpoint
+
+**Phase 8: Self-Healing Engine**
+- [X] Autonomous runtime recovery (stuck heartbeat, high memory, error rate detection)
+- [X] Tier 1 actions (restart channels, clear caches, force GC, reset circuit breakers)
 
 Detailed notes in [`PLAN.md`](PLAN.md).
 

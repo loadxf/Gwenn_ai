@@ -44,6 +44,7 @@ If no key or token is set, Gwenn auto-detects from `~/.claude/.credentials.json`
 | `CLI_ENABLED` | `true` | Enable the CLI terminal channel |
 | `TELEGRAM_ENABLED` | `false` | Enable the Telegram bot channel |
 | `DISCORD_ENABLED` | `false` | Enable the Discord bot channel |
+| `SLACK_ENABLED` | `false` | Enable the Slack bot channel |
 
 ## Memory & Persistence
 
@@ -282,3 +283,49 @@ Each server object supports:
 | `GWENN_DAEMON_SESSION_MAX_MESSAGES` | `200` | Max messages per session |
 | `GWENN_DAEMON_SESSION_INCLUDE_PREVIEW` | `False` | Show message previews in `/resume` |
 | `GWENN_DAEMON_REDACT_SESSION_CONTENT` | `True` | PII-redact stored session content |
+
+## Checkpoint/Restore
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GWENN_CHECKPOINT_ENABLED` | `true` | Enable periodic state checkpoints |
+| `GWENN_CHECKPOINT_INTERVAL_BEATS` | `50` | Heartbeats between checkpoints |
+| `GWENN_CHECKPOINT_MAX_COUNT` | `10` | Max stored checkpoints |
+
+## Self-Healing
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GWENN_SELF_HEALING_ENABLED` | `true` | Enable autonomous recovery |
+| `GWENN_SELF_HEALING_COOLDOWN` | `300` | Cooldown between healing actions (seconds) |
+| `GWENN_SELF_HEALING_MAX_ACTIONS_HOUR` | `20` | Max healing actions per hour |
+| `GWENN_SELF_HEALING_CHANNEL_RESTART` | `true` | Allow channel restart as healing action |
+| `GWENN_SELF_HEALING_STUCK_MULTIPLIER` | `2.0` | Multiplier for stuck-heartbeat detection |
+| `GWENN_SELF_HEALING_MEMORY_THRESHOLD` | `85.0` | Memory usage % triggering healing |
+| `GWENN_SELF_HEALING_ERROR_RATE_THRESHOLD` | `5.0` | Error rate triggering healing |
+
+## Gateway
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GWENN_GATEWAY_ENABLED` | `true` | Enable WebSocket/HTTP gateway |
+| `GWENN_GATEWAY_HOST` | `127.0.0.1` | Gateway bind address |
+| `GWENN_GATEWAY_PORT` | `18900` | Gateway port |
+| `GWENN_LEGACY_SOCKET_ENABLED` | `true` | Keep Unix socket alongside gateway |
+| `GWENN_MCP_SERVER_ENABLED` | `false` | Expose MCP server endpoint |
+| `GWENN_A2A_ENABLED` | `false` | Enable agent-to-agent protocol |
+| `GWENN_HEARTBEAT_CORE` | `true` | Run heartbeat in gateway process |
+
+## Slack Channel
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SLACK_ENABLED` | `false` | Enable Slack bot channel |
+| `GWENN_SLACK_BOT_TOKEN` | *(required)* | Slack bot token (`xoxb-...`) |
+| `GWENN_SLACK_APP_TOKEN` | *(required)* | Slack app-level token (`xapp-...`) |
+| `GWENN_SLACK_ALLOWED_USER_IDS` | `[]` | User ID whitelist |
+| `GWENN_SLACK_OWNER_USER_IDS` | `[]` | Owner IDs |
+| `GWENN_SLACK_MAX_HISTORY_LENGTH` | `50` | Max messages per session |
+| `GWENN_SLACK_SESSION_TTL` | `3600.0` | Session TTL (seconds) |
+| `GWENN_SLACK_SESSION_SCOPE` | `per_thread` | Session scope: `per_user`, `per_chat`, `per_thread` |
+| `GWENN_SLACK_USER_LOCK_CACHE_SIZE` | `512` | Lock cache size |
