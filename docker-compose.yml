@@ -1,0 +1,16 @@
+services:
+  gwenn:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gwenn
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - gwenn_data:/app/gwenn_data
+    # No network needed for CLI-only usage; enable for Telegram/Discord:
+    # network_mode: host
+    ports: []
+
+volumes:
+  gwenn_data:

@@ -831,10 +831,17 @@ class TelegramChannel(BaseChannel):
                 lines.append(f"/{skill.name} — {desc}")
         lines.append("\nJust send a message to talk with me.")
         text = "\n".join(lines)
-        if len(text) > 4000:
-            # Truncate skills list to fit Telegram's 4096-char limit
-            text = text[:4000] + "\n..."
-        await update.message.reply_text(text)
+        # Split into multiple messages to respect Telegram's 4096-char limit (L3 fix).
+        max_len = 4000
+        while len(text) > max_len:
+            # Find a line break near the limit to split cleanly.
+            split_at = text.rfind("\n", 0, max_len)
+            if split_at <= 0:
+                split_at = max_len
+            await update.message.reply_text(text[:split_at])
+            text = text[split_at:].lstrip("\n")
+        if text:
+            await update.message.reply_text(text)
 
     async def _on_setup(self, update, context) -> None:
         raw_id = str(update.effective_user.id)
@@ -983,7 +990,10 @@ class TelegramChannel(BaseChannel):
         lock = self._get_scope_lock(session_scope_key)
         try:
             async with lock:
-                self._cancel_flags.pop(raw_id, None)
+                # Do NOT clear cancel flags here — a concurrent message could
+                # consume a cancel meant for a still-processing request (L5 fix).
+                # Cancel flags are checked and cleared after processing below.
+
                 # Acknowledge receipt with a reaction so the user knows we saw it.
                 await self._acknowledge_received(update.message)
 

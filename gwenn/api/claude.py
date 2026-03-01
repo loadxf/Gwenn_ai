@@ -429,9 +429,14 @@ class CognitiveEngine:
                 )
                 raise
             except anthropic.RateLimitError as e:
+                from gwenn.metrics import metrics as _m
+                _m.inc("api_errors_total")
+                _m.inc("api_rate_limits_total")
                 logger.warning("cognitive_engine.rate_limited", error=str(e))
                 raise
             except anthropic.APIError as e:
+                from gwenn.metrics import metrics as _m
+                _m.inc("api_errors_total")
                 logger.error(
                     "cognitive_engine.api_error",
                     error=str(e),
@@ -441,6 +446,11 @@ class CognitiveEngine:
 
         # Update telemetry
         elapsed = time.monotonic() - start_time
+        from gwenn.metrics import metrics
+        metrics.inc("api_calls_total")
+        metrics.observe("api_latency_seconds", elapsed)
+        metrics.inc("api_input_tokens_total", response.usage.input_tokens)
+        metrics.inc("api_output_tokens_total", response.usage.output_tokens)
         self._total_input_tokens += response.usage.input_tokens
         self._total_output_tokens += response.usage.output_tokens
         self._total_cache_creation_tokens += getattr(

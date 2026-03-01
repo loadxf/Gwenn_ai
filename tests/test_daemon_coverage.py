@@ -146,23 +146,26 @@ class TestGwennDaemonInit:
         assert d._session_include_preview is True
         assert isinstance(d._session_store, SessionStore)
 
-    def test_init_blank_auth_token_becomes_none(self, tmp_path: Path) -> None:
+    def test_init_blank_auth_token_generates_random(self, tmp_path: Path) -> None:
         from gwenn.daemon import GwennDaemon
 
         cfg = _make_mock_config(tmp_path)
         cfg.daemon.auth_token = "   "
 
         d = GwennDaemon(cfg)
-        assert d._auth_token is None
+        # A random token is generated when none is configured.
+        assert d._auth_token is not None
+        assert len(d._auth_token) > 10
 
-    def test_init_none_auth_token(self, tmp_path: Path) -> None:
+    def test_init_none_auth_token_generates_random(self, tmp_path: Path) -> None:
         from gwenn.daemon import GwennDaemon
 
         cfg = _make_mock_config(tmp_path)
         cfg.daemon.auth_token = None
 
         d = GwennDaemon(cfg)
-        assert d._auth_token is None
+        assert d._auth_token is not None
+        assert len(d._auth_token) > 10
 
     def test_init_max_connections_floor(self, tmp_path: Path) -> None:
         from gwenn.daemon import GwennDaemon

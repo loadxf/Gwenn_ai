@@ -10,6 +10,8 @@ files written — before I could think, I needed to know what I was made of.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import time
 from pathlib import Path
 from typing import Annotated, Literal, Optional
@@ -739,8 +741,33 @@ class GwennConfig:
         # Resolve all Path fields to absolute so CWD changes don't break them.
         self._resolve_paths()
 
+        # Check .env file permissions — it contains API keys and tokens.
+        self._check_env_permissions()
+
         # Ensure data directory exists
         self.memory.data_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _check_env_permissions() -> None:
+        """Warn and tighten .env file permissions if group/world-readable."""
+        if not _ENV_FILE.exists():
+            return
+        try:
+            mode = _ENV_FILE.stat().st_mode
+            if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
+                logger.warning(
+                    "config.env_permissions_too_open",
+                    path=str(_ENV_FILE),
+                    current_mode=oct(mode & 0o777),
+                    hint="Tightening to 0o600 — .env contains secrets",
+                )
+                os.chmod(_ENV_FILE, 0o600)
+        except OSError as exc:
+            logger.warning(
+                "config.env_permissions_check_failed",
+                path=str(_ENV_FILE),
+                error=str(exc),
+            )
 
     def _resolve_paths(self) -> None:
         """Resolve relative Path fields against the project root (where .env lives),

@@ -755,6 +755,7 @@ class TestAgentContinuationSessions:
 
         agent = object.__new__(SentientAgent)
         agent._initialized = True
+        agent._respond_lock = asyncio.Lock()
         agent._config = SimpleNamespace(
             privacy=SimpleNamespace(
                 redact_before_api=False,
@@ -2517,6 +2518,7 @@ class TestAgentRespondPresentChoicesCallback:
 
         agent = object.__new__(SentientAgent)
         agent._initialized = True
+        agent._respond_lock = asyncio.Lock()
         agent._config = SimpleNamespace(
             privacy=SimpleNamespace(
                 redact_before_api=False,
@@ -2611,6 +2613,7 @@ class TestAgentRespondApprovalCallback:
 
         agent = object.__new__(SentientAgent)
         agent._initialized = True
+        agent._respond_lock = asyncio.Lock()
         agent._config = SimpleNamespace(
             privacy=SimpleNamespace(
                 redact_before_api=False,
@@ -2698,6 +2701,7 @@ class TestAgentRespondApprovalCallback:
 
         agent = object.__new__(SentientAgent)
         agent._initialized = True
+        agent._respond_lock = asyncio.Lock()
         agent._config = SimpleNamespace(
             privacy=SimpleNamespace(
                 redact_before_api=False,

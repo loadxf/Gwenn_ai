@@ -17,6 +17,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import signal
 import sys
 import time
@@ -56,7 +57,16 @@ class GwennDaemon:
         self._socket_path = config.daemon.socket_path
         self._pid_file = config.daemon.pid_file
         self._sessions_dir = config.daemon.sessions_dir
-        self._auth_token = (config.daemon.auth_token or "").strip() or None
+        raw_token = (config.daemon.auth_token or "").strip() or None
+        if raw_token is None:
+            raw_token = secrets.token_urlsafe(32)
+            logger.warning(
+                "daemon.auth_token_generated",
+                hint="No GWENN_DAEMON_AUTH_TOKEN configured — generated a random one. "
+                     "Set GWENN_DAEMON_AUTH_TOKEN in .env for persistent auth.",
+                token=raw_token,
+            )
+        self._auth_token = raw_token
         self._max_connections = max(1, int(config.daemon.max_connections))
         self._connection_timeout = max(1.0, float(config.daemon.connection_timeout))
         self._session_include_preview = bool(config.daemon.session_include_preview)
@@ -332,6 +342,8 @@ class GwennDaemon:
             await self._send(writer, response)
 
             # Disconnect after repeated auth failures to prevent brute-force.
+            # Only reset the counter on explicitly authorized successful responses,
+            # never on error responses (H2 fix).
             if response.get("message") == "unauthorized":
                 auth_failures += 1
                 if auth_failures >= self._MAX_AUTH_FAILURES:
@@ -340,7 +352,7 @@ class GwennDaemon:
                         failures=auth_failures,
                     )
                     break
-            elif msg_type == "chat" and response.get("type") != "error":
+            elif response.get("type") not in ("error", None):
                 auth_failures = 0
 
             if msg_type == "stop":
@@ -464,6 +476,14 @@ class GwennDaemon:
                     "active_connections": self._active_connections,
                 }
 
+            elif msg_type == "metrics":
+                from gwenn.metrics import metrics as _metrics_registry
+                return {
+                    "type": "metrics_response",
+                    "req_id": req_id,
+                    "metrics": _metrics_registry.snapshot(),
+                }
+
             elif msg_type == "stop":
                 logger.info("daemon.stop_requested")
                 self._request_shutdown("daemon_stop_requested")
@@ -562,7 +582,7 @@ def run_daemon() -> None:
 
     Loads config, creates GwennDaemon, runs the event loop.
     """
-    configure_logging()
+    configure_logging(daemon=True)
     try:
         config = GwennConfig()
     except Exception as e:

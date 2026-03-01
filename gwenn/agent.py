@@ -1020,7 +1020,8 @@ class SentientAgent:
         self._resolve_calibration_outcome(text)
 
         # ---- Step 2: APPRAISE ----
-        # Emotionally evaluate the incoming message
+        # Emotionally evaluate the incoming message.
+        # Acquire _respond_lock to serialize against heartbeat mutations (H1 fix).
         message_appraisal = AppraisalEvent(
             stimulus_type=StimulusType.USER_MESSAGE,
             intensity=self._estimate_message_intensity(text),
@@ -1030,7 +1031,8 @@ class SentientAgent:
                 "valence_hint": self._estimate_message_valence(text),
             },
         )
-        self.process_appraisal(message_appraisal)
+        async with self._respond_lock:
+            self.process_appraisal(message_appraisal)
 
         # ---- Step 2.5: GROUND ----
         # Create sensory percepts for this social interaction
@@ -1058,12 +1060,13 @@ class SentientAgent:
         # Relevant memories surfacing is novel information in this context —
         # mild arousal boost, slight certainty decrease (the world is bigger than expected).
         if relevant_episodes or relevant_knowledge:
-            self.process_appraisal(
-                AppraisalEvent(
-                    stimulus_type=StimulusType.NOVEL_INFORMATION,
-                    intensity=0.3 + 0.05 * min(4, len(relevant_episodes) + len(relevant_knowledge)),
+            async with self._respond_lock:
+                self.process_appraisal(
+                    AppraisalEvent(
+                        stimulus_type=StimulusType.NOVEL_INFORMATION,
+                        intensity=0.3 + 0.05 * min(4, len(relevant_episodes) + len(relevant_knowledge)),
+                    )
                 )
-            )
 
         # Update working memory with current context
         wm_item = WorkingMemoryItem(
@@ -1154,18 +1157,24 @@ class SentientAgent:
             error_text = str(getattr(tool_result, "error", "") or "")
             if error_text and "blocked" in error_text.lower():
                 intensity = 0.35
-            self.process_appraisal(
-                AppraisalEvent(
-                    stimulus_type=stimulus,
-                    intensity=intensity,
-                    metadata={
-                        "tool_name": tool_name,
-                        "habituation_key": (
-                            f"tool:{tool_name}:{'success' if succeeded else 'failure'}"
-                        ),
-                    },
+            # Acquire _respond_lock to serialize against heartbeat mutations (H1 fix).
+            # This is a sync callback so we cannot await; use try_lock pattern instead.
+            if self._respond_lock.locked():
+                # Lock held by heartbeat — skip appraisal rather than risk inconsistency
+                logger.debug("agent.tool_appraisal_skipped", tool=tool_name, reason="lock_contention")
+            else:
+                self.process_appraisal(
+                    AppraisalEvent(
+                        stimulus_type=stimulus,
+                        intensity=intensity,
+                        metadata={
+                            "tool_name": tool_name,
+                            "habituation_key": (
+                                f"tool:{tool_name}:{'success' if succeeded else 'failure'}"
+                            ),
+                        },
+                    )
                 )
-            )
             # Feed tool outcome into the sensory system as an environmental percept.
             ground_env = getattr(self.sensory, "ground_environmental", None)
             if callable(ground_env):
@@ -1238,6 +1247,11 @@ class SentientAgent:
 
         # ---- Step 7: RESPOND ----
         elapsed = time.time() - response_start
+        from gwenn.metrics import metrics
+        metrics.inc("responses_total")
+        metrics.observe("response_latency_seconds", elapsed)
+        if loop_result.was_truncated:
+            metrics.inc("responses_truncated_total")
         logger.info(
             "agent.response_generated",
             elapsed_seconds=round(elapsed, 2),

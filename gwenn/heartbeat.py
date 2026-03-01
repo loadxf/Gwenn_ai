@@ -240,6 +240,10 @@ class Heartbeat:
                 pass
 
         elapsed = time.monotonic() - beat_start
+        from gwenn.metrics import metrics
+        metrics.inc("heartbeat_beats_total")
+        metrics.observe("heartbeat_latency_seconds", elapsed)
+        metrics.set_gauge("heartbeat_interval_seconds", self._interval)
         logger.debug(
             "heartbeat.beat_complete",
             beat_number=self._beat_count,

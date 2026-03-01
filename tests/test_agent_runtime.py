@@ -7,6 +7,7 @@ agent runtime without making network calls.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import socket
 from types import SimpleNamespace
@@ -141,6 +142,7 @@ class _MemoryStoreOnboardingStub:
 async def test_respond_passes_tools_and_redacts_api_payload():
     agent = object.__new__(SentientAgent)
     agent._initialized = True
+    agent._respond_lock = asyncio.Lock()
 
     dims = SimpleNamespace(
         valence=0.1,
@@ -243,6 +245,7 @@ async def test_respond_appraisal_includes_message_valence_hint():
 
     agent = object.__new__(SentientAgent)
     agent._initialized = True
+    agent._respond_lock = asyncio.Lock()
     agent._config = SimpleNamespace(
         privacy=SimpleNamespace(
             redact_before_api=False,
@@ -329,6 +332,7 @@ async def test_respond_appraises_tool_results():
 
     agent = object.__new__(SentientAgent)
     agent._initialized = True
+    agent._respond_lock = asyncio.Lock()
     agent._config = SimpleNamespace(
         privacy=SimpleNamespace(
             redact_before_api=False,

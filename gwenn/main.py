@@ -111,12 +111,16 @@ def _redact_sensitive_fields(logger, method_name, event_dict):
 _logging_configured = False
 
 
-def configure_logging() -> None:
+def configure_logging(*, daemon: bool = False) -> None:
     """Configure structlog and standard-library logging for Gwenn entry points.
 
     Safe to call more than once — subsequent calls are no-ops.  Both
     ``main()`` and ``run_daemon()`` should invoke this before creating
     any loggers to ensure PII redaction and consistent formatting.
+
+    Args:
+        daemon: When True, use JSON renderer suitable for log files and
+            structured log aggregation instead of the colored console renderer.
     """
     global _logging_configured  # noqa: PLW0603
     if _logging_configured:
@@ -126,12 +130,18 @@ def configure_logging() -> None:
     _log_level = os.environ.get("GWENN_LOG_LEVEL", "WARNING").upper()
     logging.basicConfig(format="%(message)s", level=getattr(logging, _log_level, logging.WARNING))
 
+    if daemon:
+        renderer = structlog.processors.JSONRenderer()
+    else:
+        renderer = structlog.dev.ConsoleRenderer(colors=True)
+
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
             structlog.stdlib.add_log_level,
             _redact_sensitive_fields,
-            structlog.dev.ConsoleRenderer(colors=True),
+            structlog.processors.format_exc_info,
+            renderer,
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
