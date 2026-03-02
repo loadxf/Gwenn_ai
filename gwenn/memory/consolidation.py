@@ -332,7 +332,7 @@ class ConsolidationEngine:
         """Parse and store a RELATIONSHIP line. Returns True if successfully parsed."""
         # Format: RELATIONSHIP: [source] -> [rel_type] -> [target] | strength: [0-1]
         # Also accepts Unicode arrows (→), which models sometimes emit.
-        raw = line[14:].strip()
+        raw = line[13:].strip()
         if not raw:
             return False
 
