@@ -68,49 +68,50 @@ class VideoProcessor:
                 tmp_path = tmp.name
 
             cap = cv2.VideoCapture(tmp_path)
-            if not cap.isOpened():
-                logger.warning("video.cannot_open")
-                return []
+            try:
+                if not cap.isOpened():
+                    logger.warning("video.cannot_open")
+                    return []
 
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            if total_frames < 1:
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                if total_frames < 1:
+                    return []
+
+                # Sample at 20%, 40%, 60%, 80% positions.
+                positions = [
+                    int(total_frames * pct) for pct in _frame_positions(num_frames)
+                ]
+
+                blocks: list[dict] = []
+                for pos in positions:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, min(pos, total_frames - 1))
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        continue
+
+                    # Resize to fit Claude's vision limit.
+                    frame = _resize_frame(frame, _MAX_LONG_EDGE)
+
+                    # Encode as JPEG.
+                    ok, buf = cv2.imencode(
+                        ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, _JPEG_QUALITY]
+                    )
+                    if not ok:
+                        continue
+
+                    b64 = base64.standard_b64encode(buf.tobytes()).decode("ascii")
+                    blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": b64,
+                        },
+                    })
+
+                return blocks
+            finally:
                 cap.release()
-                return []
-
-            # Sample at 20%, 40%, 60%, 80% positions.
-            positions = [
-                int(total_frames * pct) for pct in _frame_positions(num_frames)
-            ]
-
-            blocks: list[dict] = []
-            for pos in positions:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, min(pos, total_frames - 1))
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    continue
-
-                # Resize to fit Claude's vision limit.
-                frame = _resize_frame(frame, _MAX_LONG_EDGE)
-
-                # Encode as JPEG.
-                ok, buf = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, _JPEG_QUALITY]
-                )
-                if not ok:
-                    continue
-
-                b64 = base64.standard_b64encode(buf.tobytes()).decode("ascii")
-                blocks.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": b64,
-                    },
-                })
-
-            cap.release()
-            return blocks
         finally:
             if tmp_path:
                 try:

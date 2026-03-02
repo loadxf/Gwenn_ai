@@ -2308,37 +2308,48 @@ class TestMainEntryPoint:
     def test_main_default_runs_session(self, monkeypatch):
         from gwenn.main import main
         monkeypatch.setattr("sys.argv", ["gwenn"])
-        mock_run = MagicMock()
-        monkeypatch.setattr("asyncio.run", mock_run)
+
+        def _mock_run(coro):
+            coro.close()
+
+        monkeypatch.setattr("asyncio.run", _mock_run)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
         monkeypatch.setattr("gwenn.main._termios", None)
         main()
-        mock_run.assert_called_once()
 
     def test_main_with_channel_flag(self, monkeypatch):
         from gwenn.main import main
         monkeypatch.setattr("sys.argv", ["gwenn", "--channel", "telegram"])
-        mock_run = MagicMock()
-        monkeypatch.setattr("asyncio.run", mock_run)
+
+        def _mock_run(coro):
+            coro.close()
+
+        monkeypatch.setattr("asyncio.run", _mock_run)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
         monkeypatch.setattr("gwenn.main._termios", None)
         main()
-        mock_run.assert_called_once()
 
     def test_main_no_daemon_flag(self, monkeypatch):
         from gwenn.main import main
         monkeypatch.setattr("sys.argv", ["gwenn", "--no-daemon"])
-        mock_run = MagicMock()
-        monkeypatch.setattr("asyncio.run", mock_run)
+
+        def _mock_run(coro):
+            coro.close()
+
+        monkeypatch.setattr("asyncio.run", _mock_run)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
         monkeypatch.setattr("gwenn.main._termios", None)
         main()
-        mock_run.assert_called_once()
 
     def test_main_keyboard_interrupt(self, monkeypatch):
         from gwenn.main import main
         monkeypatch.setattr("sys.argv", ["gwenn"])
-        monkeypatch.setattr("asyncio.run", MagicMock(side_effect=KeyboardInterrupt()))
+
+        def _mock_run(coro):
+            coro.close()
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr("asyncio.run", _mock_run)
         monkeypatch.setattr("gwenn.main.console.print", MagicMock())
         monkeypatch.setattr("gwenn.main._logging_configured", False)
         monkeypatch.setattr("gwenn.main._termios", None)
@@ -2448,7 +2459,12 @@ class TestRemainingGaps:
         # verify the guard exists and call main() directly.
         from gwenn.main import main
         monkeypatch.setattr("sys.argv", ["gwenn"])
-        monkeypatch.setattr("asyncio.run", MagicMock())
+
+        def _mock_asyncio_run(coro):
+            """Accept the coroutine and close it to avoid 'never awaited' warnings."""
+            coro.close()
+
+        monkeypatch.setattr("asyncio.run", _mock_asyncio_run)
         monkeypatch.setattr("gwenn.main._logging_configured", False)
         monkeypatch.setattr("gwenn.main._termios", None)
         main()

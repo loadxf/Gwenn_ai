@@ -964,8 +964,10 @@ class TestToolExecutorEdgeCases:
                     except ValueError:
                         pass
 
-        # Acquire the semaphore first so release() works
-        executor._sync_slot.acquire()
+        # Acquire the semaphore first so release() works.
+        # _sync_slot is an asyncio.BoundedSemaphore — decrement its value
+        # directly to simulate acquisition without creating an unawaited coroutine.
+        executor._sync_slot._value -= 1
         _invoke()
         assert result_box["result"] == "sync result"
 

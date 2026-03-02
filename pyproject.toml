@@ -35,6 +35,7 @@ telegram = ["python-telegram-bot[rate-limiter]>=22.0"]
 discord = ["discord.py>=2.3.0"]
 channels = ["python-telegram-bot[rate-limiter]>=22.0", "discord.py>=2.3.0"]
 groq = ["groq>=0.11.0"]
+elevenlabs = ["elevenlabs>=2.0.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
@@ -51,6 +52,25 @@ include = ["gwenn", "gwenn.*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "gwenn.__version__"}
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+filterwarnings = [
+    # PTB plans to change retry_after to timedelta in a future major version.
+    # Nothing to act on until that release; silence the noise.
+    "ignore::telegram.warnings.PTBDeprecationWarning",
+    # unittest.mock creates unawaited coroutines when AsyncMock attributes are
+    # accessed but never called — a known CPython mock limitation, not a bug in
+    # our code.  Also covers coroutines passed to mocked ensure_future/create_task.
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
+    "ignore:coroutine 'DockerManager.run_container.<locals>._cleanup_after_exit' was never awaited:RuntimeWarning",
+    # Rich animation internals may create unawaited sleep coroutines when a
+    # console status/spinner is interrupted by an exception.
+    "ignore:coroutine 'sleep' was never awaited:RuntimeWarning",
+    # structlog processor-chain ordering advisory — not actionable without
+    # removing pretty-exception support.
+    "ignore:Remove `format_exc_info` from your processor chain:UserWarning",
+]
 
 [tool.ruff]
 line-length = 100

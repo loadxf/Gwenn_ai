@@ -435,6 +435,9 @@ def test_stdio_transport_init_with_stderr():
         mock_create_task.return_value = MagicMock()
         transport = _StdioTransport(cfg, proc)
         assert transport._stderr_task is not None
+        # Close the unawaited coroutine passed to the mocked create_task.
+        coro = mock_create_task.call_args[0][0]
+        coro.close()
 
 
 def test_stdio_transport_init_without_stderr():
@@ -455,6 +458,10 @@ async def test_stdio_transport_start():
             mock_create_task.return_value = MagicMock()
             transport = await _StdioTransport.start(cfg)
             assert transport._process is mock_proc
+            # Close the unawaited _drain_stderr coroutine passed to mocked create_task.
+            if mock_create_task.call_args:
+                coro = mock_create_task.call_args[0][0]
+                coro.close()
 
 
 @pytest.mark.asyncio
