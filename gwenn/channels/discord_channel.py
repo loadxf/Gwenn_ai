@@ -124,6 +124,11 @@ class DiscordChannel(BaseChannel):
                 await self._audio_transcriber.close()
             except Exception:
                 logger.debug("discord_channel.audio_transcriber_close_error", exc_info=True)
+        if self._tts_synthesizer is not None:
+            try:
+                await self._tts_synthesizer.close()
+            except Exception:
+                logger.debug("discord_channel.tts_synthesizer_close_error", exc_info=True)
         if self._client is not None:
             try:
                 await self._client.close()
@@ -241,6 +246,7 @@ class DiscordChannel(BaseChannel):
             and isinstance(channel_obj, _discord.Thread)
         ):
             raw_thread_id = raw_chat_id
+            raw_chat_id = self._normalize_optional_id(getattr(channel_obj, "parent_id", None))
         scope_key = self._session_scope_key(
             raw_user_id=raw_user_id,
             raw_chat_id=raw_chat_id,
@@ -381,6 +387,55 @@ class DiscordChannel(BaseChannel):
             return None
 
     # ------------------------------------------------------------------
+    # TTS synthesizer helper
+    # ------------------------------------------------------------------
+
+    _tts_synthesizer = None
+
+    def _get_tts_synthesizer(self):
+        """Lazily create a TextToSpeechSynthesizer from the agent's ElevenLabs config."""
+        if self._tts_synthesizer is not None:
+            return self._tts_synthesizer
+        el_config = getattr(self._agent._config, "elevenlabs", None)
+        if el_config is None or not el_config.is_available:
+            return None
+        try:
+            from gwenn.media.tts import TextToSpeechSynthesizer
+
+            self._tts_synthesizer = TextToSpeechSynthesizer(el_config)
+            return self._tts_synthesizer
+        except Exception as exc:
+            logger.warning("discord_channel.tts_init_failed", error=str(exc))
+            return None
+
+    def _should_send_voice(self, is_voice_message: bool) -> bool:
+        """Return True if a voice reply should be sent given the current TTS mode."""
+        el_config = getattr(self._agent._config, "elevenlabs", None)
+        if el_config is None or getattr(el_config, "is_available", False) is not True:
+            return False
+        return el_config.should_send_voice(is_voice_message)
+
+    async def _send_voice_reply(self, message, text: str) -> None:
+        """Synthesize *text* and send as a Discord file attachment."""
+        try:
+            import io
+
+            import discord
+
+            synthesizer = self._get_tts_synthesizer()
+            if synthesizer is None:
+                return
+            audio_bytes = await synthesizer.synthesize(text)
+            if audio_bytes is None:
+                return
+            await message.reply(
+                file=discord.File(io.BytesIO(audio_bytes), filename="response.ogg"),
+                mention_author=False,
+            )
+        except Exception as exc:
+            logger.warning("discord_channel.voice_reply_failed", error=str(exc))
+
+    # ------------------------------------------------------------------
     # Message handler
     # ------------------------------------------------------------------
 
@@ -428,6 +483,7 @@ class DiscordChannel(BaseChannel):
         # Extract media attachments when media is enabled.
         image_blocks: list[dict] = []
         media_descriptions: list[str] = []
+        is_voice_message = False
         if getattr(self._config, "enable_media", False) and message.attachments:
             image_blocks = await self._extract_image_attachments(message)
 
@@ -452,8 +508,9 @@ class DiscordChannel(BaseChannel):
                         desc_parts.append("]")
                     media_descriptions.append("".join(desc_parts))
 
-            # Audio attachments — transcribe.
+            # Audio attachments — transcribe and track for TTS reply.
             audio_attachments = await self._extract_audio_attachments(message)
+            is_voice_message = bool(audio_attachments)
             if audio_attachments:
                 transcriber = self._get_audio_transcriber()
                 for audio_bytes, filename in audio_attachments:
@@ -500,11 +557,10 @@ class DiscordChannel(BaseChannel):
             return
 
         raw_chat_id = self._normalize_optional_id(getattr(message.channel, "id", None))
-        raw_thread_id = (
-            raw_chat_id
-            if hasattr(discord, "Thread") and isinstance(message.channel, discord.Thread)
-            else None
-        )
+        raw_thread_id = None
+        if hasattr(discord, "Thread") and isinstance(message.channel, discord.Thread):
+            raw_thread_id = raw_chat_id
+            raw_chat_id = self._normalize_optional_id(getattr(message.channel, "parent_id", None))
         session_scope_key = self._session_scope_key(
             raw_user_id=raw_id,
             raw_chat_id=raw_chat_id,
@@ -575,6 +631,10 @@ class DiscordChannel(BaseChannel):
                                 await asyncio.sleep(0.5)
                     except Exception as exc:
                         logger.error("discord_channel.send_error", error=str(exc), exc_info=True)
+
+                    # Send a voice reply if TTS is enabled for this context.
+                    if self._should_send_voice(is_voice_message):
+                        await self._send_voice_reply(message, str(response))
 
                 # Clear the "received" reaction now that we've replied.
                 try:

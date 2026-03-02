@@ -468,6 +468,43 @@ class GroqConfig(BaseSettings):
         return bool(self.api_key)
 
 
+class ElevenLabsConfig(BaseSettings):
+    """Configuration for ElevenLabs text-to-speech (optional)."""
+
+    api_key: Optional[str] = Field(None, alias="ELEVENLABS_API_KEY")
+    voice_id: str = Field("JBFqnCBsd6RMkjVDRZzb", alias="GWENN_TTS_VOICE_ID")
+    model: str = Field("eleven_turbo_v2_5", alias="GWENN_TTS_MODEL")
+    output_format: str = Field("opus_48000_128", alias="GWENN_TTS_OUTPUT_FORMAT")
+    max_chars: int = Field(2500, alias="GWENN_TTS_MAX_CHARS")
+    mode: str = Field("voice_reply", alias="GWENN_TTS_MODE")
+
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
+
+    @property
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+    def should_send_voice(self, is_voice_message: bool = False) -> bool:
+        """Whether a voice reply should be sent for this interaction."""
+        if not self.is_available or self.mode == "off":
+            return False
+        if self.mode == "always":
+            return True
+        return self.mode == "voice_reply" and is_voice_message
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> "ElevenLabsConfig":
+        if self.mode not in {"off", "voice_reply", "always"}:
+            import structlog
+            structlog.get_logger(__name__).warning(
+                "config.elevenlabs_invalid_mode",
+                provided=self.mode,
+                fallback="voice_reply",
+            )
+            self.mode = "voice_reply"
+        return self
+
+
 class OrchestrationConfig(BaseSettings):
     """Configuration for the subagent orchestration system."""
 
@@ -719,6 +756,9 @@ class GwennConfig:
 
         # Groq Whisper transcription (optional)
         self.groq = GroqConfig()
+
+        # ElevenLabs text-to-speech (optional)
+        self.elevenlabs = ElevenLabsConfig()
 
         # Channel config (channel mode; Telegram/Discord configs loaded lazily)
         self.channel = ChannelConfig()

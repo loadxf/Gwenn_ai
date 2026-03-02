@@ -9,6 +9,7 @@ in each channel adapter.
 from __future__ import annotations
 
 from gwenn.media.audio import AudioTranscriber
+from gwenn.media.tts import TextToSpeechSynthesizer
 from gwenn.media.video import VideoProcessor
 
-__all__ = ["AudioTranscriber", "VideoProcessor"]
+__all__ = ["AudioTranscriber", "TextToSpeechSynthesizer", "VideoProcessor"]

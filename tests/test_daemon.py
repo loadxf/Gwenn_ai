@@ -452,7 +452,9 @@ class TestCliChannel:
         await channel.connect(mock_daemon_server)
         resp = await channel.stop_daemon()
         assert resp["type"] == "ack_stop"
-        # Don't disconnect — server closed the connection
+        # Server closed its side, but we still need to close the client writer
+        # to avoid an unclosed StreamWriter ResourceWarning.
+        await channel.disconnect()
 
     async def test_auth_token_is_sent_when_configured(self, tmp_path: Path) -> None:
         from gwenn.channels.cli_channel import CliChannel

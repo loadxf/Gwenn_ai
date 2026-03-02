@@ -1075,12 +1075,20 @@ class TestMemoryStoreLoadMethods:
     interagent, sensory, ethics, inner_life) — covering error and
     validation branches."""
 
+    @pytest.fixture(autouse=True)
+    def _close_stores(self):
+        self._stores: list = []
+        yield
+        for s in self._stores:
+            s.close()
+
     def _make_store(self, tmp_path):
         from gwenn.memory.store import MemoryStore
         db_path = tmp_path / "gwenn.db"
         vec_path = tmp_path / "vectors"
         store = MemoryStore(db_path=db_path, vector_db_path=vec_path)
         store.initialize()
+        self._stores.append(store)
         return store
 
     def test_load_metacognition_non_dict_payload(self, tmp_path):

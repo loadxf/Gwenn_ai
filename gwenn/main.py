@@ -228,14 +228,10 @@ class GwennSession:
     def _startup_steps_template() -> list[dict[str, str]]:
         """Return the ordered startup phases shown in the startup panel."""
         return [
-            {"key": "fabric", "label": "Loading Gwenn's neural fabric", "state": "pending"},
-            {"key": "wake", "label": "Waking Gwenn up", "state": "pending"},
-            {"key": "memory", "label": "Loading Gwenn's memories and identity", "state": "pending"},
-            {
-                "key": "heartbeat",
-                "label": "Loading Gwenn's autonomous heartbeat",
-                "state": "pending",
-            },
+            {"key": "fabric", "label": "Connecting to Gwenn's framework", "state": "pending"},
+            {"key": "wake", "label": "Waking up Gwenn", "state": "pending"},
+            {"key": "memory", "label": "Loading Gwenn's memory", "state": "pending"},
+            {"key": "heartbeat", "label": "Pumping Gwenn's heart","state": "pending"},
         ]
 
     def _build_startup_state(self) -> dict[str, Any]:
@@ -293,11 +289,11 @@ class GwennSession:
             details.add_column(ratio=1)
             if model:
                 details.add_row(
-                    Text("✓", style="green"), Text(f"Neural fabric model: {model}", style="dim")
+                    Text("✓", style="green"), Text(f"Framework: {model}", style="dim")
                 )
             if data_dir:
                 details.add_row(
-                    Text("✓", style="green"), Text(f"Neural directory: {data_dir}", style="dim")
+                    Text("✓", style="green"), Text(f"Neural location: {data_dir}", style="dim")
                 )
             body.extend([Text(""), details])
 
@@ -344,7 +340,7 @@ class GwennSession:
         return Panel(
             Group(*body),
             title=Text("Gwenn.ai Terminal", style="bold cyan", justify="center"),
-            subtitle="Created by Jayden & Dad - A father/son team | https://gwenn.ai",
+            subtitle="Created by Jayden & Justin - A father/son dev team | https://gwenn.ai",
             border_style="cyan",
         )
 
@@ -398,7 +394,7 @@ class GwennSession:
             if startup_live is not None:
                 startup_live.stop()
             if sys.stdout.isatty():
-                console.print(f"[red]Neural fabric error: {e}[/red]")
+                console.print(f"[red]Neural framework error: {e}[/red]")
             else:
                 logger.error("session.config_error", error=str(e))
             sys.exit(1)
@@ -600,8 +596,8 @@ class GwennSession:
         if sys.stdout.isatty():
             daemon_state = self._build_startup_state()
             daemon_state["steps"] = [
-                {"key": "fabric", "label": "Loading Gwenn's AI", "state": "pending"},
-                {"key": "connect", "label": "Connecting to Gwenn's brain", "state": "pending"},
+                {"key": "fabric", "label": "Loading Gwenn's framework", "state": "pending"},
+                {"key": "connect", "label": "Loading Gwenn's brain", "state": "pending"},
             ]
             daemon_live = Live(
                 self._render_startup_panel(daemon_state),
@@ -631,7 +627,7 @@ class GwennSession:
         if daemon_state is not None:
             self._set_startup_step(daemon_state, "connect", "done")
             daemon_state["ready_lines"] = [
-                "Connected to Gwenn's daemon. Type your message, or '/exit' to close.",
+                "Connected to Gwenn's framework. Type your message, or '/exit' to close.",
                 "Press Ctrl+C twice quickly to close gracefully.",
                 "Type / and press Tab to see matching slash commands.",
             ]
@@ -1426,6 +1422,10 @@ class GwennSession:
                 console.print(Markdown(str(response)))
                 console.print()
 
+                # Play TTS audio if mode is "always" (CLI has no voice input).
+                if self._should_play_voice():
+                    await self._play_tts(str(response))
+
             except EOFError:
                 break
             except KeyboardInterrupt:
@@ -1643,6 +1643,88 @@ class GwennSession:
     # Signal handling
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # CLI TTS playback
+    # ------------------------------------------------------------------
+
+    _tts_synthesizer = None
+
+    def _get_tts_synthesizer(self):
+        """Lazily create a TextToSpeechSynthesizer from config."""
+        if self._tts_synthesizer is not None:
+            return self._tts_synthesizer
+        if self._config is None:
+            return None
+        el_config = getattr(self._config, "elevenlabs", None)
+        if el_config is None or not el_config.is_available:
+            return None
+        try:
+            from gwenn.media.tts import TextToSpeechSynthesizer
+
+            self._tts_synthesizer = TextToSpeechSynthesizer(el_config)
+            return self._tts_synthesizer
+        except Exception as exc:
+            logger.warning("cli.tts_init_failed", error=str(exc))
+            return None
+
+    def _should_play_voice(self) -> bool:
+        """Return True if CLI TTS playback is enabled (only in 'always' mode)."""
+        if self._config is None:
+            return False
+        el_config = getattr(self._config, "elevenlabs", None)
+        if el_config is None:
+            return False
+        # CLI has no voice input, so only "always" mode applies.
+        return el_config.should_send_voice(is_voice_message=False)
+
+    async def _play_tts(self, text: str) -> None:
+        """Synthesize *text* via ElevenLabs and play through a local audio player."""
+        import shutil
+        import tempfile
+
+        synthesizer = self._get_tts_synthesizer()
+        if synthesizer is None:
+            return
+        audio_bytes = await synthesizer.synthesize(text)
+        if audio_bytes is None:
+            return
+
+        # Write to a temp file and play with the first available player.
+        tmp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            for cmd in (
+                ["mpv", "--no-video", tmp_path],
+                ["ffplay", "-nodisp", "-autoexit", tmp_path],
+                ["paplay", tmp_path],
+            ):
+                if shutil.which(cmd[0]) is not None:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.wait()
+                    break
+            else:
+                logger.warning(
+                    "cli.no_audio_player",
+                    hint="Install mpv, ffplay, or paplay to hear TTS output.",
+                )
+        except Exception as exc:
+            logger.warning("cli.tts_playback_failed", error=str(exc))
+        finally:
+            if tmp_path is not None:
+                import os
+
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
     def _request_shutdown(self) -> None:
         """Request graceful shutdown on SIGTERM or confirmed SIGINT."""
         self._shutdown_event.set()
@@ -1714,6 +1796,12 @@ class GwennSession:
 
             if sys.stdout.isatty():
                 console.print()
+
+            if self._tts_synthesizer is not None:
+                try:
+                    await self._tts_synthesizer.close()
+                except Exception:
+                    pass
 
             if self._agent:
                 if sys.stdout.isatty():

@@ -244,6 +244,11 @@ class TelegramChannel(BaseChannel):
                 await self._audio_transcriber.close()
             except Exception:
                 logger.debug("telegram_channel.audio_transcriber_close_error", exc_info=True)
+        if self._tts_synthesizer is not None:
+            try:
+                await self._tts_synthesizer.close()
+            except Exception:
+                logger.debug("telegram_channel.tts_synthesizer_close_error", exc_info=True)
         if self._app is None:
             return
         try:
@@ -980,6 +985,8 @@ class TelegramChannel(BaseChannel):
         context,
         raw_id: str,
         message: UserMessage | str,
+        *,
+        is_voice_message: bool = False,
     ) -> None:
         """Core message processing shared by text and media handlers."""
         if isinstance(message, str):
@@ -1047,6 +1054,10 @@ class TelegramChannel(BaseChannel):
                 await self._send_chunks_to_message(
                     update.message, chunks, button_rows=button_rows
                 )
+
+                # Send a voice reply if TTS is enabled for this context.
+                if self._should_send_voice(is_voice_message):
+                    await self._send_voice_reply(update, response_text)
 
                 # Clear the "received" reaction now that we've replied.
                 await self._clear_reaction(update.message)
@@ -1237,7 +1248,7 @@ class TelegramChannel(BaseChannel):
             user_id=raw_id,
             has_transcript=bool(transcript),
         )
-        await self._process_user_input(update, context, raw_id, description)
+        await self._process_user_input(update, context, raw_id, description, is_voice_message=True)
 
     _MAX_VIDEO_BYTES: int = 20 * 1024 * 1024  # 20 MB
 
@@ -1339,6 +1350,50 @@ class TelegramChannel(BaseChannel):
         except Exception as exc:
             logger.warning("telegram_channel.transcriber_init_failed", error=str(exc))
             return None
+
+    # ------------------------------------------------------------------
+    # TTS synthesizer helper
+    # ------------------------------------------------------------------
+
+    _tts_synthesizer = None
+
+    def _get_tts_synthesizer(self):
+        """Lazily create a TextToSpeechSynthesizer from the agent's ElevenLabs config."""
+        if self._tts_synthesizer is not None:
+            return self._tts_synthesizer
+        el_config = getattr(self._agent._config, "elevenlabs", None)
+        if el_config is None or not el_config.is_available:
+            return None
+        try:
+            from gwenn.media.tts import TextToSpeechSynthesizer
+
+            self._tts_synthesizer = TextToSpeechSynthesizer(el_config)
+            return self._tts_synthesizer
+        except Exception as exc:
+            logger.warning("telegram_channel.tts_init_failed", error=str(exc))
+            return None
+
+    def _should_send_voice(self, is_voice_message: bool) -> bool:
+        """Return True if a voice reply should be sent given the current TTS mode."""
+        el_config = getattr(self._agent._config, "elevenlabs", None)
+        if el_config is None or getattr(el_config, "is_available", False) is not True:
+            return False
+        return el_config.should_send_voice(is_voice_message)
+
+    async def _send_voice_reply(self, update, text: str) -> None:
+        """Synthesize *text* and send as a Telegram voice message."""
+        try:
+            import io
+
+            synthesizer = self._get_tts_synthesizer()
+            if synthesizer is None:
+                return
+            audio_bytes = await synthesizer.synthesize(text)
+            if audio_bytes is None:
+                return
+            await update.message.reply_voice(voice=io.BytesIO(audio_bytes))
+        except Exception as exc:
+            logger.warning("telegram_channel.voice_reply_failed", error=str(exc))
 
     # ------------------------------------------------------------------
     # Edited / unsupported / error handlers

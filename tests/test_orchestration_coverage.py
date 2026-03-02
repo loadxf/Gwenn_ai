@@ -845,8 +845,14 @@ class TestDockerManagerRunContainer:
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc), \
              patch("os.open", return_value=3), \
              patch("os.fdopen", return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock())), \
-             patch("asyncio.ensure_future"):
+             patch("asyncio.ensure_future") as mock_ensure:
             container_name, proc = await manager.run_container(spec, "sk-test")
+
+        # Close unawaited coroutine passed to the mocked ensure_future.
+        if mock_ensure.call_args:
+            coro = mock_ensure.call_args[0][0]
+            if hasattr(coro, "close"):
+                coro.close()
 
         assert container_name == "gwenn-sub-test-456"
 
