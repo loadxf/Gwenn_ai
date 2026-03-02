@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import os
 import signal
 import sys
@@ -291,7 +292,15 @@ def _run_config(extra_args: list[str]) -> None:
                         return
                     value = fval
                 except ValueError:
-                    value = raw_value
+                    # Try JSON for lists/dicts (e.g. '["a","b"]')
+                    try:
+                        parsed = json.loads(raw_value)
+                        if isinstance(parsed, (list, dict)):
+                            value = parsed
+                        else:
+                            value = raw_value
+                    except (json.JSONDecodeError, ValueError):
+                        value = raw_value
 
         dest = find_config()
         if dest is None:

@@ -76,7 +76,7 @@ class SelfHealingEngine:
         self._recent_issues: deque[HealthIssue] = deque(maxlen=100)
         self._recent_actions: deque[RecoveryAction] = deque(maxlen=100)
         # category → earliest retry time (monotonic)
-        self._cooldowns: dict[str, float] = {}
+        self._cooldowns: dict[tuple[str, str], float] = {}
         # Track actions per hour for rate limiting
         self._action_timestamps: deque[float] = deque(maxlen=200)
 
@@ -85,7 +85,7 @@ class SelfHealingEngine:
         self._episodic_memory: Any = None
         # Provenance audit tracking
         self._diagnose_count: int = 0
-        self._provenance_audit_interval: int = 25  # Run every N diagnose cycles
+        self._provenance_audit_interval: int = config.provenance_audit_interval
         self._provenance_actions_timestamps: deque[float] = deque(maxlen=50)
         self._provenance_max_per_hour: int = 5
         self._node_audit_cooldowns: dict[str, float] = {}  # node_id → wall-clock expiry
@@ -203,10 +203,26 @@ class SelfHealingEngine:
 
         actions: list[RecoveryAction] = []
         now_mono = time.monotonic()
+        seen_keys: set[tuple[str, str]] = set()
+
+        # Prune expired cooldown entries to prevent unbounded growth
+        expired_cooldowns = [
+            k for k, expiry in self._cooldowns.items() if now_mono > expiry
+        ]
+        for k in expired_cooldowns:
+            del self._cooldowns[k]
 
         for issue in issues:
+            # Deduplicate within the same heal() cycle — if diagnose()
+            # returns two issues with the same category:component, only
+            # the first one should be acted on.
+            dedup_key = (issue.category, issue.component)
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
             # Check per-category cooldown
-            cooldown_key = f"{issue.category}:{issue.component}"
+            cooldown_key = (issue.category, issue.component)
             cooldown_until = self._cooldowns.get(cooldown_key, 0.0)
             if now_mono < cooldown_until:
                 logger.debug(
@@ -329,12 +345,12 @@ class SelfHealingEngine:
 
     async def _do_restart_channel(self, component: str, heartbeat: Any) -> bool:
         """Attempt to restart a single channel within the heartbeat's channel system."""
-        agent = getattr(heartbeat, "_agent", None)
+        agent = getattr(heartbeat, "agent", None)
         if agent is None:
             return False
 
         # Find and stop the crashed channel
-        channels = getattr(agent, "_platform_channels", [])
+        channels = getattr(agent, "platform_channels", []) or getattr(agent, "_platform_channels", [])
         crashed = None
         for ch in channels:
             ch_name = getattr(ch, "channel_name", "")
@@ -364,7 +380,7 @@ class SelfHealingEngine:
         # Re-build and start the channel
         try:
             from gwenn.channels.startup import build_channels
-            full_config = getattr(heartbeat, "_full_config", None)
+            full_config = getattr(heartbeat, "full_config", None)
             if full_config is None:
                 return False
 
@@ -379,8 +395,8 @@ class SelfHealingEngine:
                 reg(new_ch)
 
             # Clear the failed channel task reference to prevent re-detection
-            if hasattr(heartbeat, "_channel_task"):
-                heartbeat._channel_task = None
+            if hasattr(heartbeat, "channel_task"):
+                heartbeat.channel_task = None
 
             logger.info("healing.channel_restarted", component=component)
             return True
@@ -559,6 +575,12 @@ class SelfHealingEngine:
             return issues
 
         now = time.time()
+
+        # Prune expired cooldown entries to prevent unbounded growth
+        expired = [nid for nid, expiry in self._node_audit_cooldowns.items() if now > expiry]
+        for nid in expired:
+            del self._node_audit_cooldowns[nid]
+
         for node in sample_nodes:
             # Per-node cooldown: skip nodes audited within cooldown window
             if now < self._node_audit_cooldowns.get(node.node_id, 0.0):
@@ -681,7 +703,7 @@ class SelfHealingEngine:
         if (beat_count - last) < interval // 2:
             return  # Recent enough
         try:
-            agent = getattr(heartbeat, "_agent", None)
+            agent = getattr(heartbeat, "agent", None)
             if agent is None:
                 return
             checkpoint = await mgr.create_checkpoint(agent, heartbeat)

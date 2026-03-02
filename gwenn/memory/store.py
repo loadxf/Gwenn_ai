@@ -191,6 +191,7 @@ class MemoryStore:
             conn.execute(
                 "ALTER TABLE knowledge_nodes ADD COLUMN metadata TEXT DEFAULT '{}'"
             )
+            conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""
@@ -232,11 +233,13 @@ class MemoryStore:
 
             pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             future = pool.submit(_open_client)
+            shutdown_done = False
             try:
                 self._vector_client = future.result(timeout=10)
             except concurrent.futures.TimeoutError:
                 future.cancel()
                 pool.shutdown(wait=False, cancel_futures=True)
+                shutdown_done = True
                 logger.warning(
                     "memory_store.vector_lock_timeout",
                     msg="ChromaDB lock held by another process; "
@@ -245,7 +248,8 @@ class MemoryStore:
                 self._enable_vector_search = False
                 return
             finally:
-                pool.shutdown(wait=False)
+                if not shutdown_done:
+                    pool.shutdown(wait=False)
 
             self._episodes_collection = self._vector_client.get_or_create_collection(
                 name="gwenn_episodes"

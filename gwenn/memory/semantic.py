@@ -153,6 +153,19 @@ class SemanticMemory:
         self._label_index.clear()
         logger.info("semantic_memory.cleared")
 
+    # Confidence decay: halve effective confidence every _DECAY_HALFLIFE_DAYS days
+    # since last update.  Read-only — node.confidence is never mutated during reads.
+    _DECAY_HALFLIFE_DAYS: float = 90.0
+
+    @staticmethod
+    def _effective_confidence(node: "KnowledgeNode", now: float | None = None) -> float:
+        """Compute time-decayed effective confidence without mutating the node."""
+        if now is None:
+            now = time.time()
+        age_days = max(0.0, (now - node.last_updated) / 86400.0)
+        decay = 0.5 ** (age_days / SemanticMemory._DECAY_HALFLIFE_DAYS)
+        return node.confidence * decay
+
     def set_vector_search(
         self,
         vector_search_fn: Optional[Callable[[str, int], list[tuple[str, float]]]],
@@ -199,6 +212,14 @@ class SemanticMemory:
                 node.reinforce(source_episode_id, confidence_boost=max(0.01, confidence * 0.1))
             logger.debug("semantic_memory.reinforced", label=label, confidence=node.confidence)
             return node
+        elif existing_id:
+            # Dangling label index entry — node was removed but index wasn't cleaned up.
+            logger.debug(
+                "semantic_memory.dangling_label_cleaned",
+                label=label,
+                stale_node_id=existing_id,
+            )
+            del self._label_index[label.lower()]
 
         # Create new node
         node = KnowledgeNode(
@@ -312,15 +333,17 @@ class SemanticMemory:
                     top_k=top_k,
                 )
             candidates = []
+            now = time.time()
             for node_id, similarity in vector_scores.items():
                 node = self._nodes.get(node_id)
                 if node is None:
                     continue
-                if node.confidence < min_confidence:
+                eff_conf = self._effective_confidence(node, now)
+                if eff_conf < min_confidence:
                     continue
                 if category and node.category != category:
                     continue
-                candidates.append((node, similarity * node.confidence))
+                candidates.append((node, similarity * eff_conf))
             candidates.sort(key=lambda x: x[1], reverse=True)
             return [node for node, _ in candidates[:top_k]]
 
@@ -337,18 +360,20 @@ class SemanticMemory:
         for node, kw_score in keyword_nodes:
             combined[node.node_id] = (node, self._hybrid_keyword_weight * kw_score)
 
+        now = time.time()
         for node_id, vec_score in vector_scores.items():
             node = self._nodes.get(node_id)
             if node is None:
                 continue
-            if node.confidence < min_confidence:
+            eff_conf = self._effective_confidence(node, now)
+            if eff_conf < min_confidence:
                 continue
             if category and node.category != category:
                 continue
             base = combined.get(node_id, (node, 0.0))[1]
             combined[node_id] = (
                 node,
-                base + self._hybrid_embedding_weight * (vec_score * node.confidence),
+                base + self._hybrid_embedding_weight * (vec_score * eff_conf),
             )
 
         ranked = sorted(combined.values(), key=lambda x: x[1], reverse=True)
@@ -365,16 +390,18 @@ class SemanticMemory:
         """Keyword-overlap semantic lookup."""
         search_terms = set(search_text.lower().split())
         candidates: list[tuple[KnowledgeNode, float]] = []
+        now = time.time()
 
         for node in self._nodes.values():
-            if node.confidence < min_confidence:
+            eff_conf = self._effective_confidence(node, now)
+            if eff_conf < min_confidence:
                 continue
             if category and node.category != category:
                 continue
             node_terms = set(node.label.lower().split()) | set(node.content.lower().split())
             overlap = len(search_terms & node_terms)
             if overlap > 0:
-                score = overlap / max(len(search_terms), 1) * node.confidence
+                score = overlap / max(len(search_terms), 1) * eff_conf
                 candidates.append((node, score))
 
         candidates.sort(key=lambda x: x[1], reverse=True)

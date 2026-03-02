@@ -32,6 +32,7 @@ from gwenn.privacy.redaction import PIIRedactor
 logger = structlog.get_logger(__name__)
 
 _TELEGRAM_BOT_TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
+_DISCORD_BOT_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}")
 
 
 class GwennDaemon:
@@ -260,8 +261,9 @@ class GwennDaemon:
 
     @staticmethod
     def _redact_channel_error(message: str) -> str:
-        """Mask Telegram bot tokens in channel error strings before logging."""
-        return _TELEGRAM_BOT_TOKEN_RE.sub("[REDACTED_TELEGRAM_TOKEN]", message or "")
+        """Mask Telegram and Discord bot tokens in channel error strings before logging."""
+        redacted = _TELEGRAM_BOT_TOKEN_RE.sub("[REDACTED_TELEGRAM_TOKEN]", message or "")
+        return _DISCORD_BOT_TOKEN_RE.sub("[REDACTED_DISCORD_TOKEN]", redacted)
 
     # ------------------------------------------------------------------
     # Client connection handler

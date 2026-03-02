@@ -160,6 +160,29 @@ class Heartbeat:
         self._shutdown_event = asyncio.Event()
 
     # -------------------------------------------------------------------------
+    # Public read-only accessors (for healing engine and monitoring)
+    # -------------------------------------------------------------------------
+
+    @property
+    def agent(self) -> "SentientAgent | None":
+        """The agent this heartbeat drives."""
+        return self._agent
+
+    @property
+    def full_config(self) -> "GwennConfig | None":
+        """Full Gwenn configuration (core-mode only)."""
+        return self._full_config
+
+    @property
+    def channel_task(self) -> "asyncio.Task[None] | None":
+        """The asyncio task running channel I/O."""
+        return self._channel_task
+
+    @channel_task.setter
+    def channel_task(self, value: "asyncio.Task[None] | None") -> None:
+        self._channel_task = value
+
+    # -------------------------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------------------------
 

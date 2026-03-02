@@ -61,6 +61,7 @@ def _make_agent(**overrides):
     agent._max_conversation_messages = 400
     agent._current_user_id = None
     agent._respond_lock = asyncio.Lock()
+    agent._restore_warnings = []
     agent._platform_channels = []
     agent._last_affect_snapshot_at = 0.0
     agent._affect_snapshot_min_interval_seconds = 8.0

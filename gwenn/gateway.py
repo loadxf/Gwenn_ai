@@ -637,7 +637,7 @@ class GatewayServer:
             if not conn.ws.closed:
                 await conn.ws.send_json(data)
         except Exception:
-            pass  # Connection gone — will be cleaned up by handler
+            logger.debug("gateway.push_send_failed", conn_id=conn.conn_id)
 
     # ------------------------------------------------------------------
     # Timeout checker

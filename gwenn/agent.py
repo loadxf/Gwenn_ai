@@ -269,6 +269,7 @@ class SentientAgent:
             max_iterations=config.safety.max_tool_iterations,
         )
         self._continuation_sessions: set[str] = set()
+        self._restore_warnings: list[str] = []
         self._default_max_iterations: int = config.safety.max_tool_iterations
 
         # ---- Layer 10: Heartbeat (initialized after setup) ----
@@ -463,83 +464,47 @@ class SentientAgent:
                 valence=last_affect["valence"],
             )
 
-        # Restore intrinsic goal-system state so motivation persists across restarts.
-        load_goal_state = getattr(self.memory_store, "load_goal_state", None)
-        if callable(load_goal_state):
-            goal_state = load_goal_state()
-            restore_goals = getattr(self.goal_system, "restore_from_dict", None)
-            if goal_state and callable(restore_goals):
-                try:
-                    restore_goals(goal_state)
+        # Restore subsystem states so personality evolution persists across restarts.
+        # Partial restore is better than refusing to start, so failures are collected
+        # as warnings rather than raised.
+        if not hasattr(self, "_restore_warnings"):
+            self._restore_warnings = []
+        self._restore_warnings.clear()
+        _restore_specs: list[tuple[str, str, str, str]] = [
+            ("goals", "load_goal_state", "goal_system", "restore_from_dict"),
+            ("metacognition", "load_metacognition", "metacognition", "restore_from_dict"),
+            ("theory_of_mind", "load_theory_of_mind", "theory_of_mind", "restore_from_dict"),
+            ("interagent", "load_interagent", "interagent", "restore_from_dict"),
+            ("sensory", "load_sensory", "sensory", "restore_from_dict"),
+            ("ethics", "load_ethics", "ethics", "restore_from_dict"),
+            ("inner_life", "load_inner_life", "inner_life", "restore_from_dict"),
+        ]
+        for subsystem_name, load_method, target_attr, restore_method in _restore_specs:
+            loader = getattr(self.memory_store, load_method, None)
+            if not callable(loader):
+                continue
+            state = loader()
+            if not state:
+                continue
+            restorer = getattr(getattr(self, target_attr, None), restore_method, None)
+            if not callable(restorer):
+                continue
+            try:
+                restorer(state)
+                if subsystem_name == "goals":
                     logger.info("agent.goal_state_restored")
-                except Exception as e:
-                    logger.warning("agent.goal_state_restore_failed", error=str(e))
-
-        # Restore metacognition state so growth trajectory and calibration survive restarts.
-        load_meta = getattr(self.memory_store, "load_metacognition", None)
-        if callable(load_meta):
-            meta_state = load_meta()
-            restore_meta = getattr(self.metacognition, "restore_from_dict", None)
-            if meta_state and callable(restore_meta):
-                try:
-                    restore_meta(meta_state)
-                except Exception as e:
-                    logger.warning("agent.metacognition_restore_failed", error=str(e))
-
-        # Restore theory-of-mind state so user models survive restarts.
-        load_tom = getattr(self.memory_store, "load_theory_of_mind", None)
-        if callable(load_tom):
-            tom_state = load_tom()
-            restore_tom = getattr(self.theory_of_mind, "restore_from_dict", None)
-            if tom_state and callable(restore_tom):
-                try:
-                    restore_tom(tom_state)
-                except Exception as e:
-                    logger.warning("agent.theory_of_mind_restore_failed", error=str(e))
-
-        # Restore inter-agent bridge state so agent relationships survive restarts.
-        load_ia = getattr(self.memory_store, "load_interagent", None)
-        if callable(load_ia):
-            ia_state = load_ia()
-            restore_ia = getattr(self.interagent, "restore_from_dict", None)
-            if ia_state and callable(restore_ia):
-                try:
-                    restore_ia(ia_state)
-                except Exception as e:
-                    logger.warning("agent.interagent_restore_failed", error=str(e))
-
-        # Restore sensory integrator state so temporal context survives restarts.
-        load_sensory = getattr(self.memory_store, "load_sensory", None)
-        if callable(load_sensory):
-            sensory_state = load_sensory()
-            restore_sensory = getattr(self.sensory, "restore_from_dict", None)
-            if sensory_state and callable(restore_sensory):
-                try:
-                    restore_sensory(sensory_state)
-                except Exception as e:
-                    logger.warning("agent.sensory_restore_failed", error=str(e))
-
-        # Restore ethical reasoning state so assessment patterns survive restarts.
-        load_ethics = getattr(self.memory_store, "load_ethics", None)
-        if callable(load_ethics):
-            ethics_state = load_ethics()
-            restore_ethics = getattr(self.ethics, "restore_from_dict", None)
-            if ethics_state and callable(restore_ethics):
-                try:
-                    restore_ethics(ethics_state)
-                except Exception as e:
-                    logger.warning("agent.ethics_restore_failed", error=str(e))
-
-        # Restore inner-life state so thought statistics survive restarts.
-        load_il = getattr(self.memory_store, "load_inner_life", None)
-        if callable(load_il):
-            il_state = load_il()
-            restore_il = getattr(self.inner_life, "restore_from_dict", None)
-            if il_state and callable(restore_il):
-                try:
-                    restore_il(il_state)
-                except Exception as e:
-                    logger.warning("agent.inner_life_restore_failed", error=str(e))
+            except Exception as e:
+                self._restore_warnings.append(subsystem_name)
+                logger.warning(
+                    f"agent.{subsystem_name}_restore_failed",
+                    error=str(e),
+                )
+        if self._restore_warnings:
+            logger.warning(
+                "agent.partial_restore",
+                failed_subsystems=self._restore_warnings,
+                count=len(self._restore_warnings),
+            )
 
         # Register built-in tools and wire their handlers to agent methods
         from gwenn.tools.builtin import register_builtin_tools
@@ -999,8 +964,22 @@ class SentientAgent:
             raise RuntimeError("Agent must be initialized before responding")
 
         # Capture session context for subagent origin routing.
-        _CURRENT_SESSION_ID.set(session_id)
+        _session_token = _CURRENT_SESSION_ID.set(session_id)
+        try:
+            return await self._respond_inner(
+                user_message, user_id, session_id, conversation_history,
+            )
+        finally:
+            _CURRENT_SESSION_ID.reset(_session_token)
 
+    async def _respond_inner(
+        self,
+        user_message: "str | UserMessage",
+        user_id: str,
+        session_id: str,
+        conversation_history: "list[dict[str, Any]] | None",
+    ) -> "AgentResponse":
+        """Inner implementation of respond(), separated for ContextVar cleanup."""
         # Normalize to UserMessage so downstream code can rely on a single type.
         if isinstance(user_message, str):
             user_message = UserMessage(text=user_message)
@@ -4608,6 +4587,20 @@ class SentientAgent:
             return value_copy
 
         return value
+
+    @property
+    def restore_warnings(self) -> list[str]:
+        """Subsystem names that failed to restore during initialization.
+
+        Empty when all restores succeeded.  Useful for monitoring dashboards
+        to detect silent personality-state loss after format changes.
+        """
+        return list(self._restore_warnings)
+
+    @property
+    def platform_channels(self) -> list[Any]:
+        """Read-only accessor for registered platform channels."""
+        return list(self._platform_channels)
 
     @property
     def respond_lock(self) -> asyncio.Lock:

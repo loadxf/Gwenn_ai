@@ -355,6 +355,9 @@ class SelfHealingConfig(GwennSettingsBase):
     error_rate_threshold: float = Field(
         5.0, alias="GWENN_SELF_HEALING_ERROR_RATE_THRESHOLD"
     )
+    provenance_audit_interval: int = Field(
+        25, alias="GWENN_SELF_HEALING_PROVENANCE_INTERVAL"
+    )
 
     model_config = {"env_file": _ENV_FILE, "extra": "ignore", "populate_by_name": True}
 
@@ -369,6 +372,7 @@ class SelfHealingConfig(GwennSettingsBase):
             50.0, min(99.0, float(self.memory_pressure_threshold))
         )
         self.error_rate_threshold = max(0.1, float(self.error_rate_threshold))
+        self.provenance_audit_interval = max(1, int(self.provenance_audit_interval))
         return self
 
 

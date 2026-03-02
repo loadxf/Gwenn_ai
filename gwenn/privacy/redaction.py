@@ -156,7 +156,16 @@ class PIIRedactor:
         result = text
         items_this_call = 0
         for name, pattern, replacement in self._active_patterns:
-            result, count = pattern.subn(replacement, result)
+            if name == "credit_card":
+                # Validate with Luhn to avoid false positives on random digit sequences
+                def _cc_replacer(m: re.Match) -> str:
+                    digits = "".join(c for c in m.group() if c.isdigit())
+                    if self._luhn_check(digits):
+                        return replacement
+                    return m.group()
+                result, count = pattern.subn(_cc_replacer, result)
+            else:
+                result, count = pattern.subn(replacement, result)
             items_this_call += count
 
         if result != text:

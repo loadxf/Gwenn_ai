@@ -197,6 +197,8 @@ class DiscordChannel(BaseChannel):
                 channel = self._client.get_channel(int(channel_id_str))
                 if channel is None:
                     channel = await self._client.fetch_channel(int(channel_id_str))
+                if channel is None:
+                    return False
                 for chunk in format_for_discord(text):
                     await channel.send(chunk)
                 return True
