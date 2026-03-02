@@ -80,6 +80,22 @@ class SelfHealingEngine:
         # Track actions per hour for rate limiting
         self._action_timestamps: deque[float] = deque(maxlen=200)
 
+        # Memory references for provenance auditing (set via set_memory_references)
+        self._semantic_memory: Any = None
+        self._episodic_memory: Any = None
+        # Provenance audit tracking
+        self._diagnose_count: int = 0
+        self._provenance_audit_interval: int = 25  # Run every N diagnose cycles
+        self._provenance_actions_timestamps: deque[float] = deque(maxlen=50)
+        self._provenance_max_per_hour: int = 5
+        self._node_audit_cooldowns: dict[str, float] = {}  # node_id → wall-clock expiry
+        self._node_audit_cooldown_seconds: float = 86400.0  # 24 hours
+
+    def set_memory_references(self, semantic_memory: Any, episodic_memory: Any) -> None:
+        """Attach memory systems for provenance auditing."""
+        self._semantic_memory = semantic_memory
+        self._episodic_memory = episodic_memory
+
     # ------------------------------------------------------------------
     # Diagnosis — called during _sense()
     # ------------------------------------------------------------------
@@ -153,6 +169,15 @@ class SelfHealingEngine:
                 detail=f"{stale_count} stale session(s) detected",
                 suggested_action="clear_stale_sessions",
             ))
+
+        # 6. Knowledge provenance audit (periodic)
+        self._diagnose_count += 1
+        if (
+            self._diagnose_count % self._provenance_audit_interval == 0
+            and self._semantic_memory is not None
+            and self._episodic_memory is not None
+        ):
+            issues.extend(self._check_provenance())
 
         for issue in issues:
             self._recent_issues.append(issue)
@@ -237,6 +262,8 @@ class SelfHealingEngine:
                 return await self._force_consolidation(issue, agent, heartbeat)
             elif issue.suggested_action == "clear_stale_sessions":
                 return await self._clear_stale_sessions(issue, heartbeat)
+            elif issue.suggested_action == "deprecate_weak_node":
+                return await self._deprecate_weak_node(issue)
             else:
                 logger.debug("healing.unknown_action", action=issue.suggested_action)
                 return None
@@ -515,6 +542,117 @@ class SelfHealingEngine:
             "healing.clear_sessions",
             success=action.success,
             detail=action.detail,
+        )
+        return action
+
+    # ------------------------------------------------------------------
+    # Provenance auditing
+    # ------------------------------------------------------------------
+
+    def _check_provenance(self) -> list[HealthIssue]:
+        """Sample knowledge nodes and verify their episodic provenance."""
+        issues: list[HealthIssue] = []
+        try:
+            sample_nodes = self._semantic_memory.sample_nodes_for_audit(count=5)
+        except Exception:
+            logger.debug("healing.provenance_sample_failed", exc_info=True)
+            return issues
+
+        now = time.time()
+        for node in sample_nodes:
+            # Per-node cooldown: skip nodes audited within cooldown window
+            if now < self._node_audit_cooldowns.get(node.node_id, 0.0):
+                continue
+
+            try:
+                result = self._semantic_memory.verify_provenance(
+                    node.node_id, self._episodic_memory,
+                )
+            except Exception:
+                logger.debug(
+                    "healing.provenance_verify_failed",
+                    node_id=node.node_id,
+                    exc_info=True,
+                )
+                continue
+
+            self._node_audit_cooldowns[node.node_id] = now + self._node_audit_cooldown_seconds
+
+            if not result.get("supported", True):
+                source_count = result.get("source_count", 0)
+                missing_count = len(result.get("missing", []))
+                best_overlap = result.get("best_overlap", 0.0)
+                severity = node.confidence * (1 - best_overlap)
+                if source_count > 0:
+                    severity *= missing_count / source_count
+                severity = max(0.1, min(1.0, severity))
+
+                issues.append(HealthIssue(
+                    category="knowledge_provenance",
+                    severity=severity,
+                    component="semantic_memory",
+                    detail=(
+                        f"node '{node.label}' (confidence={node.confidence:.2f}) "
+                        f"unsupported: {missing_count}/{source_count} sources missing, "
+                        f"best_overlap={best_overlap:.2f}"
+                    ),
+                    suggested_action="deprecate_weak_node",
+                    target_id=node.node_id,
+                ))
+
+        return issues
+
+    async def _deprecate_weak_node(
+        self, issue: HealthIssue,
+    ) -> RecoveryAction:
+        """Reduce confidence of a knowledge node with unsupported provenance."""
+        action = RecoveryAction(
+            issue_id=issue.issue_id,
+            action_type="deprecate_weak_node",
+        )
+
+        node_id = issue.target_id
+        if not node_id or self._semantic_memory is None:
+            action.completed_at = time.time()
+            action.success = False
+            action.detail = "no node_id or semantic memory unavailable"
+            return action
+
+        # Check provenance-specific rate limit
+        now_mono = time.monotonic()
+        cutoff = now_mono - 3600.0
+        while self._provenance_actions_timestamps and self._provenance_actions_timestamps[0] < cutoff:
+            self._provenance_actions_timestamps.popleft()
+        if len(self._provenance_actions_timestamps) >= self._provenance_max_per_hour:
+            action.completed_at = time.time()
+            action.success = False
+            action.detail = "provenance action rate limit reached"
+            return action
+
+        node = self._semantic_memory._nodes.get(node_id)
+        if node is None:
+            action.completed_at = time.time()
+            action.success = False
+            action.detail = f"node {node_id} not found"
+            return action
+
+        old_confidence = node.confidence
+        node.confidence = max(0.05, node.confidence * 0.5)
+        node.last_updated = time.time()
+        self._provenance_actions_timestamps.append(now_mono)
+
+        action.completed_at = time.time()
+        action.success = True
+        action.detail = (
+            f"deprecate '{node.label}': confidence {old_confidence:.2f} → {node.confidence:.2f}"
+        )
+
+        logger.info(
+            "healing.deprecate_weak_node",
+            node_id=node_id,
+            label=node.label,
+            old_confidence=old_confidence,
+            new_confidence=node.confidence,
         )
         return action
 

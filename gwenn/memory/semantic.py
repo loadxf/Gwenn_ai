@@ -518,6 +518,23 @@ class SemanticMemory:
             "supporting": supporting,
         }
 
+    def sample_nodes_for_audit(self, count: int = 5) -> list[KnowledgeNode]:
+        """Return a random sample of nodes that have source_episodes for auditing.
+
+        Skips immutable nodes (e.g. genesis facts) since they should not be
+        subject to provenance decay.
+        """
+        import random
+
+        candidates = [
+            node for node in self._nodes.values()
+            if node.source_episodes
+            and not (isinstance(node.metadata, dict) and node.metadata.get("immutable"))
+        ]
+        if not candidates:
+            return []
+        return random.sample(candidates, min(count, len(candidates)))
+
     @property
     def node_count(self) -> int:
         return len(self._nodes)

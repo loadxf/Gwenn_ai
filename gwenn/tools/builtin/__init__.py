@@ -1312,6 +1312,56 @@ def _register_all_builtins(registry: ToolRegistry) -> None:
         )
     )
 
+    # ---- Voice / TTS Tools ----
+
+    registry.register(
+        ToolDefinition(
+            name="set_voice",
+            description=(
+                "Change the voice used for text-to-speech output. Use this when "
+                "the user asks to switch voices, use a different accent, or change "
+                "how you sound. You need a voice_id — use list_voices first to find "
+                "available voices matching the user's description."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "voice_id": {
+                        "type": "string",
+                        "description": "The ElevenLabs voice ID to use.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional note about why this voice was chosen.",
+                    },
+                },
+                "required": ["voice_id"],
+            },
+            handler=None,  # Wired by agent._wire_builtin_tool_handlers()
+            risk_level="low",
+            category="voice",
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="list_voices",
+            description=(
+                "List all available text-to-speech voices. Use this when the user "
+                "wants to hear available voice options or when you need to find a "
+                "voice matching a description (e.g. 'a deep male voice', 'British "
+                "accent'). Returns voice names and IDs."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {},
+            },
+            handler=None,  # Wired by agent._wire_builtin_tool_handlers()
+            risk_level="low",
+            category="voice",
+        )
+    )
+
     # ---- Filesystem Tools (subagent-only) ----
     _register_filesystem_tools(registry)
 

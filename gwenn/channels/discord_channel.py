@@ -124,6 +124,12 @@ class DiscordChannel(BaseChannel):
                 await self._audio_transcriber.close()
             except Exception:
                 logger.debug("discord_channel.audio_transcriber_close_error", exc_info=True)
+        tts = getattr(self._agent, "_tts_synthesizer", None)
+        if tts is not None:
+            try:
+                await tts.close()
+            except Exception:
+                logger.debug("discord_channel.tts_close_error", exc_info=True)
         if self._client is not None:
             try:
                 await self._client.close()
@@ -155,6 +161,19 @@ class DiscordChannel(BaseChannel):
                 await dm.send(chunk, allowed_mentions=no_mentions)
                 if i < len(chunks) - 1:
                     await asyncio.sleep(0.5)
+
+            # TTS for proactive/unsolicited messages (when enabled)
+            el_config = getattr(self._agent._config, "elevenlabs", None)
+            if el_config and el_config.tts_proactive:
+                tts = self._get_tts_synthesizer()
+                if tts and tts.output_mode in ("voice_only", "text_and_voice"):
+                    from io import BytesIO
+
+                    audio = await tts.synthesize(text)
+                    if audio:
+                        await dm.send(
+                            file=discord.File(BytesIO(audio), filename="response.mp3"),
+                        )
         except Exception:
             logger.exception("discord_channel.send_error", user_id=platform_user_id)
 
@@ -380,6 +399,15 @@ class DiscordChannel(BaseChannel):
             logger.warning("discord_channel.transcriber_init_failed", error=str(exc))
             return None
 
+    def _get_tts_synthesizer(self):
+        """Lazily get the TTSSynthesizer from the agent (shared instance)."""
+        tts = getattr(self._agent, "_tts_synthesizer", None)
+        if tts is not None:
+            return tts
+        if hasattr(self._agent, "_get_tts_synthesizer"):
+            return self._agent._get_tts_synthesizer()
+        return None
+
     # ------------------------------------------------------------------
     # Message handler
     # ------------------------------------------------------------------
@@ -567,25 +595,59 @@ class DiscordChannel(BaseChannel):
                     # Only the first chunk is a reply (anchors the context);
                     # subsequent chunks are plain channel sends to avoid a
                     # wall of reply arrows pointing at the original message.
-                    chunks = format_for_discord(response_text)
-                    try:
-                        for i, chunk in enumerate(chunks):
-                            if i == 0:
-                                await message.reply(
-                                    chunk,
-                                    mention_author=False,
-                                    allowed_mentions=no_mentions,
-                                )
-                            else:
-                                await message.channel.send(
-                                    chunk,
-                                    allowed_mentions=no_mentions,
-                                )
-                            if i < len(chunks) - 1:
-                                # Brief pause between chunks to respect Discord rate limits.
-                                await asyncio.sleep(0.5)
-                    except Exception as exc:
-                        logger.error("discord_channel.send_error", error=str(exc), exc_info=True)
+                    tts = self._get_tts_synthesizer()
+                    mode = tts.output_mode if tts else "text_only"
+
+                    if mode != "voice_only":
+                        chunks = format_for_discord(response_text)
+                        try:
+                            for i, chunk in enumerate(chunks):
+                                if i == 0:
+                                    await message.reply(
+                                        chunk,
+                                        mention_author=False,
+                                        allowed_mentions=no_mentions,
+                                    )
+                                else:
+                                    await message.channel.send(
+                                        chunk,
+                                        allowed_mentions=no_mentions,
+                                    )
+                                if i < len(chunks) - 1:
+                                    # Brief pause between chunks to respect Discord rate limits.
+                                    await asyncio.sleep(0.5)
+                        except Exception as exc:
+                            logger.error("discord_channel.send_error", error=str(exc), exc_info=True)
+
+                    if tts and mode in ("voice_only", "text_and_voice"):
+                        from io import BytesIO
+
+                        session_id = self.make_session_id(session_scope_key)
+                        audio = await tts.synthesize(response_text, session_id=session_id)
+                        if audio:
+                            await message.channel.send(
+                                file=discord.File(BytesIO(audio), filename="response.mp3"),
+                            )
+                        elif mode == "voice_only":
+                            # Fallback to text if TTS fails
+                            chunks = format_for_discord(response_text)
+                            try:
+                                for i, chunk in enumerate(chunks):
+                                    if i == 0:
+                                        await message.reply(
+                                            chunk,
+                                            mention_author=False,
+                                            allowed_mentions=no_mentions,
+                                        )
+                                    else:
+                                        await message.channel.send(
+                                            chunk,
+                                            allowed_mentions=no_mentions,
+                                        )
+                                    if i < len(chunks) - 1:
+                                        await asyncio.sleep(0.5)
+                            except Exception as exc:
+                                logger.error("discord_channel.send_error", error=str(exc), exc_info=True)
 
                 # Clear the "received" reaction now that we've replied.
                 try:

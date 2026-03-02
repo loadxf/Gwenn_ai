@@ -412,7 +412,11 @@ class GwennSession:
             loop.add_signal_handler(signal.SIGINT, self._handle_sigint)
             loop.add_signal_handler(signal.SIGTERM, self._request_shutdown)
         except NotImplementedError:
-            pass  # Signal handlers not supported on this platform (e.g. Windows) -- TODO: Handle this gracefully with a warning
+            logger.warning(
+                "signal_handlers_unavailable",
+                platform=sys.platform,
+                detail="Graceful Ctrl+C shutdown not available; use Ctrl+Break or close terminal",
+            )
 
         # ---- PHASE 5: INTERACTION LOOP (CLI or channel mode) ----
         try:
@@ -595,8 +599,62 @@ class GwennSession:
                     f"[bold cyan]Gwenn[/bold cyan] [dim]({markup_escape(emotion)})[/dim]:"
                 )
                 console.print(Markdown(text))
+                await self._play_tts_if_enabled(text)
 
             console.print()
+
+    async def _play_tts_if_enabled(self, text: str) -> None:
+        """Play TTS audio for a response if ElevenLabs is configured."""
+        if self._config is None:
+            return
+        el_config = getattr(self._config, "elevenlabs", None)
+        if el_config is None or not el_config.is_available:
+            return
+        if el_config.output_mode not in ("voice_only", "text_and_voice"):
+            return
+
+        # Lazy-init synthesizer via the agent (if running in-process)
+        tts = None
+        if self._agent and hasattr(self._agent, "_get_tts_synthesizer"):
+            tts = self._agent._get_tts_synthesizer()
+        if tts is None:
+            # Standalone fallback: create a one-off synthesizer
+            try:
+                from gwenn.media.tts import TTSSynthesizer
+
+                tts = TTSSynthesizer(el_config)
+            except Exception:
+                return
+
+        audio = await tts.synthesize(text)
+        if audio is None:
+            return
+
+        # Play audio — try sounddevice first, fall back gracefully
+        try:
+            await self._play_audio_bytes(audio)
+        except Exception as exc:
+            logger.debug("repl.tts_playback_failed", error=str(exc))
+
+    async def _play_audio_bytes(self, audio_bytes: bytes) -> None:
+        """Play MP3 audio bytes through the default audio output via ffplay."""
+        try:
+            import subprocess
+
+            proc = await asyncio.create_subprocess_exec(
+                "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-",
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            await proc.communicate(input=audio_bytes)
+        except FileNotFoundError:
+            if not getattr(self, "_tts_playback_warned", False):
+                logger.warning(
+                    "repl.tts_no_ffplay",
+                    hint="Install ffmpeg for CLI audio playback (apt install ffmpeg)",
+                )
+                self._tts_playback_warned = True
 
     async def _read_raw_input(self, prompt: str) -> Optional[str]:
         """Read one line with a custom prompt (used for /resume session selection)."""

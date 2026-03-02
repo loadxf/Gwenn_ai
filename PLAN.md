@@ -201,11 +201,11 @@ retrieval optional with a config flag and falling back to keyword overlap.
 
 ---
 
-## Phase 3: Test Infrastructure & Evaluation -- DONE
+## Phase 3: Test Infrastructure & Evaluation -- MOSTLY DONE
 
 ### 3.1 Build Core Unit Tests -- DONE
 
-**Status:** Resolved. 56+ test files with 3116 tests covering all core subsystems (100% coverage):
+**Status:** Resolved. 77 test files with 3791 tests covering all core subsystems (100% coverage):
 - `tests/test_episodic_memory.py` — Retrieve scoring, mood-congruent retrieval
 - `tests/test_working_memory.py` — Slot management, eviction, decay
 - `tests/test_consolidation.py` — FACT/RELATIONSHIP/SELF/PATTERN parsing, malformed lines
@@ -240,10 +240,11 @@ resistance.
 `GWENN_SANDBOX_ENABLED=True` is the default. MCP-registered tools require
 explicit allowlisting.
 
-### 4.2 Add Provenance Tracking to Consolidation
+### 4.2 Add Provenance Tracking to Consolidation -- MOSTLY DONE
 
-**Status:** Open. `KnowledgeNode.source_episodes` exists but is only sometimes
-populated. No `verify_provenance()` method yet. Depends on 2.1.
+**Status:** Mostly resolved. `verify_provenance()` implemented at `semantic.py:448-519`.
+`_attach_provenance()` wired in all consolidation paths. Missing: automated
+background auditing of stale/orphaned knowledge nodes.
 
 ### 4.3 Add PII Redaction Pipeline -- DONE
 
@@ -265,16 +266,13 @@ transports. Tool discovery via `tools/list`, execution via `tools/call`,
 Content-Length framing for stdio, and optional Bearer auth for HTTP.
 MCP tools are registered as proxy tools prefixed with `mcp_<server>_`.
 
-### 5.2 Add Tool Risk Tiering
+### 5.2 Add Tool Risk Tiering -- DONE
 
-**Problem:** All tools currently have a flat `risk_level` string but this isn't
-used for anything beyond the `requires_approval` flag.
-
-**Files to modify:**
-- `gwenn/tools/registry.py` — Define formal risk tiers (LOW, MEDIUM, HIGH, CRITICAL)
-  with associated policies (auto-allow, log, require-approval, deny)
-- `gwenn/harness/safety.py` — Check risk tier in `check_tool_call()` and apply
-  the corresponding policy
+**Status:** Resolved. `RiskTier` enum (LOW/MEDIUM/HIGH/CRITICAL) at
+`gwenn/tools/registry.py:31-54` with `RISK_TIER_POLICIES` mapping tiers to
+enforcement policies. `SafetyGuard.check_tool_call()` at
+`gwenn/harness/safety.py:312-334` enforces: CRITICAL=denied, HIGH=requires
+approval, MEDIUM/LOW=auto-allow.
 
 ---
 
@@ -299,36 +297,24 @@ structlog processor that PII-redacts and truncates sensitive log fields (`conten
 
 ## Phase 7: Evaluation Suite
 
-### 7.1 Build Ablation Test Framework
+### 7.1 Build Ablation Test Framework -- PARTIALLY DONE
 
-**Problem:** The repo's `docs/sentience_assessment.md` recommends ablation
-studies (disable memory, heartbeat, affect individually to quantify their
-contribution). No framework exists for this.
+**Status:** Fixtures exist in `tests/eval/conftest.py:65-102` (importance_only,
+recency_only, relevance_only, mood_only memory configs). Missing:
+`tests/eval/test_ablation.py` with systematic subsystem disable/compare tests.
 
-**Files to create:**
-- `tests/eval/test_ablation.py` — Run identical scripted interactions with
-  different subsystems disabled. Compare response quality, consistency, and
-  emotional tone.
-- `tests/eval/conftest.py` — Fixtures for creating agent instances with specific
-  subsystems disabled
+### 7.2 Build Longitudinal Identity Coherence Tests -- DONE
 
-### 7.2 Build Longitudinal Identity Coherence Tests
+**Status:** Resolved. `tests/eval/test_identity_coherence.py` — 621 lines,
+6 test classes covering identity loading, self-prompt stability, relationship
+consistency, milestone tracking, identity evolution, and name normalization.
 
-**Problem:** No mechanism to verify that identity remains stable across restarts.
+### 7.3 Build Memory Retrieval Quality Benchmarks -- DONE
 
-**Files to create:**
-- `tests/eval/test_identity_coherence.py` — Run scripted sessions across
-  simulated restarts. Compare `identity.generate_self_prompt()` output
-  stability, relationship consistency, milestone persistence.
-
-### 7.3 Build Memory Retrieval Quality Benchmarks
-
-**Problem:** No ground-truth evaluation of episodic retrieval quality.
-
-**Files to create:**
-- `tests/eval/test_memory_quality.py` — Seed known episodes with ground-truth
-  tags. Query and compute Recall@k, MRR, false-positive rate. Test
-  mood-congruent retrieval bias.
+**Status:** Resolved. `tests/eval/test_memory_quality.py` — 730 lines,
+8 test classes covering Recall@k, MRR, false-positive rate, mood-congruent
+bias, importance weighting, recency bias, semantic quality, working memory
+gating, and cross-system provenance verification.
 
 ---
 
@@ -343,22 +329,22 @@ contribution). No framework exists for this.
 | 2.1 | Persist semantic memory | High | Medium | DONE |
 | 2.2 | Persist affect state | Medium | Low | DONE |
 | 2.3 | Embedding retrieval | Medium | High | DONE (keyword/embedding/hybrid) |
-| 3.1 | Unit tests | High | Medium | DONE (3116 tests, 100% coverage) |
+| 3.1 | Unit tests | High | Medium | DONE (3791 tests, 77 files, 100% coverage) |
 | 3.2 | Integration tests | Medium | Medium | DONE |
 | 3.3 | Adversarial tests | Medium | Medium | DONE |
 | 4.1 | Deny-by-default policy | High | Low | DONE |
-| 4.2 | Provenance tracking | Medium | Medium | Open |
+| 4.2 | Provenance tracking | Medium | Medium | MOSTLY DONE (verify_provenance exists, auto-audit missing) |
 | 4.3 | PII redaction | Medium | High | DONE |
 | 5.1 | Real MCP transport | Low | High | DONE |
-| 5.2 | Tool risk tiering | Medium | Low | Open |
+| 5.2 | Tool risk tiering | Medium | Low | DONE |
 | 6.1 | Affect logging | Low | Low | DONE |
 | 6.2 | Log redaction | Low | Low | DONE |
-| 7.1 | Ablation framework | Low | Medium | Open |
-| 7.2 | Identity coherence tests | Low | Medium | Open |
-| 7.3 | Memory quality benchmarks | Low | Medium | Open |
+| 7.1 | Ablation framework | Low | Medium | PARTIAL (fixtures exist, test file missing) |
+| 7.2 | Identity coherence tests | Low | Medium | DONE |
+| 7.3 | Memory quality benchmarks | Low | Medium | DONE |
 
-**Completed:** 14/19 items (74%). Remaining items are lower priority or depend on
-architectural decisions (affect persistence, provenance tracking, ablation framework).
+**Completed:** 17/19 items (89%). Remaining items: 2.3 (embedding retrieval) and
+partial completion of 4.2 (provenance auto-audit) and 7.1 (ablation test file).
 
 ---
 

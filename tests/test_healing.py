@@ -710,3 +710,182 @@ class TestSelfHealingConfig:
     def test_memory_threshold_clamped(self) -> None:
         config = SelfHealingConfig(GWENN_SELF_HEALING_MEMORY_THRESHOLD=999.0)
         assert config.memory_pressure_threshold <= 99.0
+
+
+# ---------------------------------------------------------------------------
+# Provenance Auditing
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceAudit:
+    """Tests for knowledge provenance health checking and deprecation."""
+
+    def _make_engine_with_memory(self):
+        """Create engine with wired semantic and episodic memory."""
+        from gwenn.memory.episodic import Episode, EpisodicMemory
+        from gwenn.memory.semantic import SemanticMemory
+
+        engine = _make_engine()
+        em = EpisodicMemory()
+        sm = SemanticMemory()
+        engine.set_memory_references(sm, em)
+        return engine, sm, em
+
+    def test_orphaned_node_detected(self) -> None:
+        """A node whose source episodes are missing should be flagged."""
+        engine, sm, em = self._make_engine_with_memory()
+        # Force the audit interval to trigger on first call
+        engine._provenance_audit_interval = 1
+        engine._diagnose_count = 0
+
+        # Store a node referencing an episode that doesn't exist
+        sm.store_knowledge(
+            "test fact", "Some knowledge",
+            source_episode_id="nonexistent-ep",
+            confidence=0.8,
+        )
+
+        issues = engine.diagnose(
+            interoceptive=_make_interoceptive(),
+            channel_statuses={},
+            subagent_statuses={},
+        )
+        provenance_issues = [i for i in issues if i.category == "knowledge_provenance"]
+        assert len(provenance_issues) == 1
+        assert provenance_issues[0].suggested_action == "deprecate_weak_node"
+        assert "unsupported" in provenance_issues[0].detail
+
+    def test_supported_node_no_issue(self) -> None:
+        """A node whose source episodes exist and match should not be flagged."""
+        from gwenn.memory.episodic import Episode
+
+        engine, sm, em = self._make_engine_with_memory()
+        engine._provenance_audit_interval = 1
+        engine._diagnose_count = 0
+
+        # Create matching episode
+        em.encode(Episode(
+            episode_id="ep-1",
+            content="Python is a popular programming language for scripting",
+            importance=0.7,
+            tags=["python", "programming"],
+        ))
+        # Store a node supported by this episode
+        sm.store_knowledge(
+            "python", "A popular programming language",
+            source_episode_id="ep-1",
+            confidence=0.8,
+        )
+
+        issues = engine.diagnose(
+            interoceptive=_make_interoceptive(),
+            channel_statuses={},
+            subagent_statuses={},
+        )
+        provenance_issues = [i for i in issues if i.category == "knowledge_provenance"]
+        assert len(provenance_issues) == 0
+
+    def test_audit_skipped_outside_interval(self) -> None:
+        """Provenance audit should only run every N diagnose cycles."""
+        engine, sm, em = self._make_engine_with_memory()
+        engine._provenance_audit_interval = 25
+        engine._diagnose_count = 0
+
+        sm.store_knowledge(
+            "orphan", "Unknown fact",
+            source_episode_id="missing-ep",
+            confidence=0.9,
+        )
+
+        # First diagnose: count=0, 1%25!=0, so audit skipped
+        issues = engine.diagnose(
+            interoceptive=_make_interoceptive(),
+            channel_statuses={},
+            subagent_statuses={},
+        )
+        provenance_issues = [i for i in issues if i.category == "knowledge_provenance"]
+        assert len(provenance_issues) == 0
+
+    @pytest.mark.asyncio
+    async def test_deprecation_reduces_confidence(self) -> None:
+        """deprecate_weak_node should halve the node's confidence."""
+        engine, sm, em = self._make_engine_with_memory()
+
+        node = sm.store_knowledge(
+            "weak fact", "Unsupported claim",
+            source_episode_id="gone-ep",
+            confidence=0.8,
+        )
+
+        issue = HealthIssue(
+            category="knowledge_provenance",
+            component="semantic_memory",
+            suggested_action="deprecate_weak_node",
+            target_id=node.node_id,
+        )
+
+        actions = await engine.heal([issue], MagicMock(_checkpoint_manager=None), MagicMock())
+        assert len(actions) == 1
+        assert actions[0].success is True
+        assert node.confidence == pytest.approx(0.4)
+
+    @pytest.mark.asyncio
+    async def test_provenance_rate_limiting(self) -> None:
+        """Max 5 provenance deprecation actions per hour."""
+        engine, sm, em = self._make_engine_with_memory()
+
+        # Fill the provenance rate limit
+        now = time.monotonic()
+        engine._provenance_actions_timestamps = deque(
+            [now] * 5, maxlen=50,
+        )
+
+        node = sm.store_knowledge(
+            "rate-limited", "Will not be deprecated",
+            source_episode_id="x",
+            confidence=0.9,
+        )
+
+        issue = HealthIssue(
+            category="knowledge_provenance",
+            component="semantic_memory",
+            suggested_action="deprecate_weak_node",
+            target_id=node.node_id,
+        )
+
+        actions = await engine.heal([issue], MagicMock(_checkpoint_manager=None), MagicMock())
+        assert len(actions) == 1
+        assert actions[0].success is False
+        assert "rate limit" in actions[0].detail
+        # Confidence unchanged
+        assert node.confidence == pytest.approx(0.9)
+
+    def test_per_node_cooldown(self) -> None:
+        """Nodes audited within cooldown window should be skipped."""
+        engine, sm, em = self._make_engine_with_memory()
+        engine._provenance_audit_interval = 1
+        engine._diagnose_count = 0
+
+        sm.store_knowledge(
+            "cooled", "Some fact",
+            source_episode_id="missing-ep",
+            confidence=0.7,
+        )
+
+        # First diagnose: detects the issue
+        issues1 = engine.diagnose(
+            interoceptive=_make_interoceptive(),
+            channel_statuses={},
+            subagent_statuses={},
+        )
+        prov1 = [i for i in issues1 if i.category == "knowledge_provenance"]
+        assert len(prov1) == 1
+
+        # Second diagnose: node is within cooldown, should be skipped
+        issues2 = engine.diagnose(
+            interoceptive=_make_interoceptive(),
+            channel_statuses={},
+            subagent_statuses={},
+        )
+        prov2 = [i for i in issues2 if i.category == "knowledge_provenance"]
+        assert len(prov2) == 0

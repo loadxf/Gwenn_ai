@@ -324,6 +324,13 @@ class Heartbeat:
         # and status reporting work in core mode.
         self._agent.heartbeat = self
 
+        # Wire memory references into the healing engine for provenance auditing.
+        if self._healing_engine is not None:
+            self._healing_engine.set_memory_references(
+                semantic_memory=getattr(self._agent, "semantic_memory", None),
+                episodic_memory=getattr(self._agent, "episodic_memory", None),
+            )
+
         logger.info("heartbeat.agent_ready")
 
         # Restore from last checkpoint if available (Phase 7).

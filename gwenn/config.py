@@ -112,6 +112,7 @@ _TOML_SECTIONS: dict[str, tuple[str, ...]] = {
     "MetacognitionConfig": ("metacognition",),
     "TheoryOfMindConfig": ("theory_of_mind",),
     "GroqConfig": ("groq",),
+    "ElevenLabsConfig": ("elevenlabs",),
     "OrchestrationConfig": ("orchestration",),
     "PrivacyConfig": ("privacy",),
     "TelegramConfig": ("telegram",),
@@ -579,6 +580,31 @@ class GroqConfig(GwennSettingsBase):
         return bool(self.api_key)
 
 
+class ElevenLabsConfig(GwennSettingsBase):
+    """Configuration for ElevenLabs text-to-speech (optional)."""
+
+    api_key: Optional[str] = Field(None, alias="ELEVENLABS_API_KEY")
+    default_voice_id: str = Field("21m00Tcm4TlvDq8ikWAM", alias="ELEVENLABS_DEFAULT_VOICE_ID")
+    model_id: str = Field("eleven_flash_v2_5", alias="ELEVENLABS_MODEL_ID")
+    output_format: str = Field("mp3_44100_128", alias="ELEVENLABS_OUTPUT_FORMAT")
+    output_mode: str = Field("text_only", alias="ELEVENLABS_OUTPUT_MODE")
+    max_text_length: int = Field(5000, alias="ELEVENLABS_MAX_TEXT_LENGTH")
+    tts_proactive: bool = Field(False, alias="ELEVENLABS_TTS_PROACTIVE")
+
+    model_config = {"env_file": _ENV_FILE, "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def normalize_output_mode(self) -> "ElevenLabsConfig":
+        valid = {"text_only", "voice_only", "text_and_voice"}
+        if self.output_mode not in valid:
+            self.output_mode = "text_only"
+        return self
+
+    @property
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+
 class OrchestrationConfig(GwennSettingsBase):
     """Configuration for the subagent orchestration system."""
 
@@ -892,6 +918,9 @@ class GwennConfig:
 
         # Groq Whisper transcription (optional)
         self.groq = GroqConfig()
+
+        # ElevenLabs TTS (optional)
+        self.elevenlabs = ElevenLabsConfig()
 
         # Channel config (channel mode; Telegram/Discord configs loaded lazily)
         self.channel = ChannelConfig()

@@ -61,6 +61,14 @@
 [groq]
 # whisper_model = "whisper-large-v3-turbo"
 
+[elevenlabs]
+# default_voice_id = "21m00Tcm4TlvDq8ikWAM"   # Rachel (default)
+# model_id = "eleven_flash_v2_5"                 # Fast model (<75ms)
+# output_format = "mp3_44100_128"
+# output_mode = "text_only"                      # text_only | voice_only | text_and_voice
+# max_text_length = 5000
+# tts_proactive = false                          # TTS for heartbeat/proactive messages
+
 [orchestration]
 # enabled = true
 # max_concurrent_subagents = 5

@@ -278,6 +278,9 @@ class SentientAgent:
         # Initialized fully in initialize() after tool handlers are bound
         self.orchestrator: Optional[Any] = None
 
+        # ---- TTS (lazy-initialized via channels / tools) ----
+        self._tts_synthesizer: Optional[Any] = None
+
         # ---- Conversation state ----
         self._conversation_history: list[dict[str, Any]] = []
         # Keep in-memory history bounded to avoid unbounded growth in long-lived sessions.
@@ -3752,6 +3755,40 @@ class SentientAgent:
 
             pc_tool.handler = handle_present_choices
 
+        # ---- Voice / TTS tool handlers ----
+        set_voice_tool = self.tool_registry.get("set_voice")
+        if set_voice_tool:
+
+            async def handle_set_voice(voice_id: str, description: str = "") -> str:
+                tts = self._get_tts_synthesizer()
+                if tts is None:
+                    return "Error: TTS is not configured (no ElevenLabs API key)."
+                session_id = _CURRENT_SESSION_ID.get("") or None
+                if session_id:
+                    tts.set_session_voice(session_id, voice_id)
+                else:
+                    tts.set_session_voice("_default", voice_id)
+                return f"Voice changed to {voice_id}." + (f" ({description})" if description else "")
+
+            set_voice_tool.handler = handle_set_voice
+
+        list_voices_tool = self.tool_registry.get("list_voices")
+        if list_voices_tool:
+
+            async def handle_list_voices() -> str:
+                tts = self._get_tts_synthesizer()
+                if tts is None:
+                    return "Error: TTS is not configured (no ElevenLabs API key)."
+                voices = await tts.list_voices()
+                if voices is None:
+                    return "Error: Could not retrieve voice list."
+                if not voices:
+                    return "No voices available."
+                lines = [f"- {v['name']} (ID: {v['voice_id']})" for v in voices]
+                return "Available voices:\n" + "\n".join(lines)
+
+            list_voices_tool.handler = handle_list_voices
+
         # ---- Filesystem tool handlers (subagent-only) ----
         self._wire_filesystem_tool_handlers()
 
@@ -4579,6 +4616,22 @@ class SentientAgent:
         Used by heartbeat and router for serialized state mutations.
         """
         return self._respond_lock
+
+    def _get_tts_synthesizer(self):
+        """Lazily create a TTSSynthesizer from the ElevenLabs config."""
+        if self._tts_synthesizer is not None:
+            return self._tts_synthesizer
+        el_config = getattr(self._config, "elevenlabs", None)
+        if el_config is None or not el_config.is_available:
+            return None
+        try:
+            from gwenn.media.tts import TTSSynthesizer
+
+            self._tts_synthesizer = TTSSynthesizer(el_config)
+            return self._tts_synthesizer
+        except Exception as exc:
+            logger.warning("agent.tts_init_failed", error=str(exc))
+            return None
 
     @property
     def status(self) -> dict[str, Any]:

@@ -267,6 +267,14 @@ class TelegramChannel(BaseChannel):
                 await self._audio_transcriber.close()
             except Exception:
                 logger.debug("telegram_channel.audio_transcriber_close_error", exc_info=True)
+        # TTS synthesizer is owned by the agent; close it here in case channel
+        # shuts down independently.
+        tts = getattr(self._agent, "_tts_synthesizer", None)
+        if tts is not None:
+            try:
+                await tts.close()
+            except Exception:
+                logger.debug("telegram_channel.tts_close_error", exc_info=True)
         if self._app is None:
             return
         try:
@@ -299,6 +307,19 @@ class TelegramChannel(BaseChannel):
                         text=strip_html_tags(chunk),
                     )
                 await asyncio.sleep(0.3)
+
+            # TTS for proactive/unsolicited messages (when enabled)
+            el_config = getattr(self._agent._config, "elevenlabs", None)
+            if el_config and el_config.tts_proactive:
+                tts = self._get_tts_synthesizer()
+                if tts and tts.output_mode in ("voice_only", "text_and_voice"):
+                    from io import BytesIO
+
+                    audio = await tts.synthesize(text)
+                    if audio:
+                        await self._app.bot.send_voice(
+                            chat_id=chat_id, voice=BytesIO(audio)
+                        )
         except Exception:
             logger.exception("telegram_channel.send_error", user_id=platform_user_id)
 
@@ -1061,10 +1082,29 @@ class TelegramChannel(BaseChannel):
                     return
 
                 button_rows = response.buttons if isinstance(response, AgentResponse) else None
-                chunks = format_for_telegram(response_text)
-                await self._send_chunks_to_message(
-                    update.message, chunks, button_rows=button_rows
-                )
+
+                tts = self._get_tts_synthesizer()
+                mode = tts.output_mode if tts else "text_only"
+
+                if mode != "voice_only":
+                    chunks = format_for_telegram(response_text)
+                    await self._send_chunks_to_message(
+                        update.message, chunks, button_rows=button_rows
+                    )
+
+                if tts and mode in ("voice_only", "text_and_voice"):
+                    from io import BytesIO
+
+                    session_id = self.make_session_id(session_scope_key)
+                    audio = await tts.synthesize(response_text, session_id=session_id)
+                    if audio:
+                        await update.message.reply_voice(voice=BytesIO(audio))
+                    elif mode == "voice_only":
+                        # Fallback to text if TTS fails
+                        chunks = format_for_telegram(response_text)
+                        await self._send_chunks_to_message(
+                            update.message, chunks, button_rows=button_rows
+                        )
 
                 # Clear the "received" reaction now that we've replied.
                 await self._clear_reaction(update.message)
@@ -1357,6 +1397,16 @@ class TelegramChannel(BaseChannel):
         except Exception as exc:
             logger.warning("telegram_channel.transcriber_init_failed", error=str(exc))
             return None
+
+    def _get_tts_synthesizer(self):
+        """Lazily get the TTSSynthesizer from the agent (shared instance)."""
+        tts = getattr(self._agent, "_tts_synthesizer", None)
+        if tts is not None:
+            return tts
+        # Try lazy init via the agent's accessor
+        if hasattr(self._agent, "_get_tts_synthesizer"):
+            return self._agent._get_tts_synthesizer()
+        return None
 
     # ------------------------------------------------------------------
     # Edited / unsupported / error handlers
